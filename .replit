@@ -1,7 +1,6 @@
 modules = ["swift-5.8", "bash", "nix"]
 [agent]
 expertMode = true
-stack = "BEST_EFFORT_FALLBACK"
 
 [nix]
 channel = "stable-25_05"

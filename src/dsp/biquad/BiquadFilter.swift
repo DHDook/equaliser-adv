@@ -36,9 +36,9 @@ final class BiquadFilter {
     // MARK: - Initialization
 
     init() {
-        // Pre-allocate for maximum supported sections (4) to avoid runtime reallocation.
-        // vDSP requires delay = 2 * (sections + 1) → 2*(4+1) = 10 for 4 sections.
-        let maxSections = 4
+        // Pre-allocate for maximum supported sections (8) to avoid runtime reallocation.
+        // vDSP requires delay = 2 * (sections + 1) → 2*(8+1) = 18 for 8 sections (96 dB/oct).
+        let maxSections = 8
         delay = [Float](repeating: 0, count: 2 * (maxSections + 1))
 
         // Start with identity (passthrough), resetting delay state on init

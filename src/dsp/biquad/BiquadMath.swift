@@ -109,7 +109,14 @@ enum BiquadMath {
             return [firstOrderLowPass(sampleRate: sampleRate, frequency: frequency)]
         case .db12:
             return [lowPass(sampleRate: sampleRate, frequency: frequency, q: q)]
-        case .db24, .db48:
+        case .db18:
+            // 3rd-order Butterworth: first-order stage + one biquad section (Q = 1.0).
+            return [
+                firstOrderLowPass(sampleRate: sampleRate, frequency: frequency),
+                lowPass(sampleRate: sampleRate, frequency: frequency, q: 1.0)
+            ]
+        default:
+            // All even-order slopes (db24 … db96): cascade Butterworth biquad sections.
             return slope.butterworthQValues.map { sectionQ in
                 lowPass(sampleRate: sampleRate, frequency: frequency, q: sectionQ)
             }
@@ -129,7 +136,14 @@ enum BiquadMath {
             return [firstOrderHighPass(sampleRate: sampleRate, frequency: frequency)]
         case .db12:
             return [highPass(sampleRate: sampleRate, frequency: frequency, q: q)]
-        case .db24, .db48:
+        case .db18:
+            // 3rd-order Butterworth: first-order stage + one biquad section (Q = 1.0).
+            return [
+                firstOrderHighPass(sampleRate: sampleRate, frequency: frequency),
+                highPass(sampleRate: sampleRate, frequency: frequency, q: 1.0)
+            ]
+        default:
+            // All even-order slopes (db24 … db96): cascade Butterworth biquad sections.
             return slope.butterworthQValues.map { sectionQ in
                 highPass(sampleRate: sampleRate, frequency: frequency, q: sectionQ)
             }
@@ -149,7 +163,15 @@ enum BiquadMath {
             return [firstOrderLowShelf(sampleRate: sampleRate, frequency: frequency, gain: gain)]
         case .db12:
             return [lowShelf(sampleRate: sampleRate, frequency: frequency, gain: gain, q: 0.7071067811865476)]
-        case .db24, .db48:
+        case .db18:
+            // 3rd-order: split gain equally across first-order stage + one biquad section (Q = 1.0).
+            let perSectionGain = gain / Double(slope.sectionCount)
+            return [
+                firstOrderLowShelf(sampleRate: sampleRate, frequency: frequency, gain: perSectionGain),
+                lowShelf(sampleRate: sampleRate, frequency: frequency, gain: perSectionGain, q: 1.0)
+            ]
+        default:
+            // All even-order slopes (db24 … db96): split gain equally across all sections.
             let perSectionGain = gain / Double(slope.sectionCount)
             return (0..<slope.sectionCount).map { _ in
                 lowShelf(sampleRate: sampleRate, frequency: frequency, gain: perSectionGain, q: 0.7071067811865476)
@@ -170,7 +192,15 @@ enum BiquadMath {
             return [firstOrderHighShelf(sampleRate: sampleRate, frequency: frequency, gain: gain)]
         case .db12:
             return [highShelf(sampleRate: sampleRate, frequency: frequency, gain: gain, q: 0.7071067811865476)]
-        case .db24, .db48:
+        case .db18:
+            // 3rd-order: split gain equally across first-order stage + one biquad section (Q = 1.0).
+            let perSectionGain = gain / Double(slope.sectionCount)
+            return [
+                firstOrderHighShelf(sampleRate: sampleRate, frequency: frequency, gain: perSectionGain),
+                highShelf(sampleRate: sampleRate, frequency: frequency, gain: perSectionGain, q: 1.0)
+            ]
+        default:
+            // All even-order slopes (db24 … db96): split gain equally across all sections.
             let perSectionGain = gain / Double(slope.sectionCount)
             return (0..<slope.sectionCount).map { _ in
                 highShelf(sampleRate: sampleRate, frequency: frequency, gain: perSectionGain, q: 0.7071067811865476)

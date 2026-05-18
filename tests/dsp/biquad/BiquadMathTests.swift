@@ -429,10 +429,29 @@ final class BiquadMathTests: XCTestCase {
     }
 
     func testFilterSlope_sectionCounts() {
-        XCTAssertEqual(FilterSlope.db6.sectionCount, 1)
+        XCTAssertEqual(FilterSlope.db6.sectionCount,  1)
         XCTAssertEqual(FilterSlope.db12.sectionCount, 1)
+        XCTAssertEqual(FilterSlope.db18.sectionCount, 2)
         XCTAssertEqual(FilterSlope.db24.sectionCount, 2)
+        XCTAssertEqual(FilterSlope.db36.sectionCount, 3)
         XCTAssertEqual(FilterSlope.db48.sectionCount, 4)
+        XCTAssertEqual(FilterSlope.db60.sectionCount, 5)
+        XCTAssertEqual(FilterSlope.db72.sectionCount, 6)
+        XCTAssertEqual(FilterSlope.db84.sectionCount, 7)
+        XCTAssertEqual(FilterSlope.db96.sectionCount, 8)
+    }
+
+    func testFilterSlope_hasFirstOrderSection_onlyDb18() {
+        XCTAssertFalse(FilterSlope.db6.hasFirstOrderSection)
+        XCTAssertFalse(FilterSlope.db12.hasFirstOrderSection)
+        XCTAssertTrue(FilterSlope.db18.hasFirstOrderSection)
+        XCTAssertFalse(FilterSlope.db24.hasFirstOrderSection)
+        XCTAssertFalse(FilterSlope.db36.hasFirstOrderSection)
+        XCTAssertFalse(FilterSlope.db48.hasFirstOrderSection)
+        XCTAssertFalse(FilterSlope.db60.hasFirstOrderSection)
+        XCTAssertFalse(FilterSlope.db72.hasFirstOrderSection)
+        XCTAssertFalse(FilterSlope.db84.hasFirstOrderSection)
+        XCTAssertFalse(FilterSlope.db96.hasFirstOrderSection)
     }
 
     func testFilterSlope_butterworthQValues_db24() {
@@ -446,6 +465,130 @@ final class BiquadMathTests: XCTestCase {
         let qs = FilterSlope.db48.butterworthQValues
         XCTAssertEqual(qs.count, 4)
         XCTAssertEqual(qs[0], 2.5629154477415234, accuracy: 1e-10)
+    }
+
+    func testFilterSlope_butterworthQValues_db36() {
+        let qs = FilterSlope.db36.butterworthQValues
+        XCTAssertEqual(qs.count, 3)
+        // N=6 first section: Q1 = 1/(2*sin(π/12)) ≈ 1.9319
+        XCTAssertEqual(qs[0], 1.9318516525781366, accuracy: 1e-10)
+        // Middle section is always 1/√2 for N=6
+        XCTAssertEqual(qs[1], 0.7071067811865476, accuracy: 1e-10)
+        XCTAssertEqual(qs[2], 0.5176380902050415, accuracy: 1e-10)
+    }
+
+    func testFilterSlope_butterworthQValues_db96_eightEntries() {
+        let qs = FilterSlope.db96.butterworthQValues
+        XCTAssertEqual(qs.count, 8)
+        // Q values should decrease monotonically for N=16
+        for i in 0..<(qs.count - 1) {
+            XCTAssertGreaterThan(qs[i], qs[i + 1], "Q values should be monotonically decreasing for N=16")
+        }
+        // Sanity-check: last Q should be close to 0.5 (near-unity section)
+        XCTAssertLessThan(qs[7], 0.51)
+        XCTAssertGreaterThan(qs[7], 0.50)
+    }
+
+    func testCalculateSections_lowPass18db_twoSectionsFirstOrderLeading() {
+        let sections = BiquadMath.calculateSections(
+            type: .lowPass,
+            sampleRate: sampleRate,
+            frequency: 1000.0,
+            q: 0.707,
+            gain: 0.0,
+            slope: .db18
+        )
+        XCTAssertEqual(sections.count, 2, "18 dB/oct LP should produce 2 sections (first-order + biquad)")
+        // First section must be degenerate (first-order): b2 = a2 = 0
+        XCTAssertEqual(sections[0].b2, 0.0, accuracy: tolerance)
+        XCTAssertEqual(sections[0].a2, 0.0, accuracy: tolerance)
+        // Second section is a full 2nd-order biquad: b2 and a2 are non-zero
+        XCTAssertFalse(sections[1].b2.isNaN)
+    }
+
+    func testCalculateSections_highPass18db_twoSectionsFirstOrderLeading() {
+        let sections = BiquadMath.calculateSections(
+            type: .highPass,
+            sampleRate: sampleRate,
+            frequency: 1000.0,
+            q: 0.707,
+            gain: 0.0,
+            slope: .db18
+        )
+        XCTAssertEqual(sections.count, 2, "18 dB/oct HP should produce 2 sections (first-order + biquad)")
+        XCTAssertEqual(sections[0].b2, 0.0, accuracy: tolerance)
+        XCTAssertEqual(sections[0].a2, 0.0, accuracy: tolerance)
+    }
+
+    func testCalculateSections_lowPass36db_threeSections() {
+        let sections = BiquadMath.calculateSections(
+            type: .lowPass,
+            sampleRate: sampleRate,
+            frequency: 1000.0,
+            q: 0.707,
+            gain: 0.0,
+            slope: .db36
+        )
+        XCTAssertEqual(sections.count, 3, "36 dB/oct LP should produce 3 Butterworth biquad sections")
+        for section in sections {
+            XCTAssertFalse(section.b0.isNaN)
+            XCTAssertFalse(section.a1.isNaN)
+        }
+    }
+
+    func testCalculateSections_lowPass96db_eightSections() {
+        let sections = BiquadMath.calculateSections(
+            type: .lowPass,
+            sampleRate: sampleRate,
+            frequency: 1000.0,
+            q: 0.707,
+            gain: 0.0,
+            slope: .db96
+        )
+        XCTAssertEqual(sections.count, 8, "96 dB/oct LP should produce 8 Butterworth biquad sections")
+        for section in sections {
+            XCTAssertFalse(section.b0.isNaN)
+            XCTAssertFalse(section.a1.isNaN)
+        }
+    }
+
+    func testCalculateSections_lowShelf18db_gainSplitAcrossTwoSections() {
+        let totalGain = 6.0
+        let sections = BiquadMath.calculateSections(
+            type: .lowShelf,
+            sampleRate: sampleRate,
+            frequency: 200.0,
+            q: 0.707,
+            gain: totalGain,
+            slope: .db18
+        )
+        XCTAssertEqual(sections.count, 2, "18 dB/oct LS should produce 2 sections")
+        // First section is first-order (degenerate): b2 = a2 = 0
+        XCTAssertEqual(sections[0].b2, 0.0, accuracy: tolerance)
+        XCTAssertEqual(sections[0].a2, 0.0, accuracy: tolerance)
+        for section in sections {
+            XCTAssertFalse(section.b0.isNaN)
+        }
+    }
+
+    func testCalculateSections_allNewSlopesProduceCorrectCounts() {
+        let newSlopes: [(FilterSlope, Int)] = [
+            (.db18, 2), (.db36, 3), (.db60, 5), (.db72, 6), (.db84, 7), (.db96, 8)
+        ]
+        for (slope, expectedCount) in newSlopes {
+            let lp = BiquadMath.calculateSections(type: .lowPass,  sampleRate: sampleRate, frequency: 1000.0, q: 0.707, gain: 0.0, slope: slope)
+            let hp = BiquadMath.calculateSections(type: .highPass, sampleRate: sampleRate, frequency: 1000.0, q: 0.707, gain: 0.0, slope: slope)
+            let ls = BiquadMath.calculateSections(type: .lowShelf, sampleRate: sampleRate, frequency: 200.0,  q: 0.707, gain: 3.0, slope: slope)
+            let hs = BiquadMath.calculateSections(type: .highShelf, sampleRate: sampleRate, frequency: 200.0, q: 0.707, gain: 3.0, slope: slope)
+            XCTAssertEqual(lp.count, expectedCount, "LP \(slope.displayName) should produce \(expectedCount) sections")
+            XCTAssertEqual(hp.count, expectedCount, "HP \(slope.displayName) should produce \(expectedCount) sections")
+            XCTAssertEqual(ls.count, expectedCount, "LS \(slope.displayName) should produce \(expectedCount) sections")
+            XCTAssertEqual(hs.count, expectedCount, "HS \(slope.displayName) should produce \(expectedCount) sections")
+            for section in lp + hp + ls + hs {
+                XCTAssertFalse(section.b0.isNaN, "\(slope.displayName) produced NaN b0")
+                XCTAssertFalse(section.a1.isNaN, "\(slope.displayName) produced NaN a1")
+            }
+        }
     }
 
     // MARK: - Normalisation Test

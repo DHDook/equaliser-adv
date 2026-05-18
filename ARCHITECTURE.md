@@ -336,8 +336,8 @@ The app uses a **custom biquad DSP engine** instead of `AVAudioUnitEQ`. This pro
 |-----------|----------------|--------|
 | `BiquadMath` | Calculate biquad coefficients/sections (RBJ Cookbook + Butterworth) | Main thread |
 | `BiquadCoefficients` | Value type for b0/b1/b2/a1/a2 | Shared (Sendable) |
-| `FilterSlope` | Slope enum (6/12/24/48 dB/oct); provides Butterworth Q values for cascades | Main thread |
-| `BiquadFilter` | vDSP wrapper, owns delay elements; supports 1–4 cascaded sections | Audio thread only |
+| `FilterSlope` | Slope enum (6–96 dB/oct, 10 values); Butterworth Q values for LP/HP cascades | Main thread |
+| `BiquadFilter` | vDSP wrapper, owns delay elements; supports 1–8 cascaded sections | Audio thread only |
 | `EQChain` | Per-channel filter chain with lock-free updates; per-band section arrays | Shared via atomics |
 | `EQChannelTarget` | Routes updates to left/right/both channels | Main thread |
 

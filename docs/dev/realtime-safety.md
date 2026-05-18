@@ -100,7 +100,7 @@ pendingCoefficients[i]     ▼                     ▼
 | `EQChain.swift` | Per-channel-per-layer chain of 64 biquads, lock-free coefficient updates |
 | `EQChannelTarget.swift` | `.left` / `.right` / `.both` for stereo routing |
 | `FilterType.swift` | Filter types (parametric, shelves, band-pass, notch) with legacy migration |
-| `FilterSlope.swift` | Filter slope enum (6/12/24/48 dB/oct) with Butterworth Q values for LP/HP cascades |
+| `FilterSlope.swift` | Filter slope enum (6–96 dB/oct, 10 values, up to 8 vDSP sections) with Butterworth Q values for LP/HP cascades |
 
 ### Real-Time Safety Guarantees
 
