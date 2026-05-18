@@ -541,56 +541,66 @@ struct AboutTab: View {
                 Text("Equaliser")
             }
 
-            Section {
-                if store.updateService.updateAvailable {
-                    HStack(spacing: 8) {
-                        Image(systemName: "arrow.up.circle.fill")
-                            .foregroundStyle(.orange)
-                        if let version = store.updateService.latestVersion {
-                            Text("v\(version) is available")
-                                .font(.callout)
-                        } else {
-                            Text("Update available")
-                                .font(.callout)
-                        }
-                        Spacer()
-                        Button("Download") {
-                            if let url = URL(string: UPDATE_DOWNLOAD_URL) {
-                                NSWorkspace.shared.open(url)
+            if store.updateService.updateAvailable || showingUpToDate || store.updateService.isChecking {
+                Section {
+                    if store.updateService.updateAvailable {
+                        HStack(spacing: 8) {
+                            Image(systemName: "arrow.up.circle.fill")
+                                .foregroundStyle(.orange)
+                            if let version = store.updateService.latestVersion {
+                                Text("v\(version) is available")
+                                    .font(.callout)
+                            } else {
+                                Text("Update available")
+                                    .font(.callout)
                             }
+                            Spacer()
+                            Button("Download") {
+                                if let url = URL(string: UPDATE_DOWNLOAD_URL) {
+                                    NSWorkspace.shared.open(url)
+                                }
+                            }
+                            .buttonStyle(.borderedProminent)
                         }
-                        .buttonStyle(.borderedProminent)
+                    } else if showingUpToDate {
+                        HStack(spacing: 8) {
+                            Image(systemName: "checkmark.circle.fill")
+                                .foregroundStyle(.green)
+                            Text("You're up to date")
+                                .font(.callout)
+                            Spacer()
+                        }
+                    } else {
+                        HStack {
+                            Spacer()
+                            if store.updateService.isChecking {
+                                ProgressView()
+                                    .controlSize(.small)
+                                Text("Checking...")
+                                    .font(.callout)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                        }
                     }
-                } else if showingUpToDate {
-                    HStack(spacing: 8) {
-                        Image(systemName: "checkmark.circle.fill")
-                            .foregroundStyle(.green)
-                        Text("You're up to date")
-                            .font(.callout)
-                        Spacer()
-                    }
-                } else {
+                } header: {
+                    Text("Updates")
+                }
+            } else {
+                Section {
                     HStack {
                         Spacer()
-                        if store.updateService.isChecking {
-                            ProgressView()
-                                .controlSize(.small)
-                            Text("Checking...")
-                                .font(.callout)
-                                .foregroundStyle(.secondary)
-                        } else {
-                            Button("Check for Updates") {
-                                showingUpToDate = false
-                                upToDateTask?.cancel()
-                                store.updateService.forceCheckForUpdates()
-                            }
-                            .disabled(store.updateService.isChecking)
+                        Button("Check for Updates") {
+                            showingUpToDate = false
+                            upToDateTask?.cancel()
+                            store.updateService.forceCheckForUpdates()
                         }
+                        .disabled(store.updateService.isChecking)
                         Spacer()
                     }
+                } header: {
+                    Text("Updates")
                 }
-            } header: {
-                Text("Updates")
             }
 
         }
