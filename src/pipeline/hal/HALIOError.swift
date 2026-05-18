@@ -9,8 +9,8 @@ enum HALIOError: Error, LocalizedError, Sendable {
     /// Failed to create an instance of the HAL output audio unit.
     case instanceCreationFailed(OSStatus)
 
-    /// Failed to initialize the audio unit.
-    case initializationFailed(OSStatus)
+    /// Failed to initialise the audio unit.
+    case initialisationFailed(OSStatus)
 
     /// Failed to start the audio unit.
     case startFailed(OSStatus)
@@ -30,8 +30,8 @@ enum HALIOError: Error, LocalizedError, Sendable {
     /// Failed to set the stream format on the audio unit.
     case formatSetFailed(OSStatus)
 
-    /// Operation requires the audio unit to be initialized first.
-    case notInitialized
+    /// Operation requires the audio unit to be initialised first.
+    case notInitialised
 
     /// The audio unit is already running.
     case alreadyRunning
@@ -60,8 +60,8 @@ enum HALIOError: Error, LocalizedError, Sendable {
             "HAL output audio component not found"
         case .instanceCreationFailed(let status):
             "Failed to create audio unit instance (OSStatus: \(status))"
-        case .initializationFailed(let status):
-            "Failed to initialize audio unit (OSStatus: \(status))"
+        case .initialisationFailed(let status):
+            "Failed to initialise audio unit (OSStatus: \(status))"
         case .startFailed(let status):
             "Failed to start audio unit (OSStatus: \(status))"
         case .stopFailed(let status):
@@ -74,8 +74,8 @@ enum HALIOError: Error, LocalizedError, Sendable {
             "Failed to query stream format (OSStatus: \(status))"
         case .formatSetFailed(let status):
             "Failed to set stream format (OSStatus: \(status))"
-        case .notInitialized:
-            "Audio unit is not initialized"
+        case .notInitialised:
+            "Audio unit is not initialised"
         case .alreadyRunning:
             "Audio unit is already running"
         case .unitNotAvailable:

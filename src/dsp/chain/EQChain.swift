@@ -1,3 +1,4 @@
+import Accelerate
 import Atomics
 import Foundation
 
@@ -10,6 +11,10 @@ import Foundation
 /// - `pendingCoefficients` is written by the main thread
 /// - `activeCoefficients` is read by the audio thread
 /// - `hasPendingUpdate` is an atomic flag that signals when updates are available
+///
+/// vDSP setups are pre-created on the main thread during staging and installed on
+/// the audio thread during `applyPendingUpdates()`. This avoids allocation on the
+/// audio thread — a real-time safety requirement.
 ///
 /// Only filters whose coefficients actually changed are rebuilt in `applyPendingUpdates()`.
 /// A single-band slider drag rebuilds exactly 1 filter; a full preset load rebuilds all of them.
@@ -41,6 +46,12 @@ final class EQChain {
     /// Coefficients staged for next update (written by main thread).
     private var pendingCoefficients: [BiquadCoefficients]
 
+    /// Pre-built vDSP setups staged for next update (written by main thread).
+    /// Created via `BiquadFilter.prepareSetup()` on the main thread, installed on the
+    /// audio thread in `applyPendingUpdates()`. Ownership transfers to `BiquadFilter`
+    /// on install, or is destroyed if unused.
+    private var pendingSetups: [vDSP_biquad_Setup?]
+
     /// Staged active band count (written by main thread).
     private var pendingActiveBandCount: Int = 0
 
@@ -71,13 +82,21 @@ final class EQChain {
         activeCoefficients = [BiquadCoefficients](repeating: .identity, count: Self.maxBandCount)
         pendingCoefficients = [BiquadCoefficients](repeating: .identity, count: Self.maxBandCount)
 
+        // Pre-allocate vDSP setup staging array
+        pendingSetups = [vDSP_biquad_Setup?](repeating: nil, count: Self.maxBandCount)
+
         // Pre-allocate bypass flags
         bypassFlags = [Bool](repeating: false, count: Self.maxBandCount)
         pendingBypassFlags = [Bool](repeating: false, count: Self.maxBandCount)
     }
 
     deinit {
-        // No resources to deallocate - filters are value types with managed setups
+        // Destroy any staged setups that weren't applied (ownership wasn't transferred)
+        for setup in pendingSetups {
+            if let s = setup {
+                vDSP_biquad_DestroySetup(s)
+            }
+        }
     }
 
     // MARK: - Main Thread API
@@ -87,6 +106,9 @@ final class EQChain {
     /// This is the incremental update path — used for slider drags and single-parameter changes.
     /// It does NOT set `pendingFullReset`, so `applyPendingUpdates()` will preserve filter delay
     /// state on all unchanged bands, preventing audible clicks.
+    ///
+    /// The vDSP setup is pre-created on the calling thread (main thread) to avoid
+    /// allocation on the audio thread.
     /// - Parameters:
     ///   - index: Band index within this chain.
     ///   - coefficients: New biquad coefficients.
@@ -95,6 +117,14 @@ final class EQChain {
         guard index >= 0 && index < Self.maxBandCount else { return }
         pendingCoefficients[index] = coefficients
         pendingBypassFlags[index] = bypass
+
+        // Pre-create vDSP setup on the main thread to avoid allocation on audio thread.
+        // Destroy any previously staged setup that hasn't been applied yet.
+        if let oldSetup = pendingSetups[index] {
+            vDSP_biquad_DestroySetup(oldSetup)
+        }
+        pendingSetups[index] = BiquadFilter.prepareSetup(coefficients)
+
         hasPendingUpdate.store(true, ordering: .releasing)
     }
 
@@ -102,6 +132,9 @@ final class EQChain {
     ///
     /// Used for preset load, band count change, or sample rate change. Sets `pendingFullReset`
     /// so that `applyPendingUpdates()` resets all filter delay state — producing a clean start.
+    ///
+    /// The vDSP setups are pre-created on the calling thread (main thread) to avoid
+    /// allocation on the audio thread.
     /// - Parameters:
     ///   - coefficients: All band coefficients.
     ///   - bypassFlags: Per-band bypass flags.
@@ -113,10 +146,17 @@ final class EQChain {
         activeBandCount: Int,
         layerBypass: Bool
     ) {
-        // Copy coefficients (pad with identity if needed)
+        // Copy coefficients and pre-create vDSP setups (pad with identity if needed)
         for i in 0..<Self.maxBandCount {
-            pendingCoefficients[i] = i < coefficients.count ? coefficients[i] : .identity
+            let coeff = i < coefficients.count ? coefficients[i] : .identity
+            pendingCoefficients[i] = coeff
             pendingBypassFlags[i] = i < bypassFlags.count ? bypassFlags[i] : false
+
+            // Pre-create vDSP setup on the main thread
+            if let oldSetup = pendingSetups[i] {
+                vDSP_biquad_DestroySetup(oldSetup)
+            }
+            pendingSetups[i] = BiquadFilter.prepareSetup(coeff)
         }
         pendingActiveBandCount = min(activeBandCount, Self.maxBandCount)
         pendingLayerBypass = layerBypass
@@ -142,10 +182,11 @@ final class EQChain {
     /// Applies any pending coefficient updates.
     /// Call once per render cycle before processing.
     ///
-    /// Only rebuilds vDSP setups for bands whose coefficients actually changed.
-    /// - For incremental updates (`stageBandUpdate`): rebuilds exactly the 1 changed filter,
+    /// Installs pre-built vDSP setups for bands whose coefficients changed.
+    /// No allocation occurs on the audio thread — setups were created on the main thread.
+    /// - For incremental updates (`stageBandUpdate`): installs exactly the 1 changed filter,
     ///   preserving delay state (no clicks). The other 63 filters are not touched.
-    /// - For full updates (`stageFullUpdate`): rebuilds all filters and resets delay state
+    /// - For full updates (`stageFullUpdate`): installs all filters and resets delay state
     ///   (clean start for preset loads and sample rate changes).
     @inline(__always)
     func applyPendingUpdates() {
@@ -159,24 +200,31 @@ final class EQChain {
         activeBandCount = pendingActiveBandCount
         layerBypass = pendingLayerBypass
 
-        // Update each band — only rebuild filters whose coefficients changed.
+        // Update each band — only install setups for bands whose coefficients changed.
         // For a single-band slider drag, this loop touches exactly 1 filter out of 64.
         for i in 0..<Self.maxBandCount {
             bypassFlags[i] = pendingBypassFlags[i]
 
             let pending = pendingCoefficients[i]
             if pending != activeCoefficients[i] {
-                // Coefficients changed: rebuild this filter's vDSP setup.
+                // Coefficients changed: install the pre-built vDSP setup.
                 // Use resetState only on full updates (preset loads) to avoid mid-stream clicks.
                 activeCoefficients[i] = pending
-                filters[i].setCoefficients(pending, resetState: fullReset)
+                filters[i].setCoefficients(pending, setup: pendingSetups[i], resetState: fullReset)
+                pendingSetups[i] = nil // Ownership transferred to BiquadFilter
             } else if fullReset {
                 // Coefficients unchanged but a full reset was requested (e.g. the band was
                 // already at identity before a preset load). Reset delay state so that any
                 // residual ringing from a previous preset is cleared.
-                filters[i].setCoefficients(pending, resetState: true)
+                filters[i].setCoefficients(pending, setup: pendingSetups[i], resetState: true)
+                pendingSetups[i] = nil // Ownership transferred to BiquadFilter
+            } else {
+                // No coefficient change, no full reset — destroy unused pre-built setup.
+                if let unusedSetup = pendingSetups[i] {
+                    vDSP_biquad_DestroySetup(unusedSetup)
+                    pendingSetups[i] = nil
+                }
             }
-            // Otherwise: no coefficient change, no full reset — skip entirely.
         }
     }
 

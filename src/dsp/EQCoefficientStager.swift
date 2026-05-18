@@ -88,13 +88,67 @@ final class EQCoefficientStager {
 
     /// Stages coefficients for a single band.
     private func stageBandCoefficients(index: Int, config: EQBandConfiguration) {
+        let frequency = Double(config.frequency)
+        let q = Double(config.q)
+        let gain = Double(config.gain)
+
+        // Validate parameters before calculation
+        let paramResult = BiquadValidator.validate(
+            type: config.filterType,
+            sampleRate: currentSampleRate,
+            frequency: frequency,
+            q: q,
+            gain: gain
+        )
+        if case .invalid(let message) = paramResult {
+            logger.warning("Band \(index) invalid parameters: \(message) — using passthrough")
+            renderPipeline?.updateBandCoefficients(
+                channel: eqConfiguration.channelMode == .linked ? .both :
+                    (eqConfiguration.channelFocus == .left ? .left : .right),
+                layerIndex: EQLayerConstants.userEQLayerIndex,
+                bandIndex: index,
+                coefficients: .identity,
+                bypass: config.bypass
+            )
+            return
+        }
+        if case .warning(let message) = paramResult {
+            logger.debug("Band \(index) parameter warning: \(message)")
+        }
+
         let coefficients = BiquadMath.calculateCoefficients(
             type: config.filterType,
             sampleRate: currentSampleRate,
-            frequency: Double(config.frequency),
-            q: Double(config.q),
-            gain: Double(config.gain)
+            frequency: frequency,
+            q: q,
+            gain: gain
         )
+
+        // Validate coefficient stability — unstable filters can damage speakers
+        if !BiquadValidator.isFinite(coefficients) {
+            logger.warning("Band \(index) coefficients are non-finite — using passthrough")
+            renderPipeline?.updateBandCoefficients(
+                channel: eqConfiguration.channelMode == .linked ? .both :
+                    (eqConfiguration.channelFocus == .left ? .left : .right),
+                layerIndex: EQLayerConstants.userEQLayerIndex,
+                bandIndex: index,
+                coefficients: .identity,
+                bypass: config.bypass
+            )
+            return
+        }
+        if !BiquadValidator.isStable(coefficients) {
+            logger.warning("Band \(index) coefficients are unstable — using passthrough")
+            renderPipeline?.updateBandCoefficients(
+                channel: eqConfiguration.channelMode == .linked ? .both :
+                    (eqConfiguration.channelFocus == .left ? .left : .right),
+                layerIndex: EQLayerConstants.userEQLayerIndex,
+                bandIndex: index,
+                coefficients: .identity,
+                bypass: config.bypass
+            )
+            return
+        }
 
         // Use channel mode and editing channel from configuration
         let target: EQChannelTarget = eqConfiguration.channelMode == .linked ? .both :

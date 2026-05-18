@@ -32,8 +32,8 @@ final class DriverCapture: @unchecked Sendable {
     /// Static logger for thread-safe access
     private static let logger = Logger(subsystem: "net.knage.equaliser", category: "DriverCapture")
 
-    /// Whether capture is initialized (device resolved, shared memory ready)
-    private nonisolated(unsafe) var isInitialized = false
+    /// Whether capture is initialised (device resolved, shared memory ready)
+    private nonisolated(unsafe) var isInitialised = false
 
     // MARK: - Initialization
 
@@ -55,9 +55,9 @@ final class DriverCapture: @unchecked Sendable {
     /// - Parameter deviceID: The audio device ID for the driver
     /// - Throws: Error if shared memory setup fails
     @MainActor
-    func initialize(deviceID: AudioDeviceID) throws {
-        guard !isInitialized else {
-            Self.logger.warning("Driver capture already initialized")
+    func initialise(deviceID: AudioDeviceID) throws {
+        guard !isInitialised else {
+            Self.logger.warning("Driver capture already initialised")
             return
         }
 
@@ -68,8 +68,8 @@ final class DriverCapture: @unchecked Sendable {
         }
 
         sharedMemoryCapture = capture
-        isInitialized = true
-        Self.logger.info("Driver capture initialized: \(self.sampleRate) Hz, buffer size \(self.bufferSize)")
+        isInitialised = true
+        Self.logger.info("Driver capture initialised: \(self.sampleRate) Hz, buffer size \(self.bufferSize)")
     }
 
     /// Creates shared memory file and sets path on driver.
@@ -140,15 +140,21 @@ final class DriverCapture: @unchecked Sendable {
         destBuffers: [UnsafeMutablePointer<Float>],
         maxFrames: UInt32
     ) -> (frameCount: UInt32, sampleRate: Float64, channelCount: UInt32)? {
-        guard isInitialized, let capture = sharedMemoryCapture else { return nil }
+        guard isInitialised, let capture = sharedMemoryCapture else { return nil }
         return capture.readFramesIntoBuffers(destBuffers: destBuffers, maxFrames: maxFrames)
     }
 
-    /// Stops capturing (resets initialization state).
+    /// Stops capturing (resets initialisation state).
     func stop() {
         sharedMemoryCapture?.disconnect()
         sharedMemoryCapture = nil
-        isInitialized = false
+        isInitialised = false
         Self.logger.info("Driver capture stopped")
+    }
+
+    /// Returns drift diagnostic information from the shared memory capture.
+    func getDriftDiagnostics() -> (startGap: UInt32, endGap: UInt32, deltaGap: Int32, overflows: UInt32)? {
+        guard let capture = sharedMemoryCapture else { return nil }
+        return capture.getDriftDiagnostics()
     }
 }

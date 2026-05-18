@@ -2,6 +2,9 @@ import AudioToolbox
 import CoreAudio
 import os.log
 
+/// File-level logger for audio-thread diagnostics (avoids @MainActor isolation on class static properties).
+private let audioThreadLogger = Logger(subsystem: "net.knage.equaliser", category: "RenderCallback")
+
 struct LevelMeterSnapshot {
     let inputDB: [Float]
     let outputDB: [Float]
@@ -95,8 +98,9 @@ final class RenderPipeline {
     /// Output callback counter for periodic logging.
     private nonisolated(unsafe) static var outputCallCount: UInt64 = 0
 
-    /// Logger for static/audio thread context.
-    private static let staticLogger = Logger(subsystem: "net.knage.equaliser", category: "RenderCallback")
+    /// Whether thread priority has been verified (one-time check).
+    private nonisolated(unsafe) static var hasCheckedThreadPriority: Bool = false
+
 
     // MARK: - Initialization
 
@@ -303,20 +307,29 @@ final class RenderPipeline {
         let outputGainLinear = AudioMath.dbToLinear(eqConfiguration.outputGain)
         context.setTargetInputGain(inputGainLinear)
         context.setTargetOutputGain(outputGainLinear)
-        // Start with zero gain to fade in smoothly — prevents startup pop.
-        // The audio thread's applyGain() will ramp from 0 to target over
-        // the first callback cycle (~10ms at 48kHz/512 frames).
+        // Soft start: ramp output gain from 0 to target over 4 seconds to prevent
+        // speaker-damaging transients when routing starts with high gain configured.
+        // Input gain is set to 0 for the first callback but ramps normally after that.
+        context.startSoftStart(sampleRate: currentSampleRate, targetOutputGain: outputGainLinear)
         context.inputGainLinear = 0
-        context.outputGainLinear = 0
+
+        // Undo stack: each successful step appends its cleanup closure.
+        // On failure, the defer block unwinds in reverse order.
+        // On success, removeAll() prevents unwind (stop() handles teardown).
+        var undoStack: [() -> Void] = []
+        defer {
+            undoStack.reversed().forEach { $0() }
+        }
 
         callbackContext = context
+        undoStack.append { [self] in self.callbackContext = nil }
         latestMeters = .silent
 
         let contextPtr = UnsafeMutableRawPointer(
             Unmanaged.passUnretained(context).toOpaque()
         )
 
-        // For standard mode, register the INPUT callback on the input HAL unit
+        // Register input callback (standard mode)
         if captureMode == .halInput {
             guard let inputManager = inputHALManager else {
                 return .failure(.unitNotAvailable)
@@ -327,51 +340,41 @@ final class RenderPipeline {
                 context: contextPtr
             ) {
                 logger.error("Failed to register input callback: \(error.localizedDescription)")
-                callbackContext = nil
                 return .failure(error)
             }
+            undoStack.append { _ = inputManager.clearInputCallback() }
         }
 
-        // Register the OUTPUT callback on the output HAL unit
+        // Register output callback
         if case .failure(let error) = outputManager.setOutputRenderCallback(
             Self.outputRenderCallback,
             context: contextPtr
         ) {
             logger.error("Failed to register output callback: \(error.localizedDescription)")
-            if captureMode == .halInput {
-                _ = inputHALManager?.clearInputCallback()
-            }
-            callbackContext = nil
             return .failure(error)
         }
+        undoStack.append { _ = outputManager.clearOutputRenderCallback() }
 
-        // Initialize HAL units
+        // Initialise HAL units
         if captureMode == .halInput {
             guard let inputManager = inputHALManager else {
                 return .failure(.unitNotAvailable)
             }
 
-            if case .failure(let error) = inputManager.initialize() {
-                logger.error("Failed to initialize input HAL unit: \(error.localizedDescription)")
-                _ = inputManager.clearInputCallback()
-                _ = outputManager.clearOutputRenderCallback()
-                callbackContext = nil
+            if case .failure(let error) = inputManager.initialise() {
+                logger.error("Failed to initialise input HAL unit: \(error.localizedDescription)")
                 return .failure(error)
             }
+            undoStack.append { inputManager.uninitialise() }
         }
 
-        if case .failure(let error) = outputManager.initialize() {
-            logger.error("Failed to initialize output HAL unit: \(error.localizedDescription)")
-            if captureMode == .halInput {
-                inputHALManager?.uninitialize()
-                _ = inputHALManager?.clearInputCallback()
-            }
-            _ = outputManager.clearOutputRenderCallback()
-            callbackContext = nil
+        if case .failure(let error) = outputManager.initialise() {
+            logger.error("Failed to initialise output HAL unit: \(error.localizedDescription)")
             return .failure(error)
         }
+        undoStack.append { outputManager.uninitialise() }
 
-        // Start the input HAL unit first (standard mode only)
+        // Start input HAL unit (standard mode)
         if captureMode == .halInput {
             guard let inputManager = inputHALManager else {
                 return .failure(.unitNotAvailable)
@@ -379,59 +382,31 @@ final class RenderPipeline {
 
             if case .failure(let error) = inputManager.start() {
                 logger.error("Failed to start input HAL unit: \(error.localizedDescription)")
-                inputManager.uninitialize()
-                outputManager.uninitialize()
-                _ = inputManager.clearInputCallback()
-                _ = outputManager.clearOutputRenderCallback()
-                callbackContext = nil
                 return .failure(error)
             }
+            undoStack.append { _ = inputManager.stop() }
         }
 
-        // Start the output HAL unit FIRST (this triggers driver IO, which creates shared memory)
-        // For shared memory mode, shared memory is only available after driver IO starts.
-        // Callbacks will read real audio immediately from the ring buffer.
+        // Start output HAL unit — this triggers driver IO (shared memory becomes available)
         if case .failure(let error) = outputManager.start() {
             logger.error("Failed to start output HAL unit: \(error.localizedDescription)")
-            if captureMode == .halInput {
-                _ = inputHALManager?.stop()
-                inputHALManager?.uninitialize()
-                _ = inputHALManager?.clearInputCallback()
-            }
-            _ = outputManager.clearOutputRenderCallback()
-            callbackContext = nil
             return .failure(error)
         }
+        undoStack.append { _ = outputManager.stop() }
 
-        // For shared memory mode, initialize capture AFTER output unit starts
-        // This ensures shared memory is available from the driver.
-        // Pre-fill ring buffer with silence to prevent startup underrun clicks.
+        // Shared memory mode: initialise capture after output unit starts
+        // Shared memory is only available after driver IO starts.
         if captureMode == .sharedMemory {
             guard let registry = driverRegistry else {
                 logger.error("Shared memory capture requires driver registry")
-                _ = outputManager.stop()
-                _ = outputManager.clearOutputRenderCallback()
-                outputManager.uninitialize()
-                if captureMode == .halInput {
-                    _ = inputHALManager?.stop()
-                    inputHALManager?.uninitialize()
-                    _ = inputHALManager?.clearInputCallback()
-                }
-                callbackContext = nil
                 return .failure(.unitNotAvailable)
             }
 
             guard let deviceID = registry.deviceID else {
                 logger.error("Driver device not found")
-                _ = outputManager.stop()
-                _ = outputManager.clearOutputRenderCallback()
-                outputManager.uninitialize()
-                callbackContext = nil
                 return .failure(.unitNotAvailable)
             }
 
-            // Create and initialize driver capture
-            // Shared memory is now available because output unit is running
             let capture = DriverCapture(
                 registry: registry,
                 sampleRate: streamFormat.mSampleRate,
@@ -439,25 +414,21 @@ final class RenderPipeline {
             )
 
             do {
-                try capture.initialize(deviceID: deviceID)
+                try capture.initialise(deviceID: deviceID)
                 context.setDriverCapture(capture)
                 driverCapture = capture
             } catch {
-                logger.error("Failed to initialize driver capture: \(error)")
-                _ = outputManager.stop()
-                _ = outputManager.clearOutputRenderCallback()
-                outputManager.uninitialize()
-                if captureMode == .halInput {
-                    _ = inputHALManager?.stop()
-                    inputHALManager?.uninitialize()
-                    _ = inputHALManager?.clearInputCallback()
-                }
-                callbackContext = nil
+                logger.error("Failed to initialise driver capture: \(error)")
                 return .failure(.unitNotAvailable)
+            }
+            undoStack.append { [self] in
+                self.driverCapture?.stop()
+                self.driverCapture = nil
             }
         }
 
         isRunning = true
+        undoStack.removeAll()
         logger.info("Render pipeline started successfully")
         return .success(())
     }
@@ -489,7 +460,7 @@ final class RenderPipeline {
                 lastError = error
             }
             _ = outputManager.clearOutputRenderCallback()
-            outputManager.uninitialize()
+            outputManager.uninitialise()
         }
 
         // Stop the input HAL unit (standard mode only)
@@ -498,13 +469,18 @@ final class RenderPipeline {
                 lastError = error
             }
             _ = inputManager.clearInputCallback()
-            inputManager.uninitialize()
+            inputManager.uninitialise()
         }
 
         // Log ring buffer diagnostics
         if let context = callbackContext {
             let diag = context.getDiagnostics()
             logger.info("Ring buffer: available=\(diag.availableToRead), underruns=\(diag.underruns), overflows=\(diag.overflows)")
+        }
+
+        // Log drift diagnostics (shared memory mode)
+        if let drift = driverCapture?.getDriftDiagnostics() {
+            logger.info("Drift: start=\(drift.startGap) end=\(drift.endGap) delta=\(drift.deltaGap) overflows=\(drift.overflows)")
         }
 
         // Release the callback context
@@ -578,6 +554,7 @@ final class RenderPipeline {
     /// ~50ms before stop() to allow the fade to complete.
     func prepareForStop() {
         guard isRunning else { return }
+        callbackContext?.cancelSoftStart()
         callbackContext?.setTargetOutputGain(0)
         callbackContext?.setTargetInputGain(0)
         callbackContext?.setTargetBoostGain(1.0) // Unity — no boost on silence
@@ -767,7 +744,7 @@ final class RenderPipeline {
             // Failed to get input audio - log and skip
             inputCallCount &+= 1
             if inputCallCount % 10000 == 1 {
-                staticLogger.error("Input #\(inputCallCount): AudioUnitRender failed with \(pullStatus)")
+                audioThreadLogger.error("Input #\(inputCallCount): AudioUnitRender failed with \(pullStatus)")
             }
             return noErr
         }
@@ -831,6 +808,12 @@ final class RenderPipeline {
             return noErr
         }
 
+        // One-time verification that output callback runs on a real-time thread
+        if !hasCheckedThreadPriority {
+            verifyThreadPriority()
+            hasCheckedThreadPriority = true
+        }
+
         // 0. Provide frames for processing (handles both direct capture and ring buffer modes)
         let framesRead = context.provideFrames(frameCount: frameCount)
 
@@ -838,7 +821,7 @@ final class RenderPipeline {
         if framesRead == 0 {
             // DEBUG: To troubleshoot idle state, uncomment:
             // outputCallCount &+= 1
-            // if outputCallCount % 1000 == 1 { staticLogger.debug("Output #\(outputCallCount): No input audio (idle)") }
+            // if outputCallCount % 1000 == 1 { audioThreadLogger.debug("Output #\(outputCallCount): No input audio (idle)") }
             RenderCallbackContext.zeroFill(ioData, frameCount: frameCount)
             context.updateOutputMeters(from: ioData, frameCount: frameCount)
             return noErr
@@ -852,34 +835,63 @@ final class RenderPipeline {
 
         // 3. Copy processed audio to output buffer list
         let outputBuffers = context.outputBufferPointers
-        let abl = UnsafeMutableAudioBufferListPointer(ioData)
+        let bufferCount = Int(ioData.pointee.mNumberBuffers)
         let framesToCopy = Int(frameCount)
 
-        for (index, buffer) in abl.enumerated() {
-            if let destData = buffer.mData?.assumingMemoryBound(to: Float.self) {
-                if index < outputBuffers.count {
-                    memcpy(destData, outputBuffers[index], framesToCopy * MemoryLayout<Float>.size)
-                } else {
-                    memset(destData, 0, framesToCopy * MemoryLayout<Float>.size)
+        withUnsafeMutablePointer(to: &ioData.pointee.mBuffers) { buffersPtr in
+            for index in 0..<bufferCount {
+                if let destData = buffersPtr[index].mData?.assumingMemoryBound(to: Float.self) {
+                    if index < outputBuffers.count {
+                        memcpy(destData, outputBuffers[index], framesToCopy * MemoryLayout<Float>.size)
+                    } else {
+                        memset(destData, 0, framesToCopy * MemoryLayout<Float>.size)
+                    }
                 }
             }
         }
 
         // 4. Apply output gain after EQ processing (skip in full bypass mode)
         if context.processingMode != 0 {
-            // Load target gain atomically (relaxed ordering is sufficient for audio)
-            let targetOutputGain = context.getTargetOutputGain()
-            context.applyGain(
-                to: ioData,
-                frameCount: frameCount,
-                currentGain: &context.outputGainLinear,
-                targetGain: targetOutputGain
-            )
+            context.applyOutputGainWithSoftStart(to: ioData, frameCount: frameCount)
         }
 
         // 5. Update output meters with rendered audio
         context.updateOutputMeters(from: ioData, frameCount: frameCount)
 
         return noErr
+    }
+
+    // MARK: - Thread Priority Verification
+
+    /// One-time check that the output callback thread has real-time priority.
+    /// CoreAudio should set time-constraint policy on the HAL IO thread.
+    /// This diagnostic verifies that assumption and logs a warning if not.
+    /// Marked nonisolated because it runs on the audio thread.
+    private nonisolated static func verifyThreadPriority() {
+        let thread = mach_thread_self()
+        defer { mach_port_deallocate(mach_task_self_, thread) }
+
+        var policy: policy_t = 0
+        var info = thread_time_constraint_policy_data_t()
+        let count = mach_msg_type_number_t(MemoryLayout<thread_time_constraint_policy_data_t>.size / MemoryLayout<natural_t>.size)
+        var mutableCount = count
+
+        let result = withUnsafeMutablePointer(to: &info) { infoPtr in
+            infoPtr.withMemoryRebound(to: integer_t.self, capacity: Int(count)) { reboundPtr in
+                thread_policy_get(
+                    thread,
+                    thread_policy_flavor_t(THREAD_TIME_CONSTRAINT_POLICY),
+                    reboundPtr,
+                    &mutableCount,
+                    &policy
+                )
+            }
+        }
+
+        if result == KERN_SUCCESS && policy == THREAD_TIME_CONSTRAINT_POLICY {
+            audioThreadLogger.info("Output callback has RT thread priority: period=\(info.period) computation=\(info.computation) constraint=\(info.constraint)")
+        } else {
+            audioThreadLogger.warning("Output callback thread does not have time-constraint (RT) policy (result=\(result), policy=\(policy))")
+        }
     }
 }

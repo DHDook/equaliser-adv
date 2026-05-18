@@ -51,6 +51,30 @@ final class DeviceSampleRateService: SampleRateObserving {
         return rate
     }
     
+    // MARK: - Available Sample Rates
+
+    func getAvailableSampleRates(deviceID: AudioDeviceID) -> [AudioValueRange]? {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyAvailableNominalSampleRates,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+
+        var size: UInt32 = 0
+        guard AudioObjectGetPropertyDataSize(deviceID, &address, 0, nil, &size) == noErr else {
+            return nil
+        }
+
+        let count = Int(size) / MemoryLayout<AudioValueRange>.size
+        var ranges = [AudioValueRange](repeating: AudioValueRange(), count: count)
+
+        guard AudioObjectGetPropertyData(deviceID, &address, 0, nil, &size, &ranges) == noErr else {
+            return nil
+        }
+
+        return ranges
+    }
+
     // MARK: - Sample Rate Observation
     
     func observeSampleRateChanges(on deviceID: AudioDeviceID, handler: @escaping (Float64) -> Void) {

@@ -11,21 +11,22 @@ import Accelerate
 ///   H(z) = (b0 + b1*z^-1 + b2*z^-2) / (1 + a1*z^-1 + a2*z^-2)
 ///
 /// Where coefficients are normalised (a0 has been divided out).
+///
+/// vDSP setups are pre-created on the main thread via `prepareSetup()` and
+/// installed on the audio thread via `setCoefficients(_:setup:resetState:)`.
+/// This avoids allocation on the audio thread — a real-time safety requirement.
 final class BiquadFilter {
     // MARK: - Properties
 
     /// The vDSP setup object for biquad processing.
-    /// Created on init, recreated on coefficient change.
+    /// Pre-created on the main thread, installed on the audio thread.
     private var setup: vDSP_biquad_Setup?
 
     /// Delay elements for the filter state (2 * (sections + 1) = 4 for single section).
     /// Pre-allocated to avoid runtime allocation.
     private var delay: [Float]
 
-    /// Current coefficients stored as [b0, b1, b2, a1, a2] in Float for vDSP.
-    private var coefficients: [Float]
-
-    /// Whether the setup is valid (coefficients have been set).
+    /// Whether the setup is valid (a vDSP setup has been installed).
     private var isValid: Bool = false
 
     // MARK: - Initialization
@@ -35,11 +36,8 @@ final class BiquadFilter {
         // vDSP requires this exact size
         delay = [Float](repeating: 0, count: 4)
 
-        // Pre-allocate coefficient storage: 5 coefficients (b0, b1, b2, a1, a2)
-        coefficients = [Float](repeating: 0, count: 5)
-
-        // Start with identity (passthrough), resetting delay state on init
-        setCoefficients(BiquadCoefficients.identity, resetState: true)
+        // Start with identity (passthrough) — no vDSP setup needed for passthrough
+        isValid = false
     }
 
     deinit {
@@ -48,40 +46,45 @@ final class BiquadFilter {
         }
     }
 
-    // MARK: - Coefficient Update
+    // MARK: - Setup Creation (Main Thread)
 
-    /// Updates the filter with new coefficients.
-    /// Must be called from the audio thread or during setup (not from main thread during audio).
+    /// Creates a vDSP biquad setup for the given coefficients.
+    /// Call this from the main thread to avoid allocation on the audio thread.
+    /// - Parameter coefficients: The biquad coefficients to create a setup for.
+    /// - Returns: A vDSP setup object, or nil if the coefficients are invalid.
+    static func prepareSetup(_ coefficients: BiquadCoefficients) -> vDSP_biquad_Setup? {
+        var coeffsD: [Double] = [
+            coefficients.b0,
+            coefficients.b1,
+            coefficients.b2,
+            coefficients.a1,
+            coefficients.a2
+        ]
+        return vDSP_biquad_CreateSetup(&coeffsD, 1)
+    }
+
+    // MARK: - Coefficient Update (Audio Thread)
+
+    /// Updates the filter with new coefficients and a pre-built vDSP setup.
+    /// The setup must be created via `prepareSetup()` on the main thread before calling this.
+    /// This method performs no allocation — it only swaps the setup pointer and optionally
+    /// resets filter delay state.
     /// - Parameters:
     ///   - newCoefficients: The new biquad coefficients.
+    ///   - setup: A pre-built vDSP setup for these coefficients, or nil for passthrough.
     ///   - resetState: Whether to zero the delay elements (filter state).
     ///     Pass `true` for preset loads and initialisation — produces a clean start at the cost
     ///     of a brief transient if audio is playing.
     ///     Pass `false` for incremental changes (slider drags) — preserves continuity and
     ///     avoids the audible click caused by resetting filter state mid-stream.
-    func setCoefficients(_ newCoefficients: BiquadCoefficients, resetState: Bool) {
-        // Store coefficients as Float for vDSP (for use in process)
-        coefficients[0] = Float(newCoefficients.b0)
-        coefficients[1] = Float(newCoefficients.b1)
-        coefficients[2] = Float(newCoefficients.b2)
-        coefficients[3] = Float(newCoefficients.a1)
-        coefficients[4] = Float(newCoefficients.a2)
-
-        // Destroy old setup if exists
-        if let s = setup {
+    func setCoefficients(_ newCoefficients: BiquadCoefficients, setup: vDSP_biquad_Setup?, resetState: Bool) {
+        // Destroy old setup if exists (free() — safe on audio thread)
+        if let s = self.setup {
             vDSP_biquad_DestroySetup(s)
         }
 
-        // Create new setup with the coefficients
-        // vDSP_biquad_CreateSetup takes Double coefficients but creates a Float processing setup
-        var coeffsD: [Double] = [
-            newCoefficients.b0,
-            newCoefficients.b1,
-            newCoefficients.b2,
-            newCoefficients.a1,
-            newCoefficients.a2
-        ]
-        setup = vDSP_biquad_CreateSetup(&coeffsD, 1)
+        // Install pre-built setup
+        self.setup = setup
 
         // Only reset delay elements when explicitly requested.
         // For incremental coefficient changes (slider drags), preserving delay state
@@ -90,7 +93,7 @@ final class BiquadFilter {
             for i in 0..<4 { delay[i] = 0 }
         }
 
-        isValid = true
+        isValid = setup != nil
     }
 
     // MARK: - Audio Processing

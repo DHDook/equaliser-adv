@@ -128,6 +128,23 @@ final class RenderCallbackContext: @unchecked Sendable {
     /// Ensures digital silence at 0% volume when using shared memory capture.
     nonisolated(unsafe) var volumeGainLinear: Float = 0.0
 
+    // MARK: - Soft Start Ramp
+    // Soft start prevents speaker-damaging transients when routing starts.
+    // On pipeline start, output gain ramps from 0 to target over several seconds.
+    // State is written by the main thread (startSoftStart/cancelSoftStart) and
+    // read/decremented by the audio thread (applyOutputGainWithSoftStart).
+    // Atomic storage with releasing/acquiring ordering ensures cross-thread visibility.
+
+    /// Frames remaining in the soft start ramp (0 = ramp complete or not active).
+    /// Stored as Int32 — sufficient for ~5600s at 768kHz.
+    /// Written by main thread with .releasing, read by audio thread with .acquiring.
+    private let softStartFramesRemainingAtomic: ManagedAtomic<Int32> = ManagedAtomic(0)
+
+    /// Gain increment per frame during soft start, stored as Int32 bit pattern of Float.
+    /// Computed as `targetOutputGain / totalRampFrames` — ensures linear ramp from 0 to target.
+    /// Written by main thread with .releasing, read by audio thread after acquiring frames.
+    private let softStartGainPerFrameAtomic: ManagedAtomic<Int32> = ManagedAtomic(0)
+
     // MARK: - Gain Update API (Main Thread)
 
     /// Updates the target input gain (called from main thread).
@@ -172,6 +189,27 @@ final class RenderCallbackContext: @unchecked Sendable {
     /// When true, render callbacks output silence and return early.
     func setIsStopping(_ stopping: Bool) {
         isStoppingAtomic.store(stopping ? 1 : 0, ordering: .relaxed)
+    }
+
+    /// Starts the soft start ramp (called from main thread before pipeline starts).
+    /// Sets output gain to 0 and configures a linear ramp to the target over the specified duration.
+    /// The audio thread's `applyOutputGainWithSoftStart()` handles the per-callback ramp.
+    /// - Parameters:
+    ///   - sampleRate: Current audio sample rate in Hz.
+    ///   - targetOutputGain: The linear output gain to ramp to.
+    ///   - duration: Ramp duration in seconds (default 4.0).
+    func startSoftStart(sampleRate: Double, targetOutputGain: Float, duration: Float = 4.0) {
+        let totalRampFrames = Int32(sampleRate * Double(duration))
+        softStartFramesRemainingAtomic.store(totalRampFrames, ordering: .releasing)
+        softStartGainPerFrameAtomic.store(Int32(bitPattern: (targetOutputGain / Float(totalRampFrames)).bitPattern), ordering: .releasing)
+        outputGainLinear = 0 // Start from silence
+    }
+
+    /// Cancels the soft start ramp (called from main thread during prepareForStop).
+    /// Allows the fade-out to work correctly without being limited by the ramp.
+    func cancelSoftStart() {
+        softStartFramesRemainingAtomic.store(0, ordering: .releasing)
+        softStartGainPerFrameAtomic.store(0, ordering: .releasing)
     }
 
     /// Checks if the pipeline is stopping (called from audio thread).
@@ -421,6 +459,8 @@ final class RenderCallbackContext: @unchecked Sendable {
     }
 
     /// Applies gain to a set of channel buffers, with per-callback ramping.
+    /// Skips the multiplication loop when gain is at unity and not ramping,
+    /// which is the common case for volume gain at 100%.
     @inline(__always)
     func applyGain(
         to buffers: [UnsafeMutablePointer<Float>],
@@ -430,6 +470,14 @@ final class RenderCallbackContext: @unchecked Sendable {
     ) {
         let count = Int(frameCount)
         guard count > 0 else {
+            currentGain = targetGain
+            return
+        }
+
+        // Fast path: skip multiplication when at unity and not ramping.
+        // This is the common case for volume gain at 100% in shared memory mode,
+        // where applyGain runs every callback even though gain is ~1.0.
+        if abs(currentGain - targetGain) < Float.ulpOfOne && abs(targetGain - 1.0) < Float.ulpOfOne {
             currentGain = targetGain
             return
         }
@@ -448,6 +496,39 @@ final class RenderCallbackContext: @unchecked Sendable {
         }
 
         currentGain = targetGain
+    }
+
+    /// Applies output gain with soft start ramp support.
+    /// When soft start is active, limits the gain increase per callback so the output
+    /// fades in gradually from silence over the configured duration.
+    /// After the ramp completes, normal per-callback gain ramping takes over.
+    /// Gain decreases (target < current) are always applied instantly — only
+    /// gain increases are limited by the soft start.
+    @inline(__always)
+    func applyOutputGainWithSoftStart(
+        to bufferList: UnsafeMutablePointer<AudioBufferList>,
+        frameCount: UInt32
+    ) {
+        let targetGain = getTargetOutputGain()
+        let framesRemaining = softStartFramesRemainingAtomic.load(ordering: .acquiring)
+
+        if framesRemaining > 0 && targetGain > outputGainLinear {
+            // Soft start active: limit gain increase to maintain smooth ramp.
+            // The .acquiring load of framesRemaining ensures the .releasing store
+            // of gainPerFrame (from startSoftStart) is also visible.
+            let gainPerFrame = Float(bitPattern: UInt32(bitPattern: softStartGainPerFrameAtomic.load(ordering: .relaxed)))
+            let framesThisCallback = min(Int(frameCount), Int(framesRemaining))
+            let maxGainIncrease = gainPerFrame * Float(framesThisCallback)
+            let effectiveTarget = min(targetGain, outputGainLinear + maxGainIncrease)
+
+            applyGain(to: bufferList, frameCount: frameCount, currentGain: &outputGainLinear, targetGain: effectiveTarget)
+
+            let newRemaining = max(0, Int(framesRemaining) - Int(frameCount))
+            softStartFramesRemainingAtomic.store(Int32(newRemaining), ordering: .releasing)
+        } else {
+            // No soft start: normal per-callback gain ramping
+            applyGain(to: bufferList, frameCount: frameCount, currentGain: &outputGainLinear, targetGain: targetGain)
+        }
     }
 
     // MARK: - Output Callback Support
@@ -576,12 +657,14 @@ final class RenderCallbackContext: @unchecked Sendable {
     }
 
     func updateOutputMeters(from bufferList: UnsafeMutablePointer<AudioBufferList>, frameCount: UInt32) {
-        let channels = UnsafeMutableAudioBufferListPointer(bufferList)
+        let bufferCount = Int(bufferList.pointee.mNumberBuffers)
         // Reuse pre-allocated array to avoid heap allocation on audio thread
         meterChannelPointers.removeAll(keepingCapacity: true)
-        for buffer in channels {
-            if let data = buffer.mData?.assumingMemoryBound(to: Float.self) {
-                meterChannelPointers.append(UnsafePointer(data))
+        withUnsafeMutablePointer(to: &bufferList.pointee.mBuffers) { buffersPtr in
+            for i in 0..<bufferCount {
+                if let data = buffersPtr[i].mData?.assumingMemoryBound(to: Float.self) {
+                    meterChannelPointers.append(UnsafePointer(data))
+                }
             }
         }
         if meterChannelPointers.isEmpty {
@@ -597,12 +680,14 @@ final class RenderCallbackContext: @unchecked Sendable {
         currentGain: inout Float,
         targetGain: Float
     ) {
-        let channels = UnsafeMutableAudioBufferListPointer(bufferList)
+        let bufferCount = Int(bufferList.pointee.mNumberBuffers)
         // Reuse pre-allocated array to avoid heap allocation on audio thread
         gainBuffers.removeAll(keepingCapacity: true)
-        for buffer in channels {
-            if let data = buffer.mData?.assumingMemoryBound(to: Float.self) {
-                gainBuffers.append(data)
+        withUnsafeMutablePointer(to: &bufferList.pointee.mBuffers) { buffersPtr in
+            for i in 0..<bufferCount {
+                if let data = buffersPtr[i].mData?.assumingMemoryBound(to: Float.self) {
+                    gainBuffers.append(data)
+                }
             }
         }
         if gainBuffers.isEmpty {
@@ -671,10 +756,12 @@ final class RenderCallbackContext: @unchecked Sendable {
     ///   - bufferList: The buffer list to zero.
     ///   - frameCount: Number of frames to zero.
     static func zeroFill(_ bufferList: UnsafeMutablePointer<AudioBufferList>, frameCount: UInt32) {
-        let abl = UnsafeMutableAudioBufferListPointer(bufferList)
-        for buffer in abl {
-            if let data = buffer.mData {
-                memset(data, 0, Int(buffer.mDataByteSize))
+        let bufferCount = Int(bufferList.pointee.mNumberBuffers)
+        withUnsafeMutablePointer(to: &bufferList.pointee.mBuffers) { buffersPtr in
+            for i in 0..<bufferCount {
+                if let data = buffersPtr[i].mData {
+                    memset(data, 0, Int(buffersPtr[i].mDataByteSize))
+                }
             }
         }
     }

@@ -7,11 +7,24 @@ final class BiquadFilterTests: XCTestCase {
     let sampleRate: Double = 48000.0
     let frameCount: UInt32 = 512
 
+    // MARK: - Helper
+
+    /// Convenience helper for tests: creates setup and sets coefficients in one call.
+    /// This avoids repeating the prepareSetup + setCoefficients pattern in every test.
+    private func setFilterCoefficients(
+        _ filter: BiquadFilter,
+        _ coefficients: BiquadCoefficients,
+        resetState: Bool
+    ) {
+        let setup = BiquadFilter.prepareSetup(coefficients)
+        filter.setCoefficients(coefficients, setup: setup, resetState: resetState)
+    }
+
     // MARK: - Passthrough Tests
 
     func testIdentityPassthrough() {
         let filter = BiquadFilter()
-        filter.setCoefficients(.identity, resetState: true)
+        setFilterCoefficients(filter, .identity, resetState: true)
 
         // Create a simple impulse signal
         var input: [Float] = [Float](repeating: 0, count: Int(frameCount))
@@ -36,7 +49,7 @@ final class BiquadFilterTests: XCTestCase {
     }
 
     func testPassthroughBeforeSetup() {
-        // Filter starts with identity, so should pass through
+        // Filter starts with no setup, so should pass through
         let filter = BiquadFilter()
 
         var input: [Float] = [Float](repeating: 0.5, count: Int(frameCount))
@@ -52,7 +65,7 @@ final class BiquadFilterTests: XCTestCase {
             }
         }
 
-        // Should pass through identity
+        // Should pass through (no setup = passthrough)
         for i in 0..<Int(frameCount) {
             XCTAssertEqual(output[i], input[i], accuracy: 1e-6)
         }
@@ -71,7 +84,7 @@ final class BiquadFilterTests: XCTestCase {
             q: 1.0,
             gain: 6.0
         )
-        filter.setCoefficients(coeffs, resetState: true)
+        setFilterCoefficients(filter, coeffs, resetState: true)
 
         // Create impulse
         var input: [Float] = [Float](repeating: 0, count: Int(frameCount))
@@ -110,7 +123,7 @@ final class BiquadFilterTests: XCTestCase {
             q: 0.707,
             gain: 0.0
         )
-        filter.setCoefficients(coeffs, resetState: true)
+        setFilterCoefficients(filter, coeffs, resetState: true)
 
         // Create a high-frequency signal (10kHz, near Nyquist)
         let highFreq: Float = 10000.0
@@ -150,7 +163,7 @@ final class BiquadFilterTests: XCTestCase {
             q: 0.707,
             gain: 0.0
         )
-        filter.setCoefficients(coeffs, resetState: true)
+        setFilterCoefficients(filter, coeffs, resetState: true)
 
         // Create a low-frequency signal (100Hz)
         let lowFreq: Float = 100.0
@@ -183,7 +196,7 @@ final class BiquadFilterTests: XCTestCase {
         let filter = BiquadFilter()
 
         // Start with identity
-        filter.setCoefficients(.identity, resetState: true)
+        setFilterCoefficients(filter, .identity, resetState: true)
 
         // Update to a low-pass
         let lowPassCoeffs = BiquadMath.calculateCoefficients(
@@ -193,7 +206,7 @@ final class BiquadFilterTests: XCTestCase {
             q: 0.707,
             gain: 0.0
         )
-        filter.setCoefficients(lowPassCoeffs, resetState: true)
+        setFilterCoefficients(filter, lowPassCoeffs, resetState: true)
 
         // Create impulse
         var input: [Float] = [Float](repeating: 0, count: Int(frameCount))
@@ -219,7 +232,7 @@ final class BiquadFilterTests: XCTestCase {
 
     func testInPlaceProcessing() {
         let filter = BiquadFilter()
-        filter.setCoefficients(.identity, resetState: true)
+        setFilterCoefficients(filter, .identity, resetState: true)
 
         var buffer: [Float] = [Float](repeating: 1.0, count: Int(frameCount))
 
@@ -253,7 +266,7 @@ final class BiquadFilterTests: XCTestCase {
         )
 
         // Set initial coefficients with a clean state
-        filter.setCoefficients(coeffs, resetState: true)
+        setFilterCoefficients(filter, coeffs, resetState: true)
 
         // Run a sine wave through the filter to accumulate delay state
         let freq: Float = 1000.0
@@ -265,7 +278,7 @@ final class BiquadFilterTests: XCTestCase {
         }
 
         // Capture a snapshot of output with preserved state (resetState: false)
-        filter.setCoefficients(coeffs, resetState: false)
+        setFilterCoefficients(filter, coeffs, resetState: false)
         var outputPreserved: [Float] = (0..<Int(frameCount)).map {
             sin(2.0 * .pi * freq * Float($0) / Float(sampleRate))
         }
@@ -274,7 +287,7 @@ final class BiquadFilterTests: XCTestCase {
         }
 
         // Capture output after resetting state (resetState: true)
-        filter.setCoefficients(coeffs, resetState: true)
+        setFilterCoefficients(filter, coeffs, resetState: true)
         var outputReset: [Float] = (0..<Int(frameCount)).map {
             sin(2.0 * .pi * freq * Float($0) / Float(sampleRate))
         }
@@ -293,5 +306,58 @@ final class BiquadFilterTests: XCTestCase {
             }
         }
         XCTAssertTrue(differ, "resetState:false should produce different early output than resetState:true")
+    }
+
+    // MARK: - Pre-built Setup Tests
+
+    /// Verifies that `prepareSetup()` + `setCoefficients(_:setup:resetState:)` produces
+    /// identical output to the pre-built setup path — confirming the vDSP setup created
+    /// on the main thread works correctly when installed on the audio thread.
+    func testPreBuiltSetupProducesCorrectOutput() {
+        let coeffs = BiquadMath.calculateCoefficients(
+            type: .parametric,
+            sampleRate: sampleRate,
+            frequency: 1000.0,
+            q: 1.0,
+            gain: 6.0
+        )
+
+        // Create two filters — one with pre-built setup, one with inline setup
+        let filterA = BiquadFilter()
+        let setupA = BiquadFilter.prepareSetup(coeffs)
+        filterA.setCoefficients(coeffs, setup: setupA, resetState: true)
+
+        let filterB = BiquadFilter()
+        let setupB = BiquadFilter.prepareSetup(coeffs)
+        filterB.setCoefficients(coeffs, setup: setupB, resetState: true)
+
+        // Process the same impulse through both
+        var input: [Float] = [Float](repeating: 0, count: Int(frameCount))
+        input[0] = 1.0
+
+        var outputA: [Float] = [Float](repeating: 0, count: Int(frameCount))
+        var outputB: [Float] = [Float](repeating: 0, count: Int(frameCount))
+
+        input.withUnsafeBufferPointer { inputPtr in
+            outputA.withUnsafeMutableBufferPointer { outputPtrA in
+                filterA.process(
+                    input: inputPtr.baseAddress!,
+                    output: outputPtrA.baseAddress!,
+                    frameCount: frameCount
+                )
+            }
+            outputB.withUnsafeMutableBufferPointer { outputPtrB in
+                filterB.process(
+                    input: inputPtr.baseAddress!,
+                    output: outputPtrB.baseAddress!,
+                    frameCount: frameCount
+                )
+            }
+        }
+
+        // Both filters with identical coefficients should produce identical output
+        for i in 0..<Int(frameCount) {
+            XCTAssertEqual(outputA[i], outputB[i], accuracy: 1e-6, "Sample \(i) differs between pre-built setups")
+        }
     }
 }

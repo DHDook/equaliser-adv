@@ -95,6 +95,26 @@ final class SharedMemoryCapture: @unchecked Sendable {
     /// First poll after connection - skip accumulated data
     private nonisolated(unsafe) var firstPoll: Bool = true
 
+    // MARK: - Drift Monitoring
+
+    /// Countdown to next log interval check (avoids 64-bit modulo every callback)
+    private nonisolated(unsafe) var gapLogCountdown: UInt64 = 0
+
+    /// Gap at the start of the current logging window
+    private nonisolated(unsafe) var gapWindowStart: UInt32 = 0
+
+    /// Gap at the end of the current logging window
+    private nonisolated(unsafe) var gapWindowEnd: UInt32 = 0
+
+    /// Whether the first valid gap has been recorded in this window
+    private nonisolated(unsafe) var gapWindowStarted: Bool = false
+
+    /// Total overflow count for diagnostics
+    private nonisolated(unsafe) var totalOverflowCount: UInt32 = 0
+
+    /// Overflow count at last log interval — used to detect new overflows for anomaly logging
+    private nonisolated(unsafe) var lastOverflowCount: UInt32 = 0
+
     // MARK: - Initialization
 
     /// Creates a new shared memory capture instance.
@@ -213,6 +233,8 @@ final class SharedMemoryCapture: @unchecked Sendable {
         isConnected = false
         firstPoll = true
         readIndex = 0
+        totalOverflowCount = 0
+        lastOverflowCount = 0
     }
 
     // MARK: - Audio Thread Method
@@ -262,11 +284,41 @@ final class SharedMemoryCapture: @unchecked Sendable {
             availableFrames = SharedMemoryLayout.ringSize &- readIndex &+ writeIndex
         }
 
+        // Track gap for drift monitoring — lightweight per-callback bookkeeping
+        if !gapWindowStarted {
+            gapWindowStart = availableFrames
+            gapWindowStarted = true
+        }
+        gapWindowEnd = availableFrames
+
+        // Log only on anomaly: significant drift or overflow
+        // Countdown avoids 64-bit modulo division every callback
+        if gapLogCountdown == 0 {
+            gapLogCountdown = UInt64(48000 * 10 / UInt64(maxFrames))
+        }
+        gapLogCountdown &-= 1
+        if gapLogCountdown == 0 && gapWindowStarted {
+            let start = gapWindowStart
+            let end = gapWindowEnd
+            let delta = Int32(end) - Int32(start)
+            // Only log if there's meaningful drift (>1 buffer size) or an overflow occurred
+            let previousOverflowCount = lastOverflowCount
+            let currentOverflowCount = totalOverflowCount
+            if abs(delta) > Int32(maxFrames) || currentOverflowCount > previousOverflowCount {
+                Self.logger.warning("Ring drift detected (10s): start=\(start) end=\(end) delta=\(delta), overflows=\(currentOverflowCount)")
+            }
+            lastOverflowCount = currentOverflowCount
+            gapWindowStart = 0
+            gapWindowEnd = 0
+            gapWindowStarted = false
+        }
+
         // Detect overflow: if more than half the ring is unread, the driver has
         // likely lapped us and the data is corrupted. Resync rather than play garbage.
         // At 768kHz, half the ring (32768 frames) = ~43ms — still beyond normal jitter.
         // At 48kHz, half the ring = ~682ms.
         if availableFrames > SharedMemoryLayout.ringSize / 2 {
+            totalOverflowCount &+= 1
             readIndex = writeIndex
             return (0, sampleRate, channelCount)
         }
@@ -285,17 +337,18 @@ final class SharedMemoryCapture: @unchecked Sendable {
         let samplesPtr = shmAddr.advanced(by: SharedMemoryLayout.Header.samplesOffset)
             .assumingMemoryBound(to: Float.self)
 
-        // Deinterleave directly from ring buffer into destination buffers
+        // Deinterleave directly from ring buffer into destination buffers.
+        // Channel-outer loop gives sequential writes to each destination buffer,
+        // which is cache-friendly and allows the compiler to vectorize the inner loop.
         let intChannelCount = Int(channelCount)
         let intFramesToRead = Int(framesToRead)
 
         if readIndex &+ framesToRead <= SharedMemoryLayout.ringSize {
             // No wrap - single sequential read
             let srcPtr = samplesPtr.advanced(by: Int(readIndex * channelCount))
-            for frame in 0..<intFramesToRead {
-                for channel in 0..<intChannelCount {
-                    let interleavedIndex = frame * intChannelCount + channel
-                    destBuffers[channel][frame] = srcPtr[interleavedIndex]
+            for channel in 0..<intChannelCount {
+                for frame in 0..<intFramesToRead {
+                    destBuffers[channel][frame] = srcPtr[frame * intChannelCount + channel]
                 }
             }
         } else {
@@ -306,26 +359,32 @@ final class SharedMemoryCapture: @unchecked Sendable {
 
             // First part (from readIndex to end of ring buffer)
             let srcPtr1 = samplesPtr.advanced(by: Int(readIndex * channelCount))
-            for frame in 0..<firstPartInt {
-                for channel in 0..<intChannelCount {
-                    let interleavedIndex = frame * intChannelCount + channel
-                    destBuffers[channel][frame] = srcPtr1[interleavedIndex]
+            for channel in 0..<intChannelCount {
+                for frame in 0..<firstPartInt {
+                    destBuffers[channel][frame] = srcPtr1[frame * intChannelCount + channel]
                 }
             }
 
             // Second part (from start of ring buffer)
-            for frame in 0..<secondPartInt {
-                for channel in 0..<intChannelCount {
-                    let interleavedIndex = frame * intChannelCount + channel
-                    destBuffers[channel][firstPartInt + frame] = samplesPtr[interleavedIndex]
+            for channel in 0..<intChannelCount {
+                for frame in 0..<secondPartInt {
+                    destBuffers[channel][firstPartInt + frame] = samplesPtr[frame * intChannelCount + channel]
                 }
             }
         }
 
         // Update read position
-        readIndex = (readIndex &+ framesToRead) % SharedMemoryLayout.ringSize
+        readIndex = (readIndex &+ framesToRead) & (SharedMemoryLayout.ringSize &- 1)
 
         return (framesToRead, sampleRate, channelCount)
+    }
+
+    // MARK: - Drift Diagnostics
+
+    /// Returns drift diagnostic information for logging on pipeline stop.
+    func getDriftDiagnostics() -> (startGap: UInt32, endGap: UInt32, deltaGap: Int32, overflows: UInt32) {
+        let delta = Int32(gapWindowEnd) - Int32(gapWindowStart)
+        return (gapWindowStart, gapWindowEnd, delta, totalOverflowCount)
     }
 }
 

@@ -105,11 +105,11 @@ pendingCoefficients[i]     ▼                     ▼
 
 1. **Dirty-tracking**: `EQChain.applyPendingUpdates()` only rebuilds filters whose coefficients actually changed (using `Equatable` comparison). A single-band slider drag rebuilds **1 filter** instead of 64.
 
-2. **No allocation on audio thread**: All biquad setups and delay elements are pre-allocated at init. vDSP setup objects are only destroyed and recreated when coefficients change.
+2. **No allocation on audio thread**: All biquad setups and delay elements are pre-allocated at init. vDSP setup objects are pre-created on the main thread during staging, then swapped as pointers on the audio thread (no allocation). Old setups are destroyed after swap (free, no allocation).
 
 3. **Lock-free updates**: Main thread writes to `pendingCoefficients`, sets `hasPendingUpdate.store(true, .releasing)`. Audio thread calls `hasPendingUpdate.exchange(false, .acquiringAndReleasing)` and copies to `activeCoefficients`.
 
-4. **State preservation for slider drags**: `BiquadFilter.setCoefficients(_, resetState: false)` preserves delay elements during incremental coefficient changes (slider drags), avoiding audible clicks. `resetState: true` is only used for preset loads and sample rate changes.
+4. **State preservation for slider drags**: `BiquadFilter.setCoefficients(_:setup:resetState:)` receives a pre-built vDSP setup (created on main thread). `resetState: false` preserves delay elements during incremental coefficient changes (slider drags), avoiding audible clicks. `resetState: true` is only used for preset loads and sample rate changes.
 
 ### Coefficient Calculation (Main Thread Only)
 

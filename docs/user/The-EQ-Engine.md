@@ -162,8 +162,8 @@ hasPendingUpdate.store(true, .releasing)        │
                                                 │
                                                 ▼
                                 for each band where pending != active:
-                                    filter.setCoefficients(pending)
-                                    // vDSP setup recreated here
+                                    filter.setCoefficients(pending, setup: preBuiltSetup)
+                                    // vDSP setup pre-created on main thread
                                                 │
                                                 ▼
                                     process audio with new coefficients

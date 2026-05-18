@@ -32,9 +32,9 @@ final class HALIOManager {
     /// The currently configured device ID, or 0 if not set.
     private(set) var currentDeviceID: AudioDeviceID = 0
 
-    /// Whether the audio unit has been initialized via `AudioUnitInitialize`.
+    /// Whether the audio unit has been initialised via `AudioUnitInitialize`.
     /// Marked nonisolated(unsafe) to allow cleanup in deinit.
-    private nonisolated(unsafe) var isInitialized: Bool = false
+    private nonisolated(unsafe) var isInitialised: Bool = false
 
     /// Whether the audio unit is currently running (started).
     /// Marked nonisolated(unsafe) to allow cleanup in deinit.
@@ -65,7 +65,7 @@ final class HALIOManager {
             if isRunning {
                 AudioOutputUnitStop(unit)
             }
-            if isInitialized {
+            if isInitialised {
                 AudioUnitUninitialize(unit)
             }
             AudioComponentInstanceDispose(unit)
@@ -459,30 +459,30 @@ final class HALIOManager {
 
     /// Initializes the audio unit. Must be called after configure(), before start().
     /// - Returns: Success or an error describing the failure.
-    func initialize() -> Result<Void, HALIOError> {
+    func initialise() -> Result<Void, HALIOError> {
         guard let unit = audioUnit else {
             return .failure(.unitNotAvailable)
         }
 
         guard isConfigured else {
-            logger.error("Cannot initialize: audio unit not configured")
-            return .failure(.notInitialized)
+            logger.error("Cannot initialise: audio unit not configured")
+            return .failure(.notInitialised)
         }
 
-        guard !isInitialized else {
-            logger.debug("Audio unit already initialized")
+        guard !isInitialised else {
+            logger.debug("Audio unit already initialised")
             return .success(())
         }
 
         let status = AudioUnitInitialize(unit)
 
         if status != noErr {
-            logger.error("Failed to initialize audio unit: \(status)")
-            return .failure(.initializationFailed(status))
+            logger.error("Failed to initialise audio unit: \(status)")
+            return .failure(.initialisationFailed(status))
         }
 
-        isInitialized = true
-        logger.info("Audio unit initialized")
+        isInitialised = true
+        logger.info("Audio unit initialised")
         return .success(())
     }
 
@@ -493,9 +493,9 @@ final class HALIOManager {
             return .failure(.unitNotAvailable)
         }
 
-        guard isInitialized else {
-            logger.error("Cannot start: audio unit not initialized")
-            return .failure(.notInitialized)
+        guard isInitialised else {
+            logger.error("Cannot start: audio unit not initialised")
+            return .failure(.notInitialised)
         }
 
         guard !isRunning else {
@@ -539,24 +539,24 @@ final class HALIOManager {
         return .success(())
     }
 
-    /// Uninitializes the audio unit.
-    func uninitialize() {
+    /// Uninitialises the audio unit.
+    func uninitialise() {
         guard let unit = audioUnit else { return }
 
         if isRunning {
             _ = stop()
         }
 
-        if isInitialized {
+        if isInitialised {
             AudioUnitUninitialize(unit)
-            isInitialized = false
-            logger.debug("Audio unit uninitialized")
+            isInitialised = false
+            logger.debug("Audio unit uninitialised")
         }
     }
 
     /// Disposes of the audio unit, releasing all resources.
     private func dispose() {
-        uninitialize()
+        uninitialise()
 
         if let unit = audioUnit {
             AudioComponentInstanceDispose(unit)

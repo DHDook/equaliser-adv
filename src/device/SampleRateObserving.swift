@@ -18,4 +18,7 @@ protocol SampleRateObserving: AnyObject {
     
     /// Stops observing sample rate changes on a device
     func stopObservingSampleRateChanges(on deviceID: AudioDeviceID)
+
+    /// Returns the available nominal sample rates supported by a device
+    func getAvailableSampleRates(deviceID: AudioDeviceID) -> [AudioValueRange]?
 }

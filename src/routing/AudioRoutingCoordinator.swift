@@ -87,6 +87,11 @@ final class AudioRoutingCoordinator: ObservableObject {
     private var cancellables = Set<AnyCancellable>()
     let eqStager: EQCoefficientStager
 
+    /// Monitors for detecting when active routing devices are removed.
+    /// Provides faster, more reliable disconnect detection than the full device list diff.
+    private var inputDeviceAliveMonitor: DeviceAliveMonitor?
+    private var outputDeviceAliveMonitor: DeviceAliveMonitor?
+
     private let logger = Logger(subsystem: "net.knage.equaliser", category: "AudioRoutingCoordinator")
     
     // MARK: - Initialization
@@ -513,6 +518,9 @@ final class AudioRoutingCoordinator: ObservableObject {
             // Update sample rate for coefficient calculations
             eqStager.setCurrentSampleRate(sampleRate)
 
+            // Start device alive monitors for immediate disconnect detection
+            startDeviceAliveMonitors(inputDeviceID: inputDeviceID, outputDeviceID: outputDeviceID)
+
         case .configurationFailed(let error):
             routingStatus = .error("Configuration failed: \(error)")
             logger.error("Pipeline configuration failed: \(error)")
@@ -544,8 +552,21 @@ final class AudioRoutingCoordinator: ObservableObject {
         }
     }
 
+    /// Whether a stop is already in progress (used to prevent re-entrant stops).
+    /// Set when stopRouting() begins, cleared when continueStopRouting() finishes.
+    private var isStopping = false
+
     /// Stops the current audio routing and restores system defaults (automatic mode only).
+    /// Guarded against re-entrant calls — if a stop is already in progress, this is a no-op.
     func stopRouting() {
+        // Prevent double-stop when multiple device-removed notifications fire
+        // (e.g. both input and output devices disconnect simultaneously, or
+        // CoreAudio sends duplicate property change callbacks).
+        guard !isStopping else {
+            logger.debug("stopRouting ignored — already stopping")
+            return
+        }
+        isStopping = true
         logger.info("stopRouting called, manualMode=\(self.manualModeEnabled)")
 
         // Fade out before stopping to prevent audio pop
@@ -597,6 +618,7 @@ final class AudioRoutingCoordinator: ObservableObject {
         systemDefaultObserver.clearAppSettingFlagAfterDelay()
 
         routingStatus = .idle
+        isStopping = false
         logger.info("Routing stopped")
     }
     
@@ -759,27 +781,108 @@ final class AudioRoutingCoordinator: ObservableObject {
     private func stopPipeline() {
         pipelineManager.stopPipeline()
 
+        // Stop device alive monitors
+        stopDeviceAliveMonitors()
+
         // Clean up jack connection listener (Intel Macs)
         deviceChangeCoordinator.cleanupJackConnectionListener()
     }
-    
+
+    // MARK: - Device Alive Monitors
+
+    /// Starts monitoring both input and output devices for removal.
+    /// Uses `kAudioDevicePropertyDeviceIsAlive` for immediate, direct notification
+    /// rather than waiting for the full device list to refresh.
+    private func startDeviceAliveMonitors(inputDeviceID: AudioDeviceID, outputDeviceID: AudioDeviceID) {
+        // Monitor input device
+        let inputMonitor = DeviceAliveMonitor()
+        inputMonitor.startMonitoring(deviceID: inputDeviceID) { [weak self] in
+            guard let self = self else { return }
+            self.logger.warning("Input device removed during active routing")
+            self.routingStatus = .error("Input device removed")
+            self.stopRouting()
+        }
+        inputDeviceAliveMonitor = inputMonitor
+
+        // Monitor output device
+        let outputMonitor = DeviceAliveMonitor()
+        outputMonitor.startMonitoring(deviceID: outputDeviceID) { [weak self] in
+            guard let self = self else { return }
+            self.logger.warning("Output device removed during active routing")
+            self.routingStatus = .error("Output device removed")
+            self.stopRouting()
+        }
+        outputDeviceAliveMonitor = outputMonitor
+
+        logger.debug("Device alive monitors started")
+    }
+
+    /// Stops monitoring devices for removal.
+    private func stopDeviceAliveMonitors() {
+        inputDeviceAliveMonitor?.stopMonitoring()
+        inputDeviceAliveMonitor = nil
+        outputDeviceAliveMonitor?.stopMonitoring()
+        outputDeviceAliveMonitor = nil
+    }
+
     private func syncDriverSampleRate(to outputDeviceID: AudioDeviceID) {
         // Get output device's sample rate (prefer actual over nominal)
         let outputRate = sampleRateService.getActualSampleRate(deviceID: outputDeviceID)
             ?? sampleRateService.getNominalSampleRate(deviceID: outputDeviceID)
-        
+
         guard let targetRate = outputRate else {
             logger.warning("Could not determine output device sample rate")
             return
         }
-        
+
+        // Validate target rate is supported by the output device
+        let syncRate: Float64
+        if let availableRates = sampleRateService.getAvailableSampleRates(deviceID: outputDeviceID) {
+            if rateIsSupported(targetRate, in: availableRates) {
+                syncRate = targetRate
+            } else {
+                // Find closest supported rate
+                let adjusted = closestRate(to: targetRate, in: availableRates)
+                logger.warning("Output device doesn't support \(targetRate) Hz, using \(adjusted) Hz")
+                syncRate = adjusted
+            }
+        } else {
+            // Can't query available rates — proceed with target rate
+            syncRate = targetRate
+        }
+
         // Set driver to closest supported rate
-        guard let setRate = driverAccess.setDriverSampleRate(matching: targetRate) else {
+        guard let setRate = driverAccess.setDriverSampleRate(matching: syncRate) else {
             logger.error("Failed to sync driver sample rate")
             return
         }
-        
-        logger.info("Driver sample rate synced: \(setRate) Hz (output: \(targetRate) Hz)")
+
+        logger.info("Driver sample rate synced: \(setRate) Hz (output: \(syncRate) Hz)")
+    }
+
+    /// Checks if a sample rate falls within any of the available rate ranges.
+    private func rateIsSupported(_ rate: Float64, in ranges: [AudioValueRange]) -> Bool {
+        ranges.contains { rate >= $0.mMinimum && rate <= $0.mMaximum }
+    }
+
+    /// Finds the closest available sample rate to the target.
+    /// Extracts discrete rates (where mMinimum == mMaximum) and boundary rates from ranges.
+    /// In practice, macOS audio devices always report discrete rates, so the range
+    /// branch is rarely exercised. If a device did report a continuous range,
+    /// only the range boundaries would be considered — not interior values.
+    private func closestRate(to target: Float64, in ranges: [AudioValueRange]) -> Float64 {
+        let discreteRates = ranges.flatMap { range -> [Float64] in
+            // Discrete rates have mMinimum == mMaximum
+            if range.mMinimum == range.mMaximum {
+                return [range.mMinimum]
+            }
+            // For ranges, use the boundaries
+            return [range.mMinimum, range.mMaximum]
+        }
+
+        let sorted = discreteRates.sorted()
+        let closest = sorted.min(by: { abs($0 - target) < abs($1 - target) }) ?? target
+        return closest
     }
     
     private func setupSampleRateListener(for outputDeviceID: AudioDeviceID) {
@@ -798,9 +901,23 @@ final class AudioRoutingCoordinator: ObservableObject {
             guard case .active = self.routingStatus, !self.manualModeEnabled else { return }
             
             self.logger.info("Output device sample rate changed to \(newRate) Hz, re-syncing driver")
-            
+
+            // Validate rate against device's supported rates
+            let syncRate: Float64
+            if let availableRates = self.sampleRateService.getAvailableSampleRates(deviceID: outputDeviceID) {
+                if self.rateIsSupported(newRate, in: availableRates) {
+                    syncRate = newRate
+                } else {
+                    let adjusted = self.closestRate(to: newRate, in: availableRates)
+                    self.logger.warning("Output device doesn't support \(newRate) Hz after change, using \(adjusted) Hz")
+                    syncRate = adjusted
+                }
+            } else {
+                syncRate = newRate
+            }
+
             // Sync driver to new rate
-            if let setRate = driverAccess.setDriverSampleRate(matching: newRate) {
+            if let setRate = driverAccess.setDriverSampleRate(matching: syncRate) {
                 self.logger.info("Driver re-synced to \(setRate) Hz")
                 
                 // Reconfigure pipeline after rate change settles
