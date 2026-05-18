@@ -6,7 +6,7 @@ import CoreAudio
 
 /// Protocol for device volume and mute control services.
 @MainActor
-protocol VolumeControlling: AnyObject {
+protocol VolumeControlling: AnyObject, Sendable {
     /// Gets the virtual master volume for a device (0.0 - 1.0)
     func getVirtualMasterVolume(deviceID: AudioDeviceID) -> Float?
 
