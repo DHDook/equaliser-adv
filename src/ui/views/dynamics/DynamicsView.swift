@@ -335,9 +335,130 @@ private struct GainReductionMeterRow: View {
     }
 }
 
+// MARK: - Inline Header Widget
+
+/// Compact dynamics widget shown inline in the main window header, to the right of Gain Out.
+/// Shows enable toggles for the soft clipper and brickwall limiter, plus a live
+/// gain-reduction readout that polls the audio engine at 30 fps.
+struct DynamicsInlineView: View {
+    @EnvironmentObject var store: EqualiserStore
+    @State private var gainReductionDB: Float = 0.0
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Dynamics")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
+
+            HStack(alignment: .top, spacing: 20) {
+                // Soft clipper toggle
+                VStack(alignment: .leading, spacing: 4) {
+                    Toggle("Clipper", isOn: clipperEnabled)
+                        .toggleStyle(.switch)
+                        .controlSize(.mini)
+                        .fixedSize()
+                }
+
+                // Limiter toggle + ceiling + live GR bar
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(spacing: 6) {
+                        Toggle("Limiter", isOn: limiterEnabled)
+                            .toggleStyle(.switch)
+                            .controlSize(.mini)
+                            .fixedSize()
+
+                        Text(String(format: "%.1f dB", store.dynamicsConfig.limiter.ceilingDB))
+                            .font(.caption2.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                            .opacity(store.dynamicsConfig.limiter.isEnabled ? 1 : 0.4)
+                    }
+
+                    InlineGainReductionBar(gainReductionDB: gainReductionDB)
+                        .frame(width: 96)
+                        .opacity(store.dynamicsConfig.limiter.isEnabled ? 1 : 0.3)
+                }
+            }
+        }
+        .onReceive(
+            Timer.publish(every: 1.0 / 30.0, on: .main, in: .common).autoconnect()
+        ) { _ in
+            gainReductionDB = store.limiterGainReductionDB
+        }
+    }
+
+    // MARK: - Bindings
+
+    private var clipperEnabled: Binding<Bool> {
+        Binding(
+            get: { store.dynamicsConfig.softClipper.isEnabled },
+            set: { enabled in
+                var sc = store.dynamicsConfig.softClipper
+                sc.isEnabled = enabled
+                store.updateSoftClipper(sc)
+            }
+        )
+    }
+
+    private var limiterEnabled: Binding<Bool> {
+        Binding(
+            get: { store.dynamicsConfig.limiter.isEnabled },
+            set: { enabled in
+                var lim = store.dynamicsConfig.limiter
+                lim.isEnabled = enabled
+                store.updateLimiter(lim)
+            }
+        )
+    }
+}
+
+/// Compact 4 px-tall gain-reduction bar with a dB label, for inline header use.
+private struct InlineGainReductionBar: View {
+    let gainReductionDB: Float
+
+    private var magnitude: Double { Double(max(0.0, -gainReductionDB)) }
+    private var fill: Double { min(magnitude / 12.0, 1.0) }
+    private var colour: Color {
+        switch magnitude {
+        case ..<1.0:  return .green
+        case ..<3.0:  return .yellow
+        case ..<6.0:  return .orange
+        default:      return .red
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            GeometryReader { geo in
+                ZStack(alignment: .leading) {
+                    RoundedRectangle(cornerRadius: 2)
+                        .fill(Color(nsColor: .separatorColor).opacity(0.4))
+                        .frame(height: 4)
+                    RoundedRectangle(cornerRadius: 2)
+                        .fill(colour)
+                        .frame(width: geo.size.width * fill, height: 4)
+                        .animation(.linear(duration: 1.0 / 30.0), value: fill)
+                }
+            }
+            .frame(height: 4)
+
+            Text(String(format: "GR %.1f dB", gainReductionDB))
+                .font(.caption2.monospacedDigit())
+                .foregroundStyle(.secondary)
+        }
+    }
+}
+
 // MARK: - Preview
 
 #Preview("Dynamics Panel") {
     DynamicsView()
         .environmentObject(EqualiserStore())
+}
+
+#Preview("Dynamics Inline") {
+    DynamicsInlineView()
+        .environmentObject(EqualiserStore())
+        .padding()
 }

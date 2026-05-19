@@ -49,6 +49,9 @@ struct EQWindowView: View {
                     onOutputGainChange: { store.updateOutputGain($0) }
                 )
 
+                DynamicsInlineView()
+                    .padding(.leading, 24)
+
                 Spacer()
 
                 // Unified control panel - device pickers, status, and buttons grouped together
