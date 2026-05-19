@@ -352,33 +352,20 @@ struct DynamicsInlineView: View {
                 .lineLimit(1)
                 .fixedSize(horizontal: true, vertical: false)
 
-            HStack(alignment: .top, spacing: 20) {
-                // Soft clipper toggle
-                VStack(alignment: .leading, spacing: 4) {
-                    Toggle("Clipper", isOn: clipperEnabled)
-                        .toggleStyle(.switch)
-                        .controlSize(.mini)
-                        .fixedSize()
-                }
+            VStack(alignment: .leading, spacing: 6) {
+                Toggle("Clipper", isOn: clipperEnabled)
+                    .toggleStyle(.switch)
+                    .controlSize(.mini)
+                    .fixedSize()
 
-                // Limiter toggle + ceiling + live GR bar
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack(spacing: 6) {
-                        Toggle("Limiter", isOn: limiterEnabled)
-                            .toggleStyle(.switch)
-                            .controlSize(.mini)
-                            .fixedSize()
+                Toggle("Limiter", isOn: limiterEnabled)
+                    .toggleStyle(.switch)
+                    .controlSize(.mini)
+                    .fixedSize()
 
-                        Text(String(format: "%.1f dB", store.dynamicsConfig.limiter.ceilingDB))
-                            .font(.caption2.monospacedDigit())
-                            .foregroundStyle(.secondary)
-                            .opacity(store.dynamicsConfig.limiter.isEnabled ? 1 : 0.4)
-                    }
-
-                    InlineGainReductionBar(gainReductionDB: gainReductionDB)
-                        .frame(width: 96)
-                        .opacity(store.dynamicsConfig.limiter.isEnabled ? 1 : 0.3)
-                }
+                InlineGainReductionBar(gainReductionDB: gainReductionDB)
+                    .frame(width: 96)
+                    .opacity(store.dynamicsConfig.limiter.isEnabled ? 1 : 0.3)
             }
         }
         .onReceive(

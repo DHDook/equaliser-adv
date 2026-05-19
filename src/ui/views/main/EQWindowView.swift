@@ -238,6 +238,10 @@ struct EQWindowView: View {
                     Image(systemName: "waveform.path")
                 }
                 .help("Dynamics — soft clipper & brickwall limiter")
+                .popover(isPresented: $showDynamicsPanel, arrowEdge: .bottom) {
+                    DynamicsView()
+                        .environmentObject(store)
+                }
             }
             ToolbarItem(placement: .primaryAction) {
                 Button {
@@ -305,10 +309,6 @@ struct EQWindowView: View {
         }
         .sheet(isPresented: $showSaveSheet) {
             SavePresetSheet()
-                .environmentObject(store)
-        }
-        .sheet(isPresented: $showDynamicsPanel) {
-            DynamicsView()
                 .environmentObject(store)
         }
     }
