@@ -10,6 +10,7 @@ struct EQWindowView: View {
     @State private var metersEnabledUI = false
     @State private var showDriverSheet = true
     @State private var showSaveSheet = false
+    @State private var showDynamicsPanel = false
 
     /// Whether the driver installation overlay should be shown.
     private var needsDriverInstallation: Bool {
@@ -229,6 +230,14 @@ struct EQWindowView: View {
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Button {
+                    showDynamicsPanel.toggle()
+                } label: {
+                    Image(systemName: "waveform.path")
+                }
+                .help("Dynamics — soft clipper & brickwall limiter")
+            }
+            ToolbarItem(placement: .primaryAction) {
+                Button {
                     openSettings()
                 } label: {
                     Image(systemName: "gearshape")
@@ -293,6 +302,10 @@ struct EQWindowView: View {
         }
         .sheet(isPresented: $showSaveSheet) {
             SavePresetSheet()
+                .environmentObject(store)
+        }
+        .sheet(isPresented: $showDynamicsPanel) {
+            DynamicsView()
                 .environmentObject(store)
         }
     }
