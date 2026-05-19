@@ -238,6 +238,7 @@ final class EqualiserStore: ObservableObject {
         set {
             eqConfiguration.dynamicsConfig = newValue
             routingCoordinator.updateDynamicsConfig(newValue)
+            presetManager.markAsModified()
         }
     }
 
@@ -437,7 +438,8 @@ final class EqualiserStore: ObservableObject {
                 activeBandCount: eqConfiguration.activeBandCount,
                 bands: eqConfiguration.bands,
                 inputGain: eqConfiguration.inputGain,
-                outputGain: eqConfiguration.outputGain
+                outputGain: eqConfiguration.outputGain,
+                dynamicsConfig: eqConfiguration.dynamicsConfig
             )
             if !matches {
                 presetManager.isModified = true
@@ -582,12 +584,17 @@ final class EqualiserStore: ObservableObject {
     
     /// Loads a preset and applies it to the EQ configuration.
     func loadPreset(_ preset: Preset) {
-        // Apply settings to EQ configuration
+        // Apply settings to EQ configuration (also sets eqConfiguration.dynamicsConfig)
         presetManager.applyPreset(preset, to: eqConfiguration)
 
         // Apply input/output gains
         inputGain = preset.settings.inputGain
         outputGain = preset.settings.outputGain
+
+        // Push dynamics config to the running pipeline (pipeline rebuild via
+        // reapplyConfiguration also picks it up, but an explicit push ensures
+        // the processor is updated even when no rebuild occurs).
+        routingCoordinator.updateDynamicsConfig(preset.settings.dynamicsConfig)
 
         // Reapply to audio engine if active
         routingCoordinator.reapplyConfiguration()

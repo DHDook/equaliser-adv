@@ -3,7 +3,7 @@ import Foundation
 // MARK: - Soft Clipper Configuration
 
 /// Configuration for the soft clipper wave-shaper stage.
-struct SoftClipperConfig: Codable, Sendable {
+struct SoftClipperConfig: Codable, Equatable, Sendable {
     /// Whether the soft clipper is active. Default OFF.
     var isEnabled: Bool = false
 
@@ -25,7 +25,7 @@ struct SoftClipperConfig: Codable, Sendable {
 // MARK: - Brickwall Limiter Configuration
 
 /// Configuration for the look-ahead brickwall limiter.
-struct BrickwallLimiterConfig: Codable, Sendable {
+struct BrickwallLimiterConfig: Codable, Equatable, Sendable {
     /// Whether the limiter is active. Default ON.
     var isEnabled: Bool = true
 
@@ -48,7 +48,7 @@ struct BrickwallLimiterConfig: Codable, Sendable {
 
 /// Top-level dynamics configuration: soft clipper followed by brickwall limiter.
 /// Placed at the end of the signal chain after all EQ and gain stages.
-struct DynamicsConfig: Codable, Sendable {
+struct DynamicsConfig: Codable, Equatable, Sendable {
     var softClipper: SoftClipperConfig = .default
     var limiter: BrickwallLimiterConfig = .default
 

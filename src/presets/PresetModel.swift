@@ -81,6 +81,7 @@ struct PresetSettings: Codable, Sendable {
         case channelMode
         case rightBands
         case bands  // v1: decode as leftBands and rightBands
+        case dynamicsConfig
     }
 
     var globalBypass: Bool
@@ -90,6 +91,9 @@ struct PresetSettings: Codable, Sendable {
     var channelMode: String
     var leftBands: [PresetBand]
     var rightBands: [PresetBand]
+    /// Dynamics configuration (soft clipper + brickwall limiter).
+    /// Missing in presets saved before this field was added; defaults to `.default`.
+    var dynamicsConfig: DynamicsConfig
 
     /// Creates PresetSettings with default values (empty bands).
     init(
@@ -98,7 +102,8 @@ struct PresetSettings: Codable, Sendable {
         outputGain: Float = 0,
         channelMode: String = "linked",
         leftBands: [PresetBand] = [],
-        rightBands: [PresetBand] = []
+        rightBands: [PresetBand] = [],
+        dynamicsConfig: DynamicsConfig = .default
     ) {
         self.globalBypass = globalBypass
         self.inputGain = inputGain
@@ -108,6 +113,7 @@ struct PresetSettings: Codable, Sendable {
         self.rightBands = rightBands
         // Derive activeBandCount from left bands (linked mode uses same count for both)
         self.activeBandCount = leftBands.count
+        self.dynamicsConfig = dynamicsConfig
     }
 
     init(from decoder: Decoder) throws {
@@ -159,6 +165,9 @@ struct PresetSettings: Codable, Sendable {
             leftBands = bandsArray
             rightBands = bandsArray
         }
+
+        // Added after initial release — missing in older presets; safe to default.
+        dynamicsConfig = try container.decodeIfPresent(DynamicsConfig.self, forKey: .dynamicsConfig) ?? .default
     }
 
     func encode(to encoder: Encoder) throws {
@@ -169,6 +178,7 @@ struct PresetSettings: Codable, Sendable {
         try container.encode(channelMode, forKey: .channelMode)
         try container.encode(leftBands, forKey: .leftBands)
         try container.encode(rightBands, forKey: .rightBands)
+        try container.encode(dynamicsConfig, forKey: .dynamicsConfig)
         // Note: We don't encode the legacy "bands" key - clean break for new saves
     }
 }
@@ -323,7 +333,8 @@ struct Preset: Codable, Sendable, Identifiable {
             outputGain: outputGain,
             channelMode: config.channelMode.rawValue,
             leftBands: config.leftState.userEQ.bands.prefix(leftActiveCount).map { PresetBand(from: $0) },
-            rightBands: config.rightState.userEQ.bands.prefix(rightActiveCount).map { PresetBand(from: $0) }
+            rightBands: config.rightState.userEQ.bands.prefix(rightActiveCount).map { PresetBand(from: $0) },
+            dynamicsConfig: config.dynamicsConfig
         )
     }
 

@@ -372,6 +372,9 @@ final class PresetManager: ObservableObject {
             config.updateBandFilterType(index: index, filterType: band.filterType, channel: .right)
             config.updateBandBypass(index: index, bypass: band.bypass, channel: .right)
         }
+
+        // Apply dynamics configuration
+        config.dynamicsConfig = preset.settings.dynamicsConfig
     }
 
     /// Sets the selected preset and persists the selection.
@@ -400,7 +403,8 @@ final class PresetManager: ObservableObject {
         activeBandCount: Int,
         bands: [EQBandConfiguration],
         inputGain: Float,
-        outputGain: Float
+        outputGain: Float,
+        dynamicsConfig: DynamicsConfig
     ) -> Bool {
         guard let presetName = selectedPresetName,
               let preset = preset(named: presetName) else {
@@ -411,7 +415,8 @@ final class PresetManager: ObservableObject {
 
         guard settings.activeBandCount == activeBandCount,
               settings.inputGain == inputGain,
-              settings.outputGain == outputGain else {
+              settings.outputGain == outputGain,
+              settings.dynamicsConfig == dynamicsConfig else {
             return false
         }
 
