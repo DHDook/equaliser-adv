@@ -30,7 +30,8 @@ struct DynamicsView: View {
             .formStyle(.grouped)
         }
         // item 10: width +25% (440 → 550); item 5: minHeight avoids scrolling
-        .frame(width: 550, minHeight: 520)
+        .frame(width: 550)
+        .frame(minHeight: 520)
         // item 3: solid background so slider thumbs render crisply against the popover
         .background(Color(nsColor: .windowBackgroundColor))
         .onReceive(
