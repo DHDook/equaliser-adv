@@ -2,32 +2,32 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-        <key>CFBundleDevelopmentRegion</key>
-        <string>en</string>
-        <key>CFBundleDisplayName</key>
-        <string>Equaliser Advanced</string>
-        <key>CFBundleExecutable</key>
-        <string>Equaliser</string>
-        <key>CFBundleIconFile</key>
-        <string>AppIcon</string>
-        <key>CFBundleIdentifier</key>
-        <string>net.knage.equaliser</string>
-        <key>CFBundleInfoDictionaryVersion</key>
-        <string>6.0</string>
-        <key>CFBundleName</key>
-        <string>Equaliser Advanced</string>
-        <key>CFBundlePackageType</key>
-        <string>APPL</string>
-        <key>CFBundleShortVersionString</key>
-        <string>1.3.2</string>
-        <key>CFBundleVersion</key>
-        <string>d73ca05</string>
-        <key>LSMinimumSystemVersion</key>
-        <string>15.0</string>
-        <key>LSUIElement</key>
-        <true/>
-        <key>NSMicrophoneUsageDescription</key>
-        <string>Microphone permission is optional.
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en</string>
+	<key>CFBundleDisplayName</key>
+	<string>Equaliser Advanced</string>
+	<key>CFBundleExecutable</key>
+	<string>Equaliser</string>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
+	<key>CFBundleIdentifier</key>
+	<string>net.knage.equaliser</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>Equaliser Advanced</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>0.0.0-20260520.3271268</string>
+	<key>CFBundleVersion</key>
+	<string>3271268</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>15.0</string>
+	<key>LSUIElement</key>
+	<true/>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Microphone permission is optional.
 
 Grant only for advanced features.</string>
 </dict>
