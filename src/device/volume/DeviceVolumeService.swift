@@ -365,52 +365,83 @@ final class DeviceVolumeService: VolumeControlling {
     }
     
     // MARK: - Mute Observation
-    
+
     func observeMuteChanges(on deviceID: AudioDeviceID, handler: @escaping (Bool) -> Void) {
-        var address = AudioObjectPropertyAddress(
+        // Primary listener: kAudioHardwareServiceDeviceProperty_VirtualMasterMute.
+        // Works for most hardware output devices (speakers, headphones, AirPods).
+        var primaryAddress = AudioObjectPropertyAddress(
             mSelector: kAudioHardwareServiceDeviceProperty_VirtualMasterMute,
             mScope: kAudioDevicePropertyScopeOutput,
             mElement: kAudioObjectPropertyElementMain
         )
-        
-        let block: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
-            guard let self = self else { return }
-            if let muted = self.getMute(deviceID: deviceID) {
-                Task { @MainActor in
-                    handler(muted)
-                }
-            }
+
+        let primaryBlock: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
+            guard let self else { return }
+            // Try AHS virtual master mute first, fall back to device-level mute
+            // so the handler fires even when the device only reports via 'mute'.
+            let muted = self.getMute(deviceID: deviceID)
+                     ?? self.getDeviceMute(deviceID: deviceID)
+                     ?? false
+            Task { @MainActor in handler(muted) }
         }
-        
-        muteListenerBlocks[deviceID] = block
-        
-        let status = AudioObjectAddPropertyListenerBlock(
-            deviceID,
-            &address,
-            listenerQueue,
-            block
+
+        muteListenerBlocks[deviceID] = primaryBlock
+
+        let primaryStatus = AudioObjectAddPropertyListenerBlock(
+            deviceID, &primaryAddress, listenerQueue, primaryBlock
         )
-        
-        if status != noErr {
-            logger.warning("Failed to observe mute changes on device \(deviceID): \(status)")
+        if primaryStatus != noErr {
+            logger.warning("observeMuteChanges: VirtualMasterMute listener failed on device \(deviceID): \(primaryStatus)")
         }
+
+        // Secondary listener: kAudioDevicePropertyMute ('mute').
+        // Virtual drivers based on BlackHole dispatch mute via this property
+        // rather than kAudioHardwareServiceDeviceProperty_VirtualMasterMute.
+        // Without this listener the OS mute button is silently ignored in
+        // Automatic mode (where the driver is the system-default output).
+        var secondaryAddress = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyMute,
+            mScope: kAudioDevicePropertyScopeOutput,
+            mElement: kAudioObjectPropertyElementMain
+        )
+
+        let secondaryBlock: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
+            guard let self else { return }
+            let muted = self.getDeviceMute(deviceID: deviceID)
+                     ?? self.getMute(deviceID: deviceID)
+                     ?? false
+            Task { @MainActor in handler(muted) }
+        }
+
+        let secondaryStatus = AudioObjectAddPropertyListenerBlock(
+            deviceID, &secondaryAddress, listenerQueue, secondaryBlock
+        )
+        if secondaryStatus == noErr {
+            virtualMuteListenerBlocks[deviceID] = secondaryBlock
+            logger.info("observeMuteChanges: kAudioDevicePropertyMute listener registered on device \(deviceID)")
+        }
+        // Silently skip secondary registration when the device does not
+        // expose kAudioDevicePropertyMute (normal for hardware output devices).
     }
-    
+
     func stopObservingMuteChanges(on deviceID: AudioDeviceID) {
-        guard let block = muteListenerBlocks.removeValue(forKey: deviceID) else { return }
-        
-        var address = AudioObjectPropertyAddress(
-            mSelector: kAudioHardwareServiceDeviceProperty_VirtualMasterMute,
-            mScope: kAudioDevicePropertyScopeOutput,
-            mElement: kAudioObjectPropertyElementMain
-        )
-        
-        AudioObjectRemovePropertyListenerBlock(
-            deviceID,
-            &address,
-            listenerQueue,
-            block
-        )
+        if let block = muteListenerBlocks.removeValue(forKey: deviceID) {
+            var address = AudioObjectPropertyAddress(
+                mSelector: kAudioHardwareServiceDeviceProperty_VirtualMasterMute,
+                mScope: kAudioDevicePropertyScopeOutput,
+                mElement: kAudioObjectPropertyElementMain
+            )
+            AudioObjectRemovePropertyListenerBlock(deviceID, &address, listenerQueue, block)
+        }
+
+        if let block = virtualMuteListenerBlocks.removeValue(forKey: deviceID) {
+            var address = AudioObjectPropertyAddress(
+                mSelector: kAudioDevicePropertyMute,
+                mScope: kAudioDevicePropertyScopeOutput,
+                mElement: kAudioObjectPropertyElementMain
+            )
+            AudioObjectRemovePropertyListenerBlock(deviceID, &address, listenerQueue, block)
+        }
     }
     
     // MARK: - Private Helpers - Volume Control Objects
