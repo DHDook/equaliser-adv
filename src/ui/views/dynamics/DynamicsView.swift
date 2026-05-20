@@ -1,6 +1,7 @@
 // DynamicsView.swift
 // Controls for the dual-stage dynamics processor: soft clipper + brickwall limiter.
 
+import AppKit
 import SwiftUI
 
 // MARK: - Main View
@@ -32,8 +33,14 @@ struct DynamicsView: View {
         // item 10: width +25% (440 → 550); item 5: minHeight avoids scrolling
         .frame(width: 550)
         .frame(minHeight: 520)
-        // item 3: solid background so slider thumbs render crisply against the popover
-        .background(Color(nsColor: .windowBackgroundColor))
+        .onAppear {
+            // item 4: macOS auto-focuses the first .focused() control in a new popover.
+            // Clearing first-responder after layout settles prevents the Drive field from
+            // being highlighted and blocking slider interaction on open.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                NSApp.keyWindow?.makeFirstResponder(nil)
+            }
+        }
         .onReceive(
             Timer.publish(every: 1.0 / 30.0, on: .main, in: .common).autoconnect()
         ) { _ in
@@ -274,12 +281,16 @@ private struct DynamicsSliderRow: View {
         // item 6: explicit .center alignment keeps TextField on the same baseline as the slider track
         HStack(alignment: .center, spacing: 8) {
             // item 9: font size +2pt (caption ≈ 11pt → 13pt)
+            // item 2: fixed width (not minWidth) so the label cannot push the row wider
             Text(label)
                 .font(.system(size: 13))
                 .foregroundStyle(.secondary)
-                .frame(minWidth: 72, alignment: .leading)
+                .lineLimit(1)
+                .frame(width: 72, alignment: .leading)
 
             if leftEndLabel != nil || rightEndLabel != nil {
+                // item 2: layoutPriority(1) ensures the slider claims all remaining space
+                // so neither the label nor the value field can push the row wider.
                 Slider(value: snappedBinding, in: range) {
                     EmptyView()
                 } minimumValueLabel: {
@@ -292,9 +303,11 @@ private struct DynamicsSliderRow: View {
                         .foregroundStyle(.tertiary)
                 }
                 .controlSize(.small)
+                .layoutPriority(1)
             } else {
                 Slider(value: snappedBinding, in: range)
                     .controlSize(.small)
+                    .layoutPriority(1)
             }
 
             // item 8: fixed width 80 keeps the row width stable for 1-, 2-, and 3-digit values
@@ -307,7 +320,12 @@ private struct DynamicsSliderRow: View {
                 .controlSize(.small)
                 .frame(width: 80)
                 .focused($isFieldFocused)
-                .onSubmit { commitText() }
+                // item 5: resign focus after Enter so the slider immediately
+                // reflects position changes without requiring another field click.
+                .onSubmit {
+                    commitText()
+                    isFieldFocused = false
+                }
                 .onChange(of: value, initial: true) { _, newValue in
                     if !isFieldFocused {
                         textValue = formatValue(newValue)

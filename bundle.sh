@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
 BUILD_DIR="$ROOT_DIR/.build/release"
 EXECUTABLE_NAME="Equaliser"
-APP_NAME="Equaliser"
+APP_NAME="Equaliser Advanced"
 RELEASE_DIR="$ROOT_DIR/release"
 APP_BUNDLE="$RELEASE_DIR/${APP_NAME}.app"
 INFO_PLIST_SRC="$ROOT_DIR/src/app/Info.plist"
@@ -88,7 +88,7 @@ build_app() {
     "$APP_BUNDLE"
 
   echo "Bundle created: $APP_BUNDLE"
-  echo "You can now copy it to /Applications to run Equaliser normally."
+  echo "You can now copy it to /Applications to run Equaliser Advanced normally."
 }
 
 show_usage() {
