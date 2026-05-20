@@ -1,5 +1,4 @@
 name: Build & Release
-
 on:
   push:
     branches:
@@ -7,22 +6,23 @@ on:
       - dev
     tags:
       - 'v*.*.*'
-
 permissions:
   contents: write
-
 jobs:
   build:
     runs-on: macos-26
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
-
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Configure git identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
       - name: Install dependencies
         run: |
           brew install librsvg create-dmg
-
       - name: Determine version
         id: version
         run: |
@@ -57,19 +57,23 @@ jobs:
           /usr/libexec/PlistBuddy \
             -c "Set :CFBundleVersion ${SHORT_SHA}" \
             src/app/Info.plist
-
+      - name: Commit version stamp
+        run: |
+          git add src/app/Info.plist
+          git diff --cached --quiet || git commit -m "ci: stamp version ${{ steps.version.outputs.version }} [skip ci]"
+          git push
       - name: Build app bundle
         run: ./bundle.sh
       - name: Create DMG
         run: |
           create-dmg \
-            --volname "Equaliser" \
+            --volname "Equaliser Advanced" \
             --app-drop-link 140 120 \
-            --icon "Equaliser.app" 420 120 \
+            --icon "Equaliser Advanced.app" 420 120 \
             --window-size 560 400 \
             --icon-size 80 \
             "release/${{ steps.version.outputs.dmg_name }}.dmg" \
-            "release/Equaliser.app"
+            "release/Equaliser Advanced.app"
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
