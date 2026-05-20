@@ -12,7 +12,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PLIST_PATH="$ROOT_DIR/src/app/Info.plist"
-APP_NAME="Equaliser"
+APP_NAME="Equaliser Advanced"
 RELEASE_DIR="$ROOT_DIR/release"
 APP_BUNDLE="$RELEASE_DIR/$APP_NAME.app"
 

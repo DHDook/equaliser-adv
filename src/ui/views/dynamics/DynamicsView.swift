@@ -296,11 +296,11 @@ private struct DynamicsSliderRow: View {
                 } minimumValueLabel: {
                     Text(leftEndLabel ?? "")
                         .font(.system(size: 11))
-                        .foregroundStyle(.tertiary)
+                        .foregroundStyle(.secondary)
                 } maximumValueLabel: {
                     Text(rightEndLabel ?? "")
                         .font(.system(size: 11))
-                        .foregroundStyle(.tertiary)
+                        .foregroundStyle(.secondary)
                 }
                 .controlSize(.small)
                 .layoutPriority(1)
