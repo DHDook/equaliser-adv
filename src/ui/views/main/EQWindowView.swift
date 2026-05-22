@@ -5,6 +5,7 @@ import Combine
 struct EQWindowView: View {
     @Environment(\.openSettings) private var openSettings
     @EnvironmentObject var store: EqualiserStore
+    @EnvironmentObject var windowActivation: WindowActivationController
     @StateObject private var driverManager = DriverManager.shared
     @State private var showCompareHelp = false
     @State private var metersEnabledUI = false
@@ -242,9 +243,11 @@ struct EQWindowView: View {
             }
         )
         .onAppear {
+            windowActivation.windowBecameVisible(.equaliser)
             store.meterStore.windowBecameVisible()
         }
         .onDisappear {
+            windowActivation.windowBecameHidden(.equaliser)
             store.meterStore.windowBecameHidden()
         }
         .sheet(isPresented: $showDriverSheet) {
@@ -333,4 +336,5 @@ struct SystemEQToggleView: View {
 #Preview("EQ Window") {
     EQWindowView()
         .environmentObject(EqualiserStore())
+        .environmentObject(WindowActivationController())
 }

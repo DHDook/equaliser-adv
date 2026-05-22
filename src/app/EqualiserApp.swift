@@ -16,6 +16,7 @@ final class AppCleanupDelegate: NSObject, NSApplicationDelegate {
 @main
 struct EqualiserMain: App {
     @StateObject private var store = EqualiserStore()
+    @StateObject private var windowActivation = WindowActivationController()
     @NSApplicationDelegateAdaptor(AppCleanupDelegate.self) var appDelegate
 
     init() {
@@ -24,11 +25,6 @@ struct EqualiserMain: App {
         // Accessing it in init() causes SwiftUI to create two instances.
         // Wire appDelegate.setStore(store) in body using .onAppear instead.
 
-        // Hide dock icon permanently - this is a menu bar app
-        // Defer until NSApp is available (it's nil during init)
-        DispatchQueue.main.async {
-            NSApp.setActivationPolicy(.accessory)
-        }
         // Note: Microphone permission is NOT requested here.
         // It's only requested when needed (HAL input capture mode or manual mode).
         // Shared memory capture (default) does NOT require microphone permission.
@@ -39,6 +35,7 @@ struct EqualiserMain: App {
         Window("Equaliser", id: "equaliser") {
             EQWindowView()
                 .environmentObject(store)
+                .environmentObject(windowActivation)
         }
         .defaultPosition(.center)
         .defaultSize(width: 1060, height: 530)
@@ -62,7 +59,9 @@ struct EqualiserMain: App {
         MenuBarExtra("Equaliser", systemImage: "slider.vertical.3") {
             MenuBarContentView()
                 .environmentObject(store)
+                .environmentObject(windowActivation)
                 .onAppear {
+                    windowActivation.launchAsMenuBarApp()
                     // Wire up appDelegate reference after @StateObject is initialized.
                     // MenuBarExtra is always visible, so this will always fire.
                     appDelegate.setStore(store)
@@ -74,6 +73,7 @@ struct EqualiserMain: App {
         Settings {
             SettingsView()
                 .environmentObject(store)
+                .environmentObject(windowActivation)
         }
     }
 }
