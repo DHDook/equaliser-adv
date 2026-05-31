@@ -1,0 +1,50 @@
+Run ./bundle.sh
+Generating app icon...
+Icon generated: /Users/runner/work/equaliser-adv/equaliser-adv/.build/AppIcon.icns
+Building virtual audio driver...
+[INFO] Building Equaliser driver...
+[INFO] Creating bundle structure...
+[INFO] Compiling driver for arm64 and x86_64...
+[INFO] Creating universal binary...
+[INFO] Installing Info.plist...
+[INFO] Icon copied to driver bundle
+[INFO] Code signing driver bundle...
+/Users/runner/work/equaliser-adv/equaliser-adv/driver/.build/Equaliser.driver: replacing existing signature
+[INFO] Build complete: /Users/runner/work/equaliser-adv/equaliser-adv/driver/.build/Equaliser.driver
+[INFO] Bundle size: 316K
+Building Swift app...
+Fetching https://github.com/apple/swift-atomics.git
+[1/1820] Fetching swift-atomics
+Fetched https://github.com/apple/swift-atomics.git from cache (0.58s)
+Creating working copy for https://github.com/apple/swift-atomics.git
+Working copy of https://github.com/apple/swift-atomics.git resolved at 1.3.0
+Building for production...
+[0/6] Write sources
+[2/6] Write swift-version-3EF66BD97523F833.txt
+[3/6] Compiling _AtomicsShims.c
+[5/7] Compiling Atomics OptionalRawRepresentable.swift
+[6/8] Compiling Equaliser AppStateSnapshot.swift
+/Users/runner/work/equaliser-adv/equaliser-adv/src/device/volume/VolumeManager.swift:61:5: warning: 'nonisolated(unsafe)' is unnecessary for a constant with 'Sendable' type 'any VolumeControlling', consider removing it
+ 59 |     /// nonisolated(unsafe) since it's a let set once in init and never changes,
+ 60 |     /// and setDeviceVolumeScalar is nonisolated.
+ 61 |     nonisolated(unsafe) let volumeService: VolumeControlling
+    |     `- warning: 'nonisolated(unsafe)' is unnecessary for a constant with 'Sendable' type 'any VolumeControlling', consider removing it
+ 62 |     private let logger = Logger(subsystem: "net.knage.equaliser", category: "VolumeManager")
+ 63 | 
+
+/Users/runner/work/equaliser-adv/equaliser-adv/src/pipeline/RenderCallbackContext.swift:649:17: error: cannot find 'THREAD_TIME_CONSTRAINT_POLICY_COUNT' in scope
+647 |                 thread_policy_flavor_t(THREAD_TIME_CONSTRAINT_POLICY),
+648 |                 UnsafeMutableRawPointer(policyPtr).assumingMemoryBound(to: integer_t.self),
+649 |                 THREAD_TIME_CONSTRAINT_POLICY_COUNT
+    |                 `- error: cannot find 'THREAD_TIME_CONSTRAINT_POLICY_COUNT' in scope
+650 |             )
+651 |         }
+
+/Applications/Xcode_26.4.1.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.4.sdk/usr/include/mach/thread_policy.h:164:9: note: macro 'THREAD_TIME_CONSTRAINT_POLICY_COUNT' unavailable: structure not supported
+162 |         *thread_time_constraint_policy_t;
+163 | 
+164 | #define THREAD_TIME_CONSTRAINT_POLICY_COUNT     ((mach_msg_type_number_t) \
+    |         `- note: macro 'THREAD_TIME_CONSTRAINT_POLICY_COUNT' unavailable: structure not supported
+165 | 	(sizeof (thread_time_constraint_policy_data_t) / sizeof (integer_t)))
+166 | 
+Error: Process completed with exit code 1.

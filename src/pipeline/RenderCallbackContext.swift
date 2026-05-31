@@ -641,12 +641,21 @@ final class RenderCallbackContext: @unchecked Sendable {
         )
 
         let selfThread = mach_thread_self()
+        // THREAD_TIME_CONSTRAINT_POLICY_COUNT is a sizeof()-based C macro that Swift cannot
+        // import directly ("structure not supported").  Reproduce it using MemoryLayout,
+        // which is identical to the macro's definition:
+        //   sizeof(thread_time_constraint_policy_data_t) / sizeof(integer_t)
+        let policyCount = mach_msg_type_number_t(
+            MemoryLayout<thread_time_constraint_policy_data_t>.size /
+            MemoryLayout<integer_t>.size
+        )
+
         withUnsafeMutablePointer(to: &policy) { policyPtr in
             _ = thread_policy_set(
                 selfThread,
                 thread_policy_flavor_t(THREAD_TIME_CONSTRAINT_POLICY),
                 UnsafeMutableRawPointer(policyPtr).assumingMemoryBound(to: integer_t.self),
-                THREAD_TIME_CONSTRAINT_POLICY_COUNT
+                policyCount
             )
         }
         // Release the send-right returned by mach_thread_self().
