@@ -6,6 +6,7 @@ enum SettingsTab: String {
     case display = "display"
     case driver = "driver"
     case userGuide = "userGuide"
+    case roomCalibration = "roomCalibration"
 }
 
 struct SettingsView: View {
@@ -39,8 +40,14 @@ struct SettingsView: View {
                     Label("User Guide", systemImage: "book")
                 }
                 .tag(SettingsTab.userGuide)
+
+            RoomCalibrationTab()
+                .tabItem {
+                    Label("Room Cal.", systemImage: "waveform.path.ecg.rectangle")
+                }
+                .tag(SettingsTab.roomCalibration)
         }
-        .frame(width: 640, height: 500)
+        .frame(width: 700, height: 540)
         .onAppear {
             // Auto-select Driver tab if update required
             if let initialTab = initialTab {
@@ -56,6 +63,10 @@ struct DisplaySettingsTab: View {
     @EnvironmentObject var store: EqualiserStore
     @State private var showDriverRequiredAlert = false
     @State private var showPermissionDeniedAlert = false
+
+    private var routingViewModel: RoutingViewModel {
+        RoutingViewModel(store: store)
+    }
 
     private enum Mode {
         case automatic
@@ -122,6 +133,12 @@ struct DisplaySettingsTab: View {
                 }
             } header: {
                 Text("Device Selection Mode")
+            }
+
+            Section {
+                RoutingStatusView(viewModel: routingViewModel)
+            } header: {
+                Text("Routing Status")
             }
 
             Section {
@@ -498,6 +515,75 @@ struct UserGuideTab: View {
     var body: some View {
         UserGuideViewControllerRepresentable()
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+// MARK: - Room Calibration Tab
+
+/// Stub UI for room acoustic measurement and correction.
+struct RoomCalibrationTab: View {
+    @EnvironmentObject var store: EqualiserStore
+    @State private var isMeasuring   = false
+    @State private var hasMeasurement = false
+
+    var body: some View {
+        Form {
+            Section {
+                Text("Room calibration measures your listening environment's acoustic response and applies correction filters to compensate for room modes and reflections.")
+                    .font(.body)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            } header: {
+                Text("About Room Calibration")
+            }
+
+            Section {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("Place a measurement microphone at your listening position, then start the sweep tone and allow it to complete.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    Button(isMeasuring ? "Stop Measurement" : "Start Sweep") {
+                        isMeasuring.toggle()
+                        if !isMeasuring { hasMeasurement = true }
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
+            } header: {
+                Text("Measurement")
+            }
+
+            Section {
+                if hasMeasurement {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("Measurement complete. Apply correction filters when ready.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+
+                        HStack(spacing: 12) {
+                            Button("Apply Correction Filters") {
+                                store.applyRoomCalibration()
+                            }
+                            .buttonStyle(.bordered)
+
+                            Button("Discard", role: .destructive) {
+                                hasMeasurement = false
+                            }
+                            .buttonStyle(.bordered)
+                        }
+                    }
+                } else {
+                    Text("No measurement data. Run a sweep first.")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                }
+            } header: {
+                Text("Correction Filters")
+            }
+        }
+        .formStyle(.grouped)
+        .padding()
     }
 }
 

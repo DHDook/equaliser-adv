@@ -201,6 +201,7 @@ final class EqualiserStore: ObservableObject {
     let presetManager: PresetManager
     let meterStore: MeterStore
     let updateService = UpdateCheckService()
+    let rtaAnalyzer   = AdvancedDualSpectrumAnalyzer()
 
     // MARK: - Coordinators
     
@@ -784,4 +785,18 @@ final class EqualiserStore: ObservableObject {
     static func clampGain(_ gain: Float) -> Float {
         AudioConstants.clampGain(gain)
     }
+
+    // MARK: - RTA
+
+    /// Connects the RTA analyser's ring buffers to the audio render pipeline's tap points.
+    /// Safe to call multiple times; no-op when no pipeline is active.
+    func wireRTAAnalyzer() {
+        routingCoordinator.pipelineManager.renderPipeline?.setRTABuffers(
+            input:  rtaAnalyzer.inputRingBuffer,
+            output: rtaAnalyzer.outputRingBuffer
+        )
+    }
+
+    /// Placeholder for future room-calibration filter application.
+    func applyRoomCalibration() {}
 }

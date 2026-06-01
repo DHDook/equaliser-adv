@@ -841,4 +841,42 @@ final class RenderCallbackContext: @unchecked Sendable {
         let overflows = ringBuffers.map { $0.getOverflowCount() }
         return (available, underruns, overflows)
     }
+
+    // MARK: - RTA Audio Taps
+
+    /// Pre-EQ mono ring buffer. `nil` = RTA not active. Written exclusively from the audio thread.
+    nonisolated(unsafe) var rtaInputBuffer: LockFreeAudioRingBuffer? = nil
+
+    /// Post-dynamics mono ring buffer. `nil` = RTA not active. Written exclusively from the audio thread.
+    nonisolated(unsafe) var rtaOutputBuffer: LockFreeAudioRingBuffer? = nil
+
+    /// Writes pre-EQ stereo audio (from processingBuffers) to the RTA input ring buffer.
+    /// Call from the audio render thread immediately after `provideFrames()`.
+    @inline(__always)
+    func writeRTAInput(frameCount: Int) {
+        guard let buf = rtaInputBuffer, frameCount > 0, channelCount >= 1 else { return }
+        buf.writeStereoSamples(
+            leftChannel:  processingBuffers[0],
+            rightChannel: channelCount > 1 ? processingBuffers[1] : processingBuffers[0],
+            frameCount: frameCount
+        )
+    }
+
+    /// Writes post-dynamics stereo audio (from the HAL output buffer list) to the RTA output ring buffer.
+    /// Call from the audio render thread immediately after `processDynamics()`.
+    @inline(__always)
+    func writeRTAOutput(from bufferList: UnsafeMutablePointer<AudioBufferList>, frameCount: Int) {
+        guard let buf = rtaOutputBuffer, frameCount > 0 else { return }
+        let abl = UnsafeMutableAudioBufferListPointer(bufferList)
+        guard !abl.isEmpty,
+              let leftPtr = abl[0].mData?.assumingMemoryBound(to: Float.self) else { return }
+        let rightPtr = abl.count > 1
+            ? abl[1].mData?.assumingMemoryBound(to: Float.self)
+            : nil
+        buf.writeStereoSamples(
+            leftChannel:  leftPtr,
+            rightChannel: rightPtr ?? leftPtr,
+            frameCount: frameCount
+        )
+    }
 }

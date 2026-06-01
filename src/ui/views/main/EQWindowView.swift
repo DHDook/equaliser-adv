@@ -15,7 +15,7 @@ struct EQWindowView: View {
     private var needsDriverInstallation: Bool {
         !driverManager.isReady && !store.routingCoordinator.manualModeEnabled
     }
-    
+
     /// Whether the driver needs updating (outdated version).
     private var needsDriverUpdate: Bool {
         store.showDriverUpdateRequired && !store.routingCoordinator.manualModeEnabled
@@ -33,7 +33,7 @@ struct EQWindowView: View {
 
     var body: some View {
         VStack(spacing: 12) {
-            // Level meters + unified control panel
+            // Level meters + control panel
             HStack(alignment: .top, spacing: 0) {
                 LevelMetersView(meterStore: store.meterStore)
                     .layoutPriority(1)
@@ -53,80 +53,47 @@ struct EQWindowView: View {
 
                 Spacer()
 
-                // Unified control panel - device pickers, status, and buttons grouped together
+                // Manual-mode controls (device pickers + routing toggle)
                 VStack(alignment: .trailing, spacing: 8) {
-                    // Device picker - only show in manual mode
                     if routingViewModel.manualModeEnabled {
                         DevicePickerView()
-                    }
 
-                    RoutingStatusView(viewModel: routingViewModel)
-                        .frame(width: 376)
-
-                    // Routing controls
-                    VStack(alignment: .trailing, spacing: 8) {
-                        // Meters toggle with CPU usage help
                         ToggleWithHelp(
-                            label: "Meters",
-                            isOn: $metersEnabledUI,
-                            helpText: "Level meters add slight CPU overhead. They pause automatically when the window is closed or minimized. Disable here to reduce CPU while the window is open."
-                        )
-                        .id("meters-toggle")
-                        .onAppear {
-                            metersEnabledUI = store.meterStore.metersEnabled
-                        }
-                        .onChange(of: metersEnabledUI) { _, newValue in
-                            store.meterStore.metersEnabled = newValue
-                        }
-                        .onReceive(store.meterStore.$metersEnabled.removeDuplicates()) { value in
-                            if metersEnabledUI != value {
-                                metersEnabledUI = value
-                            }
-                        }
-
-                        SystemEQToggleView()
-                            .id("system-eq-toggle")
-
-                        // Audio Routing toggle - only shown in manual mode
-                        // In automatic mode, routing starts automatically when driver is installed
-                        if routingViewModel.manualModeEnabled {
-                            ToggleWithHelp(
-                                label: "Audio Routing",
-                                isOn: Binding(
-                                    get: { routingViewModel.isActive },
-                                    set: { newValue in
-                                        if newValue {
-                                            store.reconfigureRouting()
-                                        } else {
-                                            store.stopRouting()
-                                        }
+                            label: "Audio Routing",
+                            isOn: Binding(
+                                get: { routingViewModel.isActive },
+                                set: { newValue in
+                                    if newValue {
+                                        store.reconfigureRouting()
+                                    } else {
+                                        store.stopRouting()
                                     }
-                                ),
-                                helpText: "Enable or disable audio routing between the selected input and output devices. Both devices must be selected to enable routing."
-                            )
-                            .disabled(!routingViewModel.canToggleRouting)
-                            .errorTint({
-                                if case .error = store.routingStatus { return true }
-                                return false
-                            }())
-                            .id("audio-routing-toggle")
-                        }
+                                }
+                            ),
+                            helpText: "Enable or disable audio routing between the selected input and output devices. Both devices must be selected to enable routing."
+                        )
+                        .disabled(!routingViewModel.canToggleRouting)
+                        .errorTint({
+                            if case .error = store.routingStatus { return true }
+                            return false
+                        }())
                     }
                 }
                 .frame(minWidth: 376)
             }
 
+            // Dual 31-band real-time spectrum analyser
+            RTADashboardView(analyzer: store.rtaAnalyzer)
+
             Divider()
 
             // Preset and band controls toolbar
             HStack(alignment: .top) {
-                // Preset controls on left
                 PresetToolbar()
                     .frame(minWidth: 280, maxWidth: 280, alignment: .leading)
 
                 Spacer()
 
-                // Bands control centered
                 VStack(spacing: 4) {
                     Text("Bands")
                         .font(.caption)
@@ -136,7 +103,6 @@ struct EQWindowView: View {
 
                 Spacer()
 
-                // Channel mode control (Linked/Stereo + L/R)
                 HStack(spacing: 12) {
                     VStack(spacing: 4) {
                         Text("Channel")
@@ -151,7 +117,6 @@ struct EQWindowView: View {
                         .frame(width: 100)
                     }
 
-                    // L/R toggle - only visible in stereo mode
                     if store.channelMode == .stereo {
                         VStack(spacing: 4) {
                             Text("Edit")
@@ -170,9 +135,7 @@ struct EQWindowView: View {
 
                 Spacer()
 
-                // Compare mode + Reset on right
                 HStack(spacing: 12) {
-                    // Compare Mode segmented control
                     VStack(spacing: 4) {
                         HStack(spacing: 4) {
                             Text("Compare")
@@ -225,13 +188,27 @@ struct EQWindowView: View {
             }
             .padding(.vertical, 4)
 
-            // EQ sliders
             EQBandGridView()
         }
         .padding(12)
-        .frame(minWidth: 1060, minHeight: 530)
+        .frame(minWidth: 1060, minHeight: 660)
         .toolbar {
-            ToolbarItem(placement: .primaryAction) {
+            ToolbarItemGroup(placement: .primaryAction) {
+                Toggle(isOn: Binding(
+                    get: { !store.isBypassed },
+                    set: { store.isBypassed = !$0 }
+                )) {
+                    Text("System EQ")
+                }
+                .toggleStyle(.checkbox)
+                .controlSize(.small)
+                .help("Enable or disable EQ processing. When disabled, audio passes through without EQ applied.")
+
+                Toggle("Meters", isOn: $metersEnabledUI)
+                    .toggleStyle(.checkbox)
+                    .controlSize(.small)
+                    .help("Level meters add slight CPU overhead. Disable here to reduce CPU while the window is open.")
+
                 Button {
                     openSettings()
                 } label: {
@@ -247,6 +224,13 @@ struct EQWindowView: View {
         )
         .onAppear {
             store.meterStore.windowBecameVisible()
+            metersEnabledUI = store.meterStore.metersEnabled
+        }
+        .onChange(of: metersEnabledUI) { _, newValue in
+            store.meterStore.metersEnabled = newValue
+        }
+        .onReceive(store.meterStore.$metersEnabled.removeDuplicates()) { value in
+            if metersEnabledUI != value { metersEnabledUI = value }
         }
         .onDisappear {
             store.meterStore.windowBecameHidden()
@@ -268,7 +252,6 @@ struct EQWindowView: View {
         }
         .onChange(of: needsDriverUpdate) { _, newValue in
             if newValue {
-                // Open Settings to Driver tab when driver needs updating
                 openSettings()
             }
         }

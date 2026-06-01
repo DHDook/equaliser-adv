@@ -904,6 +904,7 @@ final class RenderPipeline {
 
         // 0. Provide frames for processing (handles both direct capture and ring buffer modes)
         let framesRead = context.provideFrames(frameCount: frameCount)
+        context.writeRTAInput(frameCount: Int(framesRead))
 
         // If we got no samples, zero-fill output
         if framesRead == 0 {
@@ -961,7 +962,16 @@ final class RenderPipeline {
 
         // 5. Update output meters with rendered audio
         context.updateOutputMeters(from: ioData, frameCount: frameCount)
+        context.writeRTAOutput(from: ioData, frameCount: Int(frameCount))
 
         return noErr
+    }
+
+    // MARK: - RTA
+
+    /// Connects the RTA analyser ring buffers to the audio render thread tap points.
+    func setRTABuffers(input: LockFreeAudioRingBuffer?, output: LockFreeAudioRingBuffer?) {
+        callbackContext?.rtaInputBuffer  = input
+        callbackContext?.rtaOutputBuffer = output
     }
 }

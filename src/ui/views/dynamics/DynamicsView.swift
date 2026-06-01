@@ -1037,7 +1037,7 @@ private struct DynamicsSliderRow: View {
                     .foregroundStyle(.tertiary)
             }
 
-            Slider(value: $value, in: range, step: step)
+            Slider(value: $value, in: range)
                 .controlSize(.small)
                 .onChange(of: value) { _, newVal in
                     if !isFieldFocused {
@@ -1094,29 +1094,6 @@ private struct DynamicsSliderRow: View {
 struct DynamicsInlineView: View {
     @EnvironmentObject var store: EqualiserStore
 
-    // ── Column 1: ballistic GR state (60 Hz, 50 ms release) ───────────────
-    @State private var deEsserGR:  Float = 0.0
-    @State private var mbLowGR:    Float = 0.0
-    @State private var mbMidGR:    Float = 0.0
-    @State private var mbHighGR:   Float = 0.0
-    @State private var compGR:     Float = 0.0
-    @State private var crestFactorDB: Float = 0.0
-    @State private var expanderGR: Float = 0.0
-    @State private var clipperGR:  Float = 0.0
-    @State private var limiterGR:  Float = 0.0
-
-    // ── Peak-hold for clipper ──────────────────────────────────────────────
-    @State private var clipperPeakGR:         Float = 0.0
-    @State private var clipperPeakHoldFrames: Int   = 0
-
-    // ── Column 1 dot pulse state ───────────────────────────────────────────
-    @State private var clipperEngaged: Bool = false
-    @State private var limiterEngaged: Bool = false
-
-    // ── Column 2: ballistic state (200 ms, ~0.917 alpha at 60 Hz) ─────────
-    @State private var phaseCorrelation: Float = 0.0
-    @State private var balanceMeterDB:   Float = 0.0
-
     @State private var showDynamicsPanel = false
     @State private var showDefinitions   = false
 
@@ -1129,11 +1106,6 @@ struct DynamicsInlineView: View {
                 Divider()
                 column2
             }
-        }
-        .onReceive(
-            Timer.publish(every: 1.0 / 60.0, on: .main, in: .common).autoconnect()
-        ) { _ in
-            updateMeters()
         }
     }
 
@@ -1184,50 +1156,16 @@ struct DynamicsInlineView: View {
                 }
                 .frame(width: 290, height: 480)
             }
-        }
-    }
-
-    // MARK: - Column 1: Metered Dynamics
-
-    private var column1: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            inlineMeterToggleRow(
-                label: "De-Esser",
-                dotColor: simpleDotColor(store.dynamicsConfig.deEsser.isEnabled),
-                grDB: deEsserGR,
-                binding: deEsserEnabledBinding
-            )
-            mbMeterToggleRow
-            inlineMeterToggleRow(
-                label: "Comp.",
-                dotColor: simpleDotColor(store.dynamicsConfig.compressor.isEnabled),
-                grDB: compGR,
-                binding: compressorEnabledBinding
-            )
-            crestFactorRow
-            inlineMeterToggleRow(
-                label: "Expander",
-                dotColor: simpleDotColor(store.dynamicsConfig.expander.isEnabled),
-                grDB: expanderGR,
-                binding: expanderEnabledBinding
-            )
-            clipperMeterToggleRow
-            inlineMeterToggleRow(
-                label: "Limiter",
-                dotColor: limiterDotColor,
-                grDB: limiterGR,
-                binding: limiterEnabledBinding
-            )
 
             Button {
                 showDynamicsPanel.toggle()
             } label: {
                 Image(systemName: "waveform.path")
-                    .font(.system(size: 18))
+                    .font(.system(size: 14))
                     .foregroundStyle(.secondary)
             }
             .buttonStyle(.plain)
-            .help("Dynamics settings")
+            .help("Open Dynamics settings")
             .popover(isPresented: $showDynamicsPanel, arrowEdge: .trailing) {
                 DynamicsView()
                     .environmentObject(store)
@@ -1235,171 +1173,29 @@ struct DynamicsInlineView: View {
         }
     }
 
+    // MARK: - Column 1: Metered Dynamics
+
+    private var column1: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            col2Toggle(label: "De-Esser",  isOn: deEsserEnabledBinding)
+            col2Toggle(label: "M-Band",    isOn: mbEnabledBinding)
+            col2Toggle(label: "Comp.",     isOn: compressorEnabledBinding)
+            col2Toggle(label: "Expander",  isOn: expanderEnabledBinding)
+            col2Toggle(label: "Clipper",   isOn: clipperEnabledBinding)
+            col2Toggle(label: "Limiter",   isOn: limiterEnabledBinding)
+        }
+    }
+
     // MARK: - Column 2: Spatial & Utility
 
     private var column2: some View {
         VStack(alignment: .leading, spacing: 5) {
-
-            // Row 1: Stereo Widener toggle
-            col2Toggle(label: "Widener", isOn: inlineWideEnabled)
-
-            // Row 2: LUFS Match toggle + phase meter + vector scope
-            VStack(alignment: .leading, spacing: 3) {
-                col2Toggle(label: "LUFS Match", isOn: inlineLufsEnabled)
-                HStack(spacing: 5) {
-                    phaseMeterView
-                    vectorScopeView
-                }
-            }
-
-            // Row 3: De-Harsh toggle
-            col2Toggle(label: "De-Harsh", isOn: inlineDeharshEnabled)
-
-            // Row 4: Loudness Contour toggle
-            col2Toggle(label: "Contour", isOn: inlineLoudnessContourEnabled)
-
-            // Row 5: Time/Balance sliders + balance meter
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 6) {
-                    inlineCompactSlider(label: "Time", value: inlineTimeDelay, range: 0.0...20.0)
-                    inlineCompactSlider(label: "Bal.", value: inlineBalance, range: -1.0...1.0)
-                }
-                balanceMeterView
-            }
-
-            // Row 6: DC Filter
+            col2Toggle(label: "Widener",   isOn: inlineWideEnabled)
+            col2Toggle(label: "LUFS",      isOn: inlineLufsEnabled)
+            col2Toggle(label: "De-Harsh",  isOn: inlineDeharshEnabled)
+            col2Toggle(label: "Contour",   isOn: inlineLoudnessContourEnabled)
             col2Toggle(label: "DC Filter", isOn: inlineDcOffsetEnabled)
-
-            // Row 7: Latency Mode picker
-            HStack(spacing: 4) {
-                Text("Latency")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .frame(width: 48, alignment: .leading)
-                Picker("", selection: inlineLatencyMode) {
-                    Text("Music").tag(LatencyMode.music)
-                    Text("Movie").tag(LatencyMode.movie)
-                }
-                .pickerStyle(.segmented)
-                .controlSize(.mini)
-                .labelsHidden()
-                .frame(width: 88)
-            }
-
-            // Row 8: Pause Gate + Sync Buffer
-            HStack(spacing: 8) {
-                col2Toggle(label: "Pause Gate", isOn: inlinePauseGate)
-                col2Toggle(label: "Sync Buf", isOn: inlineSyncBuffer)
-            }
-
-            // Row 9: Dither Mode picker
-            HStack(spacing: 4) {
-                Text("Dither")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .frame(width: 48, alignment: .leading)
-                Picker("", selection: inlineDitherMode) {
-                    Text("Off").tag(DitherMode.bypass)
-                    Text("TPDF").tag(DitherMode.tpdf)
-                    Text("Shaped").tag(DitherMode.shaped)
-                }
-                .pickerStyle(.segmented)
-                .controlSize(.mini)
-                .labelsHidden()
-                .frame(width: 104)
-            }
         }
-    }
-
-    // MARK: - Column 2 Sub-views
-
-    /// Horizontal phase correlation meter (centre-pivoted, −1 … +1).
-    private var phaseMeterView: some View {
-        let corr = CGFloat(max(-1.0, min(1.0, phaseCorrelation)))
-        let color: Color = corr > 0.3 ? .green : (corr > -0.3 ? .yellow : .red)
-
-        return GeometryReader { geo in
-            ZStack(alignment: .leading) {
-                Capsule()
-                    .fill(Color.secondary.opacity(0.18))
-                    .frame(height: 4)
-
-                let center = geo.size.width / 2.0
-                let halfLen = abs(corr) * center
-                let xOff: CGFloat = corr >= 0 ? center : (center - halfLen * 2)
-
-                Capsule()
-                    .fill(color)
-                    .frame(width: halfLen * 2, height: 4)
-                    .offset(x: xOff)
-            }
-        }
-        .frame(width: 88, height: 4)
-        .animation(.linear(duration: 1.0 / 60.0), value: corr)
-    }
-
-    /// Simplified goniometer plot — shows stereo image as a dot on a circle.
-    private var vectorScopeView: some View {
-        let corr = CGFloat(max(-1.0, min(1.0, phaseCorrelation)))
-        let bal  = CGFloat(max(-1.0, min(1.0, balanceMeterDB / 20.0)))
-        let dotColor: Color = corr > 0.3 ? .green : (corr > -0.3 ? .yellow : .red)
-
-        return Canvas { context, size in
-            let cx = size.width / 2
-            let cy = size.height / 2
-            let r  = min(cx, cy) - 2
-
-            // Background ring
-            let ring = Path(ellipseIn: CGRect(x: cx - r, y: cy - r, width: r * 2, height: r * 2))
-            context.fill(ring, with: .color(.secondary.opacity(0.07)))
-            context.stroke(ring, with: .color(.secondary.opacity(0.25)), lineWidth: 0.5)
-
-            // Crosshairs
-            context.stroke(Path { p in
-                p.move(to: CGPoint(x: cx, y: cy - r))
-                p.addLine(to: CGPoint(x: cx, y: cy + r))
-            }, with: .color(.secondary.opacity(0.2)), lineWidth: 0.5)
-            context.stroke(Path { p in
-                p.move(to: CGPoint(x: cx - r, y: cy))
-                p.addLine(to: CGPoint(x: cx + r, y: cy))
-            }, with: .color(.secondary.opacity(0.2)), lineWidth: 0.5)
-
-            // Stereo image dot
-            let dotX = cx + bal * r * 0.75
-            let dotY = cy - corr * r * 0.75
-            let dot = Path(ellipseIn: CGRect(x: dotX - 2.5, y: dotY - 2.5, width: 5, height: 5))
-            context.fill(dot, with: .color(dotColor))
-        }
-        .frame(width: 36, height: 36)
-        .background(Color.secondary.opacity(0.04))
-        .cornerRadius(4)
-        .animation(.linear(duration: 1.0 / 60.0), value: corr)
-    }
-
-    /// Horizontal balance meter (centre-pivoted, L deflects left, R deflects right).
-    private var balanceMeterView: some View {
-        let bal  = CGFloat(max(-20.0, min(20.0, balanceMeterDB)))
-        let norm = bal / 20.0  // −1 … +1
-        let color: Color = abs(norm) < 0.2 ? .green : (abs(norm) < 0.5 ? .yellow : .orange)
-
-        return GeometryReader { geo in
-            ZStack(alignment: .leading) {
-                Capsule()
-                    .fill(Color.secondary.opacity(0.18))
-                    .frame(height: 4)
-
-                let center = geo.size.width / 2.0
-                let halfLen = abs(norm) * center
-                let xOff: CGFloat = norm >= 0 ? center : (center - halfLen * 2)
-
-                Capsule()
-                    .fill(color)
-                    .frame(width: halfLen * 2, height: 4)
-                    .offset(x: xOff)
-            }
-        }
-        .frame(width: 130, height: 4)
-        .animation(.linear(duration: 1.0 / 60.0), value: norm)
     }
 
     // MARK: - Column 2 Helpers
@@ -1419,243 +1215,6 @@ struct DynamicsInlineView: View {
         }
     }
 
-    @ViewBuilder
-    private func inlineCompactSlider(label: String, value: Binding<Double>, range: ClosedRange<Double>) -> some View {
-        VStack(alignment: .leading, spacing: 1) {
-            Text(label)
-                .font(.caption2)
-                .foregroundStyle(.tertiary)
-            Slider(value: value, in: range)
-                .controlSize(.mini)
-                .frame(width: 58)
-        }
-    }
-
-    // MARK: - Column 1 Meter + Toggle Rows
-
-    /// Standard row: [meter] [dot] [label] [toggle]
-    @ViewBuilder
-    private func inlineMeterToggleRow(
-        label: String,
-        dotColor: Color,
-        grDB: Float,
-        binding: Binding<Bool>
-    ) -> some View {
-        HStack(spacing: 5) {
-            grMeter(grDB: grDB, peakHold: nil)
-            Circle()
-                .fill(dotColor)
-                .frame(width: 6, height: 6)
-            Text(label)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .frame(width: 52, alignment: .leading)
-            Toggle("", isOn: binding)
-                .labelsHidden()
-                .toggleStyle(.switch)
-                .controlSize(.mini)
-                .fixedSize()
-        }
-    }
-
-    /// Crest factor row — display-only bar, no toggle.
-    private var crestFactorRow: some View {
-        HStack(spacing: 5) {
-            crestMeter
-            Circle()
-                .fill(Color.cyan.opacity(0.6))
-                .frame(width: 6, height: 6)
-            Text("Crest")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .frame(width: 52, alignment: .leading)
-        }
-    }
-
-    /// Crest factor bar — fills upward from 0, cyan tint.
-    private var crestMeter: some View {
-        let mag = Double(max(0.0, min(crestFactorDB, 24.0))) / 24.0
-
-        return ZStack(alignment: .bottom) {
-            Capsule()
-                .fill(Color.secondary.opacity(0.18))
-                .frame(width: 4, height: 20)
-
-            if mag > 0 {
-                GeometryReader { geo in
-                    Capsule()
-                        .fill(Color.cyan.opacity(0.7))
-                        .frame(width: 4, height: max(1, geo.size.height * mag))
-                        .offset(y: geo.size.height * (1.0 - mag))
-                }
-                .frame(width: 4, height: 20)
-                .clipped()
-            }
-        }
-        .frame(width: 4, height: 20)
-        .animation(.linear(duration: 1.0 / 60.0), value: mag)
-    }
-
-    /// Multiband row: three stacked sub-meters + one M-Band toggle.
-    private var mbMeterToggleRow: some View {
-        HStack(spacing: 5) {
-            VStack(spacing: 2) {
-                miniGrMeter(grDB: mbLowGR,  label: "L")
-                miniGrMeter(grDB: mbMidGR,  label: "M")
-                miniGrMeter(grDB: mbHighGR, label: "H")
-            }
-            Circle()
-                .fill(simpleDotColor(store.dynamicsConfig.multibandCompressor.isEnabled))
-                .frame(width: 6, height: 6)
-            Text("M-Band")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .frame(width: 52, alignment: .leading)
-            Toggle("", isOn: mbEnabledBinding)
-                .labelsHidden()
-                .toggleStyle(.switch)
-                .controlSize(.mini)
-                .fixedSize()
-        }
-    }
-
-    /// Clipper row: meter with peak-hold segment.
-    private var clipperMeterToggleRow: some View {
-        HStack(spacing: 5) {
-            grMeter(grDB: clipperGR, peakHold: clipperPeakHoldFrames > 0 ? clipperPeakGR : nil)
-            Circle()
-                .fill(clipperDotColor)
-                .frame(width: 6, height: 6)
-            Text("Clipper")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .frame(width: 52, alignment: .leading)
-            Toggle("", isOn: clipperEnabledBinding)
-                .labelsHidden()
-                .toggleStyle(.switch)
-                .controlSize(.mini)
-                .fixedSize()
-        }
-    }
-
-    // MARK: - Meter Views
-
-    /// Full-height (20 px) vertical GR meter.
-    @ViewBuilder
-    private func grMeter(grDB: Float, peakHold: Float?) -> some View {
-        let mag = Double(max(0, min(-grDB, 24.0))) / 24.0
-        let color = meterColor(grDB: grDB)
-
-        ZStack(alignment: .top) {
-            Capsule()
-                .fill(Color.secondary.opacity(0.18))
-                .frame(width: 4, height: 20)
-
-            if mag > 0 {
-                GeometryReader { geo in
-                    Capsule()
-                        .fill(color)
-                        .frame(width: 4, height: max(1, geo.size.height * mag))
-                }
-                .frame(width: 4, height: 20)
-                .clipped()
-            }
-
-            if let peakDB = peakHold {
-                let peakFrac = Double(max(0, min(-peakDB, 24.0))) / 24.0
-                GeometryReader { geo in
-                    Rectangle()
-                        .fill(Color.white.opacity(0.85))
-                        .frame(width: 4, height: 2)
-                        .offset(y: max(0, geo.size.height * peakFrac - 1))
-                }
-                .frame(width: 4, height: 20)
-                .clipped()
-            }
-        }
-        .frame(width: 4, height: 20)
-        .animation(.linear(duration: 1.0 / 60.0), value: mag)
-    }
-
-    /// Mini sub-meter for each MB band (6 px tall each).
-    @ViewBuilder
-    private func miniGrMeter(grDB: Float, label: String) -> some View {
-        let mag = Double(max(0, min(-grDB, 24.0))) / 24.0
-        let color = meterColor(grDB: grDB)
-
-        ZStack(alignment: .top) {
-            Capsule()
-                .fill(Color.secondary.opacity(0.18))
-                .frame(width: 4, height: 6)
-            if mag > 0 {
-                GeometryReader { geo in
-                    Capsule()
-                        .fill(color)
-                        .frame(width: 4, height: max(1, geo.size.height * mag))
-                }
-                .frame(width: 4, height: 6)
-                .clipped()
-            }
-        }
-        .frame(width: 4, height: 6)
-        .animation(.linear(duration: 1.0 / 60.0), value: mag)
-        .help("\(label) band GR")
-    }
-
-    private func meterColor(grDB: Float) -> Color {
-        let mag = -grDB
-        switch mag {
-        case ..<4:  return .green
-        case ..<12: return .yellow
-        case ..<18: return .orange
-        default:    return .red
-        }
-    }
-
-    // MARK: - Ballistic Update
-
-    private func updateMeters() {
-        let alpha: Float = 0.72   // ≈ 50 ms release at 60 Hz (GR meters)
-        let alphaS: Float = 0.917 // ≈ 200 ms at 60 Hz (balance / phase)
-
-        func smooth(_ state: inout Float, target: Float) {
-            if target < state { state = target } else { state = alpha * state + (1.0 - alpha) * target }
-        }
-        func smoothS(_ state: inout Float, target: Float) {
-            state = alphaS * state + (1.0 - alphaS) * target
-        }
-
-        smooth(&deEsserGR,  target: store.deEsserGainReductionDB)
-        smooth(&mbLowGR,    target: store.mbLowGainReductionDB)
-        smooth(&mbMidGR,    target: store.mbMidGainReductionDB)
-        smooth(&mbHighGR,   target: store.mbHighGainReductionDB)
-        smooth(&compGR,     target: store.compressorGainReductionDB)
-        smooth(&expanderGR, target: store.expanderGainReductionDB)
-        smooth(&limiterGR,  target: store.limiterGainReductionDB)
-
-        let rawClipperGR = store.clipperGainReductionDB
-        smooth(&clipperGR, target: rawClipperGR)
-
-        // Crest factor: smooth bidirectionally (display only)
-        smoothS(&crestFactorDB, target: store.liveCrestFactorDB)
-
-        // Phase correlation and balance (200 ms ballistics)
-        smoothS(&phaseCorrelation, target: store.livePhaseCorrelation)
-        smoothS(&balanceMeterDB,   target: store.liveBalanceMeter)
-
-        // Clipper peak-hold: 2-second hold when clipper engages
-        if rawClipperGR < -0.5 {
-            if rawClipperGR < clipperPeakGR { clipperPeakGR = rawClipperGR }
-            clipperPeakHoldFrames = 120
-        } else if clipperPeakHoldFrames > 0 {
-            clipperPeakHoldFrames -= 1
-            if clipperPeakHoldFrames == 0 { clipperPeakGR = 0.0 }
-        }
-
-        clipperEngaged = store.clipperEngaged
-        limiterEngaged = store.limiterGainReductionDB < -0.5
-    }
-
     // MARK: - Helper Views
 
     @ViewBuilder
@@ -1665,22 +1224,6 @@ struct DynamicsInlineView: View {
             Text(body).font(.caption).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
-    }
-
-    // MARK: - Dot Colours
-
-    private func simpleDotColor(_ enabled: Bool) -> Color {
-        enabled ? .green : Color.secondary.opacity(0.3)
-    }
-
-    private var clipperDotColor: Color {
-        guard store.dynamicsConfig.softClipper.isEnabled else { return Color.secondary.opacity(0.3) }
-        return clipperEngaged ? .orange : .green
-    }
-
-    private var limiterDotColor: Color {
-        guard store.dynamicsConfig.limiter.isEnabled else { return Color.secondary.opacity(0.3) }
-        return limiterEngaged ? .orange : .green
     }
 
     // MARK: - Column 1 Bindings
