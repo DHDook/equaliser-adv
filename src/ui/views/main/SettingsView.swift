@@ -523,7 +523,7 @@ final class UserGuideSettingsViewController: NSViewController {
     private func setupLayout() {
         textScrollWrapper.hasVerticalScroller   = true
         textScrollWrapper.hasHorizontalScroller = false
-        textScrollWrapper.autohideScrollers     = true
+        textScrollWrapper.autohidesScrollers     = true
         textScrollWrapper.translatesAutoresizingMaskIntoConstraints = false
 
         manualTextView.isEditable   = false
