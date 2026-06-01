@@ -88,7 +88,7 @@ final class LockFreeAudioRingBuffer: @unchecked Sendable {
 /// `RenderCallbackContext.writeRTAInput/Output(…)`.
 /// An internal 20 Hz timer drives FFT analysis and publishes results on the main actor.
 @MainActor
-final class AdvancedDualSpectrumAnalyzer: ObservableObject {
+final class AdvancedDualSpectrumAnalyzer: ObservableObject, @unchecked Sendable {
 
     // MARK: Tunable limits
     let minDb: Float = -60.0
@@ -100,7 +100,7 @@ final class AdvancedDualSpectrumAnalyzer: ObservableObject {
 
     // MARK: FFT state
     private let fftSize:  Int
-    private var fftSetup: FFTSetup
+    nonisolated(unsafe) private var fftSetup: FFTSetup
     private var log2n:    vDSP_Length
     private var window:   [Float]
 
@@ -224,11 +224,15 @@ final class AdvancedDualSpectrumAnalyzer: ObservableObject {
 
         if inputGainDb != 0 {
             var g = inputGainDb
-            vDSP_vsadd(&rawIn,  1, &g, &rawIn,  1, vDSP_Length(rawIn.count))
+            var result = rawIn
+            vDSP_vsadd(&rawIn, 1, &g, &result, 1, vDSP_Length(rawIn.count))
+            rawIn = result
         }
         if outputGainDb != 0 {
             var g = outputGainDb
-            vDSP_vsadd(&rawOut, 1, &g, &rawOut, 1, vDSP_Length(rawOut.count))
+            var result = rawOut
+            vDSP_vsadd(&rawOut, 1, &g, &result, 1, vDSP_Length(rawOut.count))
+            rawOut = result
         }
 
         let tgtIn  = mapBinsToBands(dbMagnitudes: rawIn,  sampleRate: sampleRate)
@@ -249,6 +253,9 @@ final class AdvancedDualSpectrumAnalyzer: ObservableObject {
 
         var real = [Float](repeating: 0, count: half)
         var imag = [Float](repeating: 0, count: half)
+        
+        var resultDb = [Float](repeating: 0, count: half)
+        
         real.withUnsafeMutableBufferPointer { rp in
             imag.withUnsafeMutableBufferPointer { ip in
                 var split = DSPSplitComplex(realp: rp.baseAddress!, imagp: ip.baseAddress!)
@@ -262,14 +269,10 @@ final class AdvancedDualSpectrumAnalyzer: ObservableObject {
                 vDSP_zvmags(&split, 1, &mags, 1, vDSP_Length(half))
 
                 var scale: Float = 1.0 / Float(fftSize * fftSize)
-                var db = [Float](repeating: 0, count: half)
-                vDSP_vdbcon(&mags, 1, &scale, &db, 1, vDSP_Length(half), 1)
-
-                real.removeAll(keepingCapacity: true)
-                real.append(contentsOf: db)
+                vDSP_vdbcon(&mags, 1, &scale, &resultDb, 1, vDSP_Length(half), 1)
             }
         }
-        return real
+        return resultDb
     }
 
     private func mapBinsToBands(dbMagnitudes: [Float], sampleRate: Float) -> [Float] {
