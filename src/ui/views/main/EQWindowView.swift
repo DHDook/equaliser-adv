@@ -188,7 +188,7 @@ struct EQWindowView: View {
                             }
                             .buttonStyle(.plain)
                             .popover(isPresented: $showCompareHelp, arrowEdge: .trailing) {
-                                Text("A/B comparison: Switch between your EQ curve and a flat response at matched volume. Useful for comparing your EQ adjustments against the original sound. Automatically reverts to EQ after 5 minutes.")
+                                Text("A/B/Delta comparison: EQ = full processing active. Flat = bypass EQ at matched volume to hear unprocessed audio. Delta = solo the difference signal to hear exactly what the dynamics chain is adding or removing. Flat mode auto-reverts after 5 minutes.")
                                     .font(.caption)
                                     .padding(12)
                                     .frame(width: 250)
@@ -198,10 +198,11 @@ struct EQWindowView: View {
                         Picker("", selection: $store.compareMode) {
                             Text("EQ").tag(CompareMode.eq)
                             Text("Flat").tag(CompareMode.flat)
+                            Text("Delta").tag(CompareMode.delta)
                         }
                         .pickerStyle(.segmented)
                         .controlSize(.small)
-                        .frame(width: 80)
+                        .frame(width: 120)
                     }
 
                     VStack(spacing: 4) {

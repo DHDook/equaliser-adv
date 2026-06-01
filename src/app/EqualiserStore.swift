@@ -66,12 +66,18 @@ final class EqualiserStore: ObservableObject {
     @Published var compareMode: CompareMode = .eq {
         didSet {
             routingCoordinator.updateProcessingMode(systemEQOff: isBypassed, compareMode: compareMode)
-            
-            if compareMode == .flat {
+
+            switch compareMode {
+            case .flat:
                 compareModeTimer.start()
-            } else {
+            default:
                 compareModeTimer.cancel()
             }
+
+            // Delta mode drives the delta solo DSP flag; clear it on any other mode.
+            var adv = dynamicsConfig.advanced
+            adv.deltaSoloActive = (compareMode == .delta)
+            updateAdvancedProcessing(adv)
         }
     }
     

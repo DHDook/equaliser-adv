@@ -1,9 +1,11 @@
+import AppKit
 import SwiftUI
 
 /// Tab identifier for Settings window.
 enum SettingsTab: String {
     case display = "display"
     case driver = "driver"
+    case userGuide = "userGuide"
 }
 
 struct SettingsView: View {
@@ -31,8 +33,14 @@ struct SettingsView: View {
                     Label("Driver", systemImage: "speaker.wave.3")
                 }
                 .tag(SettingsTab.driver)
+
+            UserGuideTab()
+                .tabItem {
+                    Label("User Guide", systemImage: "book")
+                }
+                .tag(SettingsTab.userGuide)
         }
-        .frame(width: 450, height: 400)
+        .frame(width: 640, height: 500)
         .onAppear {
             // Auto-select Driver tab if update required
             if let initialTab = initialTab {
@@ -479,5 +487,132 @@ struct DriverSettingsTab: View {
             .buttonStyle(.borderedProminent)
         }
     }
+}
+
+// MARK: - User Guide Tab
+
+/// Scrollable user guide embedded inside the Settings window.
+/// Uses an NSViewController + NSScrollView wrapper to allow rich attributed
+/// text rendering with section headers, sub-headings, and body copy per spec.
+struct UserGuideTab: View {
+    var body: some View {
+        UserGuideViewControllerRepresentable()
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+/// NSViewControllerRepresentable wrapper for UserGuideSettingsViewController.
+private struct UserGuideViewControllerRepresentable: NSViewControllerRepresentable {
+    func makeNSViewController(context: Context) -> UserGuideSettingsViewController {
+        UserGuideSettingsViewController()
+    }
+    func updateNSViewController(_ nsViewController: UserGuideSettingsViewController, context: Context) {}
+}
+
+/// AppKit view controller hosting a scrollable, styled manual text view.
+final class UserGuideSettingsViewController: NSViewController {
+
+    private let textScrollWrapper = NSScrollView()
+    private let manualTextView    = NSTextView()
+
+    override func loadView() {
+        self.view = NSView(frame: NSRect(x: 0, y: 0, width: 600, height: 460))
+        setupLayout()
+    }
+
+    private func setupLayout() {
+        textScrollWrapper.hasVerticalScroller   = true
+        textScrollWrapper.hasHorizontalScroller = false
+        textScrollWrapper.autohideScrollers     = true
+        textScrollWrapper.translatesAutoresizingMaskIntoConstraints = false
+
+        manualTextView.isEditable   = false
+        manualTextView.isSelectable = true
+        manualTextView.textColor    = .labelColor
+        manualTextView.drawsBackground = false
+        manualTextView.textContainer?.widthTracksTextView = true
+        manualTextView.textContainerInset = NSSize(width: 4, height: 4)
+
+        textScrollWrapper.documentView = manualTextView
+        view.addSubview(textScrollWrapper)
+
+        NSLayoutConstraint.activate([
+            textScrollWrapper.topAnchor.constraint(equalTo: view.topAnchor, constant: 20),
+            textScrollWrapper.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -20),
+            textScrollWrapper.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 20),
+            textScrollWrapper.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -20)
+        ])
+
+        manualTextView.textStorage?.setAttributedString(buildGuideContent())
+    }
+
+    // MARK: - Attributed Content Builder
+
+    private func buildGuideContent() -> NSAttributedString {
+        let result = NSMutableAttributedString()
+
+        func h1(_ text: String) {
+            let attrs: [NSAttributedString.Key: Any] = [
+                .font: NSFont.boldSystemFont(ofSize: 18),
+                .foregroundColor: NSColor.labelColor
+            ]
+            result.append(NSAttributedString(string: text + "\n\n", attributes: attrs))
+        }
+        func h2(_ text: String) {
+            let attrs: [NSAttributedString.Key: Any] = [
+                .font: NSFont.boldSystemFont(ofSize: 14),
+                .foregroundColor: NSColor.secondaryLabelColor
+            ]
+            result.append(NSAttributedString(string: text + "\n", attributes: attrs))
+        }
+        func body(_ text: String) {
+            let style = NSMutableParagraphStyle()
+            style.lineSpacing = 3.5
+            let attrs: [NSAttributedString.Key: Any] = [
+                .font: NSFont.systemFont(ofSize: 12),
+                .foregroundColor: NSColor.labelColor,
+                .paragraphStyle: style
+            ]
+            result.append(NSAttributedString(string: text + "\n\n", attributes: attrs))
+        }
+        func code(_ text: String) {
+            let attrs: [NSAttributedString.Key: Any] = [
+                .font: NSFont.monospacedSystemFont(ofSize: 11, weight: .regular),
+                .foregroundColor: NSColor.labelColor,
+                .backgroundColor: NSColor.quaternaryLabelColor
+            ]
+            result.append(NSAttributedString(string: text + "\n\n", attributes: attrs))
+        }
+
+        h1("Equaliser-Adv — Complete Operation Manual")
+
+        h2("Overview")
+        body("This application provides a system-wide audio processing pipeline for macOS. Audio captured from the system virtual driver is passed through a configurable chain of dynamics and spatial processing stages before being routed to your selected output device.")
+
+        h2("Part 1 — Compare Modes (EQ / Flat / Delta)")
+        body("EQ: Full processing chain active — all enabled stages apply.\n\nFlat: EQ bands are bypassed at matched volume so you can hear the unprocessed signal. Useful for A/B comparison. Automatically reverts to EQ mode after 5 minutes.\n\nDelta: Solos the difference signal between the processed and unprocessed audio. You hear only what the dynamics chain is adding or removing — ideal for confirming that de-essing, limiting, or expansion is operating transparently.")
+
+        h2("Part 2 — Dynamics Chain Stages")
+        body("Signal flow (left to right in the inline widget):\n\n1. Stereo Widener — Three-band M/S processor. Low band defaults to mono for tight bass; mid and high expand perceived width.\n\n2. LUFS Loudness Match — Measures 3-second integrated K-weighted loudness and continuously corrects gain to hit your target level. Dialogue Gate prevents silent passages from skewing the estimate.\n\n3. De-Esser — Frequency-selective compressor tuned for sibilance (2–10 kHz). Dynamic EQ Mode converts it to a localised dynamic cut, leaving surrounding high-frequency content untouched.\n\n4. Multiband Compressor — Three independent compressor bands split by Linkwitz-Riley crossovers. Gentle = LR4 (24 dB/oct); Steep = LR8 (48 dB/oct). Fixed ratio 4:1 with 6 dB soft-knee.\n\n5. Wideband Compressor — Feed-forward compressor with adjustable ratio, knee, attack, release, and makeup gain.\n\n6. Crest Factor (display only) — Shows the difference between instantaneous peak and RMS level. High values indicate transient-rich content.\n\n7. Expander — Downward expander that attenuates signals below threshold, widening perceived dynamic range.\n\n8. Clipper — Analogue-style wave-shaper. Asymmetry Trim compensates for waveform asymmetry by offsetting gain on the negative half-cycle.\n\n9. Limiter — Look-ahead brickwall limiter. TP Guard adds −1.5 dBFS headroom to prevent inter-sample overs on downstream converters.")
+
+        h2("Part 3 — Spatial & Utility Controls (Inline Column 2)")
+        body("Widener: Master enable for the three-band stereo widener.\n\nLUFS Match: Master enable for the loudness normaliser.\n\nPhase Meter: Horizontal centre-pivoted bar. Right deflection (+1) = in-phase / mono. Centre (0) = uncorrelated. Left deflection (−1) = fully out of phase.\n\nGoniometer: Compact vector scope. The dot position represents the current stereo image — X axis = balance, Y axis = phase correlation.\n\nDe-Harsh: Applies a gentle high-shelf tilt filter above 3.5 kHz after the limiter. Reduces digital harshness without dulling the mix.\n\nLoudness Contour: Applies a Fletcher-Munson equal-loudness compensation curve, slightly boosting low bass and high treble at lower listening levels.\n\nTime / Balance Sliders: Time adjusts L/R sample-level delay (0–20 ms) for speaker alignment. Balance applies a non-destructive gain matrix — left pan attenuates the right channel; right pan attenuates the left channel.\n\nBalance Meter: Horizontal centre-pivoted bar showing real-time channel energy difference (L minus R in dB). Centre = equal power.\n\nDC Filter: Removes any DC bias from the input signal before the dynamics chain.\n\nLatency Mode: Music = 128-frame I/O buffer (lowest latency). Movie = 512-frame I/O buffer (better AV sync).\n\nPause Gate: Mutes the output and pauses processing during extended silence to conserve CPU.\n\nSync Buffer: Synchronises the hardware I/O buffer size to the selected Latency Mode on next device configuration.\n\nDither Mode: Off = no dither. TPDF = triangular probability density function dither (recommended for 24-bit masters). Shaped = noise-shaped dither for 16-bit output.")
+
+        h2("Part 4 — Stereo Matrix (Dynamics Menu)")
+        body("Stereo Mode: Stereo = full L/R processing. Wide Mono = M/S fold-down with widened side. True Mono = full sum-to-mono before all stages.\n\nBalance: Symmetry balance slider (−1.0 to +1.0). Non-destructive gain scaling — does not clip or compress digital data.\n\nL/R Delay: Per-channel sample delay for room correction and speaker alignment.")
+
+        h2("Part 5 — System Utilities (Dynamics Menu)")
+        body("These settings affect system-level behaviour and should generally be configured once and left unchanged:\n\n• DC Offset Filter: Recommended on for most hardware chains.\n• Latency Mode: Music for production; Movie for home theatre.\n• Dither: Use TPDF when downsampling bit-depth.\n• Pause Gate: Useful on desktop systems to prevent idle processing.\n• Sync Buffer: Enable when switching latency modes to apply the change without restarting.\n\nDelta Solo is controlled by the Compare picker on the main screen (EQ / Flat / Delta). When Delta is active, you hear only the net contribution of the dynamics chain.")
+
+        h2("Part 6 — EQ Section")
+        body("The main EQ grid provides up to 64 parametric bands per channel. Bands can be operated in Linked mode (single shared curve for L and R) or independent Stereo mode (separate curves per channel).\n\nPresets can be saved, loaded, and exported. Use the Compare picker (EQ / Flat / Delta) to A/B compare against the unprocessed source or to isolate the processing contribution.")
+
+        return result
+    }
+}
+
+#Preview("Settings") {
+    SettingsView()
+        .environmentObject(EqualiserStore())
 }
 

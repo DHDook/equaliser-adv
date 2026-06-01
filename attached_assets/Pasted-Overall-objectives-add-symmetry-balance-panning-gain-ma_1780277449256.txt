@@ -1,0 +1,1207 @@
+Overall objectives: add symmetry balance, panning gain matrix, user guide, linear denoising engine, speaker impulse response alignment, recursive crosstalk cancellation matrix, automatic room boundary early reflection cancellation, room calibration, HPF Phase Linearization, multi-seat complex averaging, sub-bass phase alignment, and additional LTI features
+
+A. Refactoring Directive: Main View Symmetry Balance & Panning Gain Matrix Integration
+
+Objective
+Integrate a hardware-calibrating Symmetry Balance Control Group (consisting of a horizontal slider and a center-pivoted horizontal VU balance tracking meter) into the macOS equalizer application (DHDook/equaliser-adv) [INDEX]. This specification instructs the agent to create a non-interactive output gain scaling matrix at the terminal boundary of the CoreAudio callback loop to correct for physical speaker volume imbalances caused by asymmetrical room acoustics [INDEX].
+
+
+
+1. UI Layout & Grid Component Integration
+
+Main View UI Grid (The Functional Stack Updates)
+Action: Expand the horizontal utility control group inside Column 2 (Right Side) to embed the new balance controls. Ensure all rows align symmetrically with the dynamics channels in Column 1 to preserve a clean dashboard layout [INDEX].
+Time & Symmetry Balance Control Row: Configure Row 5 (Right Side) of Column 2 to host two closely nested horizontal layout sliders stacked side-by-side: the existing "Time Alignment" slider and the new "Symmetry Balance" slider [INDEX].
+Horizontal Balance Meter View: Directly underneath these two sliders (still inside Row 5), render a thin, horizontal, center-pivoted VU tracking meter box [INDEX]. The meter rests dead-center at a value of 0.0 when left and right acoustic power levels are perfectly symmetrical, deflecting leftward or rightward depending on real-time channel energy variances [INDEX].
+
+text
+========================================================================
+[COLUMN 1: METERED DYNAMICS (LEFT)]      [COLUMN 2: SPATIAL & UTILITY (RIGHT)]
+========================================================================
+Row 1: [De-Esser Meter]  -> [Toggle]      Row 1: [Global Media Transport HUD]
+Row 2: [MB Low Meter]  ┐                 Row 2: [Stereo Widener Toggle]
+Row 3: [MB Mid Meter]  ├─> [Toggle]      Row 3: [Loudness Match Toggle]
+Row 4: [MB High Meter] ┘                      [Horizontal Phase Meter]
+                                              [Square Vector Map / Plot]
+Row 5: [Compressor Meter] -> [Toggle]     Row 4: [De-Harsh Filter Toggle]
+Row 5b:[Crest Factor Meter] -> (No Toggle) Row 5: [Loudness Contour Toggle]
+Row 6: [Expander Meter]   -> [Toggle]     Row 5b:[Time / Balance Sliders Group Row]
+Row 7: [Clipper Meter+Hold]-> [Toggle]        [Horizontal Balance Meter]
+                                          Row 6: [Stream Status 384kHz Label]
+Row 8: [Limiter Meter]    -> [Toggle]     Row 7: [DC Filter Switch] -> [Delta Solo]
+                                          Row 8: [Latency Mode: Music / Movie]
+                                          Row 9: [Pause Gate] -> [Sync Buffer Check]
+                                          Row 10:[Dither Mode Selection Picker]
+                                          Row 11:[Input Sensitivity Picker]
+Use code with caution.
+
+
+Dynamics Configuration Menu Additions
+Action: Append these controls into the "System Utilities" section inside the Dynamics configuration panel [INDEX].
+Height Constraints Enforcements: Adjust parent layout constraints dynamically to ensure all newly added controls fit tightly within the bounds of the existing window, adhering to the strict zero vertical scrolling rule across all view panels [INDEX].
+
+
+
+2. Tooltip Definition Updates
+Action: Update the unified text tooltip box situated above the main screen grid layout to cleanly integrate the functional definition for this acoustic centering tool.
+Exact Text String to Inject:
+"Stereo Widener: Adjusts multi-band spatial fields to expand guitars and ambient sounds while keeping low bass centered. Loudness Match: Automatically smooths out long-term volume offsets between disparate source tracks to a stable target LUFS baseline. De-Esser: Tames harsh high-frequency sibilance ('S' and 'T' vocal sounds). Dynamic EQ Mode: Converts the De-Esser into a localized dynamic cut, saving surrounding high-end air. Multiband Compressor: Separately controls the dynamics of independent low, mid, and high frequency bands. Compressor: Balances the wideband dynamic range to glue the stereo mix together. Expander: Gently attenuates sub-threshold elements to lower background noise or expand flat mixes. De-Harsh: Employs a phase-pure analog see-saw tilt to naturally smooth bright production styles. Loudness Contour: Dynamically balances sub-bass and treble curves during low-volume playback to counteract human hearing deficiencies. DC Filter: Automatically removes hidden direct-current electrical offsets below 0.5 Hz to maximize amplifier efficiency and speaker headroom. Delta Solo: Inverts the processing phase to isolate and audition strictly the acoustic changes introduced by your active EQ map. Latency Mode (Buffer Sync): Toggles the limiter look-ahead footprint and dynamically changes the underlying macOS CoreAudio hardware I/O buffer frame size between 1024 samples for maximum music stability and 64 samples for lag-free movie lip-sync. Symmetry Balance: Applies linear inverse volume scaling factors to correct Left/Right speaker volume imbalances caused by asymmetrical room acoustics, pulling center images in focus. Pause Gate: Automatically applies an ultra-fast 5ms look-ahead fade to absolute silence during track changes or sample-rate handshakes to eliminate loud hardware clicks and speaker pops. Stereo Mode: Controls inter-channel summing topology, offering standard Stereo, True-Mono for historical records, and Wide-Mono to repair disjointed hard-panned 1960s/70s audio mixes cleanly. Sync Buffer: Creates a temporary audio memory cache that holds incoming audio frames during a bit-perfect sample rate clock change, releasing the stream only after the external DAC hardware successfully locks to eliminate truncated track intros. Dither Mode: Manages bit-depth reduction transitions when converting 32-bit internal DSP math down to your external DAC hardware resolution, utilizing Triangular Probability Density Function noise to eliminate harsh digital quantization distortion on fading tracks. Clipper: Shaves microsecond transient peaks to maximize clean headroom. Limiter: Acts as an absolute brickwall ceiling to stop digital clipping distortion."
+
+
+
+3. State & Preset Serialization
+Map these variables into your core configuration states and serialization architectures to ensure parameters load and save seamlessly alongside individual EQ presets:
+
+swift
+var stereoBalancePosition: Float = 0.0      // Range: -1.0 (Hard Left) to +1.0 (Hard Right)
+var liveBalanceMeterValue: Float = 0.0     // Real-time tracking parameter centered at 0.0
+Use code with caution.
+
+
+
+
+4. Core CoreAudio Pipeline Panning Logic
+Instruct the engine to calculate these parameters using hardware-accelerated functions inside your background audio block threads.
+
+Step A: Integrated Channel RMS Power Evaluation
+At the absolute terminal boundary of your CoreAudio callback loop (Stage 11, following the Limiter block), calculate the independent Root-Mean-Square (RMS) power values of both the Left and Right channel blocks over the current processing frame allocation window (\(N\)):
+\(\text{RMS}_{\text{L}}=\sqrt{\frac{1}{N}\sum _{n=0}^{N-1}(x_{\text{left}}[n])^{2}},\quad \text{RMS}_{\text{R}}=\sqrt{\frac{1}{N}\sum _{n=0}^{N-1}(x_{\text{right}}[n])^{2}}\)
+
+
+
+Step B: Telemetric Tracking Output Transmission
+Compute the variance delta in the logarithmic decibel domain to find the channel energy variance:
+\(\text{liveBalanceMeterValue}=20\cdot \log _{10}(\text{RMS}_{\text{L}})-20\cdot \log _{10}(\text{RMS}_{\text{R}}+10^{-5})\)
+Atomically store this value directly into liveBalanceMeterValue. Apply a smooth 200 ms ballistics decay filter inside your 60 Hz UI thread refresh loop to drive the center-pivoted balance meter bar smoothly across the dashboard layout screen [INDEX].
+
+Step C: Non-Destructive Inverse Linear Gain Scaling Matrix
+Apply the exact inverse volume scaling factors from your interface stereoBalancePosition slider input across the outgoing stereo frame buffers to alter physical playback leveling without compressing or clipping digital data ranges:
+Condition 1: If stereoBalancePosition \(\le 0.0\) (User panning toward the Left channel):
+Keep the Left channel at full unity gain, and linearly attenuate the Right channel data array:
+\(x_{\text{left}}[n]=x_{\text{left}}[n]\cdot 1.0\)
+\(x_{\text{right}}[n]=x_{\text{right}}[n]\cdot (1.0-|\text{stereoBalancePosition}|)\)
+Condition 2: If stereoBalancePosition \(>0.0\) (User panning toward the Right channel):
+Keep the Right channel at full unity gain, and linearly attenuate the Left channel data array:
+\(x_{\text{left}}[n]=x_{\text{left}}[n]\cdot (1.0-\text{stereoBalancePosition})\)
+\(x_{\text{right}}[n]=x_{\text{right}}[n]\cdot 1.0\)
+
+
+
+5. Action Steps for the Agent
+Refactor UI Grid Constraints: Modify your primary view files to update Row 5 of Column 2 [INDEX]. Group the Symmetry Balance and Time Alignment sliders stacked side-by-side above the horizontal VU bar [INDEX]. Inject the updated master tooltip asset text string block from Section 2 into the dynamic UI text container.
+Deploy Volume Scaling Math Modules: Implement the independent channel RMS evaluation loops at the absolute output boundary of your CoreAudio callback loop [INDEX]. Inject the Case-based Conditional branch equations from Section 4 to scale the stereo data arrays natively based on slider positions.
+Bridge Parameter States via Atomics: Enforce lock-free thread safety configurations using atomic .store() and .load() routines to ensure that balance changes made on the interface menu stream into the processing core cleanly without causing memory race conditions or real-time audio dropouts [INDEX].
+
+
+B. Refactoring Directive: Dedicated Interactive User Guide Settings Interface
+
+
+Objective
+Integrate a dedicated, scrollable User Guide tab module inside the settings configuration window of the macOS equalizer application (DHDook/equaliser-adv). This specification instructs the agent to create a high-contrast text rendering frame inside an NSScrollView wrapper, injecting the full 6-part operational manual copy directly into the bundle asset layer.
+
+
+
+1. UI Architecture & View Hierarchy
+
+Settings Menu Tab Layout
+Action: Extend the application's top-level Settings configuration view tab controller sequence to instantiate a new distinct tab option node labeled "User Guide".
+Scrolling Exception Rule: Unlike the primary dashboard grid columns and dynamics slider grids (which enforce a strict zero-scrolling limitation), vertical scrolling is explicitly permitted and expected inside this dedicated User Guide tab view framework.
+
+Geometry Alignment Matrix
+The Component Container: Nest the rendering manual layer within a standard platform-native scroll-view wrapper frame (NSScrollView).
+Padding Constraints: Enforce consistent geometric margin layout insets of 20pt on all sides (Top, Bottom, Left, Right) to ensure optimal readability.
+Text Element Styling Properties: Configure your text rendering layer to format headings and code snippets cleanly:
+Master Section Titles (# headers): Heavy system bold font tracking at size 18pt with a primary label text fill color element.
+Subchain Subheadings (### or numbered blocks): Medium system bold font tracking at size 14ptwith a secondary label text fill asset.
+Core Operational Text Blocks (Body copy): Standard system body typography tracking at size 12ptwith relative line-height spacing (1.4x).
+DSP Matrix Math Equations (Formulas or bracket blocks): Code-styled monospace monospaced font blocks tracking at size 11pt inside light background highlight containers.
+
+
+
+2. Implementation Controller Code
+Pass this file assembly block directly to your coding agent to safely bridge the manual text block into your interface layer:
+
+swift
+import Cocoa
+
+class UserGuideSettingsViewController: NSViewController {
+    
+    private let textScrollWrapper = NSScrollView()
+    private let manualTextView = NSTextView()
+    
+    override func loadView() {
+        // Initialize the base parent view rectangle matrix matching the system settings bounds
+        self.view = NSView(frame: NSRect(x: 0, y: 0, width: 640, height: 500))
+        setupUserGuideLayoutConstraints()
+    }
+    
+    private func setupUserGuideLayoutConstraints() {
+        textScrollWrapper.hasVerticalScroller = true
+        textScrollWrapper.hasHorizontalScroller = false
+        textScrollWrapper.autohideScrollers = true
+        textScrollWrapper.translatesAutoresizingMaskIntoConstraints = false
+        
+        manualTextView.isEditable = false
+        manualTextView.isSelectable = true
+        manualTextView.textColor = .labelColor
+        manualTextView.drawsBackground = false
+        manualTextView.font = NSFont.systemFont(ofSize: 12)
+        manualTextView.textContainer?.widthTracksTextView = true
+        
+        textScrollWrapper.documentView = manualTextView
+        self.view.addSubview(textScrollWrapper)
+        
+        // Apply AutoLayout anchors to secure scroll-view boundaries tightly within the margins
+        NSLayoutConstraint.activate([
+            textScrollWrapper.topAnchor.constraint(equalTo: self.view.topAnchor, constant: 20),
+            textScrollWrapper.bottomAnchor.constraint(equalTo: self.view.bottomAnchor, constant: -20),
+            textScrollWrapper.leadingAnchor.constraint(equalTo: self.view.leadingAnchor, constant: 20),
+            textScrollWrapper.trailingAnchor.constraint(equalTo: self.view.trailingAnchor, constant: -20)
+        ])
+        
+        populateUserGuideContent()
+    }
+    
+    private func populateUserGuideContent() {
+        let masterManualTextBuffer = """
+        # EQUALISER-ADV PREMIUM PLAYBACK EDITION: COMPLETE OPERATION MANUAL
+
+        This manual provides structural background, mathematical insight, and real-world calibration guidelines for every custom stage integrated into your two-column control grid dashboard. Use these operating procedures to translate high-resolution master audio and cinematic downmixes into pure, optimal analog wattage over your discrete hardware chain: Schiit Modi 5 DAC -> Denon DRA-545R Receiver (Preamp Mode) -> Pioneer SX-780 Receiver (Power Amp Mode) -> Bi-amped Klipsch RP-600M II Speakers + Tape-Out Klipsch R-101SW Subwoofer.
+
+        ---
+
+        ## Part 1: Gain Staging: Input and Output Preamp Level Controls
+
+        Proper gain staging is the single most critical factor when interfacing a high-resolution digital pipeline with cascaded vintage analog preamplifiers. Because your system feeds the output of the Denon preamp section into the input of a vintage Pioneer receiver, improper volume mapping will instantly clip the analog input stages of your hardware, causing severe distortion and heat stress.
+
+        ### 1. Preamp Input Gain Level Control
+        * The Operational Architecture: This control acts as a clean digital scalar multiplier applied to the 32-bit floating-point audio blocks at Stage 0.5—immediately after the DC Offset Filter but before the audio encounters any EQ bands or dynamics modules.
+        * Optimal Calibration Rule: Set this slider strictly to 0.0 dB (Unity Gain).
+        * The Technical Reason: To preserve maximum digital resolution and bit-depth from your Mac, the source streaming media output should stay un-attenuated. Leaving this at 0.0 dB guarantees that your threshold-dependent processors (such as the Multiband and Wideband Compressors) receive a consistent, predictable input baseline matching the target preset values in your JSON memory maps.
+
+        ### 2. Preamp Output Gain Level Control & Limiter Ceiling
+        * The Operational Architecture: This control operates at Stage 10 alongside your brickwall safety limiter, establishing the absolute maximum digital voltage ceiling (0 dBFS) passed over the USB-C connection to your Schiit Modi 5 DAC.
+        * Optimal Calibration Rule: Set your master Output Limiter Ceiling strictly to -0.5 dBFS (or -1.0 dBFS for highly dynamic Acoustic/Jazz maps) and turn True-Peak Auto-Guard ON.
+        * The Technical Reason: Standard digital meters miss Inter-Sample Peaks (ISPs) that occur when a digital waveform is converted back into an analog electrical wave inside your DAC. These hidden analog overshoots can severely clip the sensitive analog input circuits of your Denon preamplifier. Restricting the output ceiling to -0.5 dBFS and engaging 4x oversampled true-peak tracking ensures your Schiit DAC outputs a pristine, un-clipped analog electrical signal, safeguarding the entire downstream vintage amplification chain.
+
+        ### 3. The Master System Hardware Volume Procedure
+        To achieve the highest possible audio clarity and absolute zero hardware clipping, permanently lock your system into this volume routing workflow:
+        1. Set your Mac's system software volume slider to 100%.
+        2. Keep your application's Input Preamp Gain at 0.0 dB and your Limiter Ceiling at -0.5 dBFS.
+        3. Turn the physical volume knob on your vintage Pioneer amplifier to a fixed, baseline location (typically around 10 o'clock to 12 o'clock).
+        4. Use the physical volume knob on the Denon preamplifier as your single master volume controller to drive the room's sound pressure level.
+
+        ---
+
+        ## Part 2: Multi-Topology Parametric EQ Matrix
+
+        ### 1. Architectural Overview & Band Allocation
+        * The Component Network: This processor represents a high-density, real-time frequency-shaping matrix capable of instantiating anywhere from 1 to 64 independent biquad filter bands per preset map.
+        * Dynamic Latency Optimization Pass: To protect signal clarity and maintain an ultra-low latency processing footprint over your real-time CoreAudio thread, the engine implements a runtime short-circuit architecture. Unused bands (any band sitting at a neutral 0.0 dB gain or toggled to an inactive state) are completely bypassed. The DSP loop skips their mathematical equations entirely, saving massive CPU cycles and preserving absolute phase purity.
+
+        ### 2. Core Operational Parameters
+
+        Every active band across the 64-band matrix is fully configurable via five core parameters. Adjust them using these precision guidelines to shape your acoustic soundstage:
+
+        #### A. Frequency Selection (20 Hz to 20000 Hz)
+        * The Parameter: Dictates the exact center frequency (for peak/notch filters) or the corner cutoff frequency (for shelving and pass filters) where the acoustic alteration occurs.
+        * Calibration Target: Use this to isolate distinct acoustic elements or correct room reflections. For example, setting an active band to 900 Hz on your Thrash Metal map focuses your adjustments directly onto the lower fundamental weight of heavy rhythm guitar cabinets to add raw power to your riffs.
+
+        #### B. Bandwidth / Quality Factor (Q-Value Range: 0.1 to 10.0)
+        * The Parameter: Controls the width or sharpness of the filter curve.
+          * Low Q (0.1 to 1.2): Creates a wide, sweeping, gentle curve that smooths or shapes audio across several octaves.
+          * High Q (3.0 to 10.0): Sharpens the filter into a narrow, microscopic surgical spike that targets an isolated frequency pocket.
+        * How to Best Use It for Clarity:
+          * Music Playback (Phase-Pure Focus): Stick strictly to Low-Q settings (0.5 to 1.2). Bending frequencies across a wide, smooth arc minimizes localized phase shifting. This keeps the transient \"snap\" of drum sticks and guitar picks intact through your Klipsch horns, creating a spacious, natural soundstage.
+          * Media Streams (Surgical Notching): Switch to High-Q settings (3.5 to 4.0) on cuts. This allows you to carve out compressed web artifacts (like an annoying room echo at 400 Hz or data-compression mud at 120 Hz) like a surgical laser, lifting the digital noise off the track without thinning out the surrounding dialogue or music.
+
+        #### C. Filter Type Selection
+        Changes the fundamental mathematical shape and routing topology of the biquad node. Choose between four high-utility playback profiles:
+        * Peak / Parametric: Boosts or cuts frequencies symmetrically around your chosen center frequency. Use this for general tonal adjustments (like your midrange rock push or low-mid mud scoop).
+        * High-Pass Filter (HPF): Completely rolls off all low-frequency energy below your cutoff target, allowing higher frequencies to pass through untouched. Use this at the very front of your maps to protect speaker mechanics.
+        * Low-Shelf / High-Shelf: Applies a uniform, flat block boost or cut to all frequencies below (Low-Shelf) or above (High-Shelf) your target cutoff point. Use a High-Shelf (like +1.5 dB at 10 kHz0 on Pop/Classic Rock maps) to gently add modern \"air\" to old analog tape transfers.
+        * Notch: An extreme, near-infinite attenuation spike used exclusively to completely eliminate a single rogue frequency resonance or fixed system hum.
+
+        #### D. Slope Control & Filter Orders (6 dB/oct to 96 dB/oct)
+        * The Parameter: Determines the steepness or roll-off rate of your High-Pass and Low-Pass filters, measured in decibels per octave (dB/oct). The steepness scales predictably based on the mathematical filter \"order\" configured in the code:
+          * 1st-Order (6 dB/oct): An ultra-gentle, highly transparent slope. Use this for your Acoustic/Jazz safety cutoff at 45 Hz to preserve sub-bass translation.
+          * 2nd-Order (12 dB/oct): The standard industry baseline slope. Excellent for general high-pass balancing.
+          * 3rd to 4th-Order (18 dB/oct to 24 dB/oct): Sharp, aggressive slopes. Use a 24 dB/oct sharp high-pass filter at 28 Hz on your Rap/Euro Pop profile to create a protective wall that shields your speaker cones from sub-audible infrasonic strain without touching your subwoofer's low-end punch.
+          * Extreme Orders (48 dB/oct up to 96 dB/oct): Brickwall crossover slopes. (Note: For multi-band frequency splitting, use your application's dedicated Linkwitz-Riley crossover selectors to maintain phase alignment, rather than stacking overlapping independent EQ bands).
+
+        ---
+
+        ## Part 3: Integrated Signal Telemetry: Peak and RMS Metering
+
+        Your system includes dedicated Peak In / Peak Out and RMS In / RMS Out meters. Unlike gain reduction meters which explicitly track processor attenuation from the top down, these telemetric meters read from the bottom up to map absolute signal voltages and integrated acoustic energy.
+
+        ### 1. Peak Input & Peak Output Meters
+        * The Metrics: Monitor the single highest absolute instantaneous voltage spike sample hitting the application input boundary (Peak In) versus the terminal digital ceiling exiting the Limiter network (Peak Out).
+        * How to Best Use Them:
+          * Tracking Transients: These meters are highly responsive and move rapidly. Use them to audibly correlate your music's snap. If your Peak In is reaching -2 dBFS but your Peak Out is pinned solidly at your Limiter ceiling of -0.5 dBFS, it indicates that Stage 9 and Stage 10 are actively executing look-ahead waveform shaving to clamp incoming transient spikes. This baseline visualization confirms that your Schiit DAC will never receive a digitally clipped overload waveform.
+
+        ### 2. RMS Input & RMS Output Meters
+        * The Metrics: Track the integrated average energy over time using Root-Mean-Square calculation loops (RMS_dB). Rather than analyzing instant speed spikes, RMS matches how the human ear actually perceives structural volume density and acoustic weight.
+        * How to Best Use Them:
+          * Calibrating Gain Staging & Compression: Compare the variance between RMS In and RMS Out to evaluate your pipeline's density. If you engage the Wideband Compressor on a thin, vintage rock track and note that your RMS Out rises by +2.5 dB relative to your RMS In while your Peak Out remains locked at -0.5 dBFS, your processing is successfully narrowing the dynamic envelope. This increases \"perceived loudness\" and acoustic density without driving your analog hardware past its physical distortion clipping limits.
+
+        ---
+
+        ## Part 4: Column 1: Metered Dynamics & Transients (Left Side)
+
+        ### 1. De-Esser Mode & Localized Dynamic EQ
+        * The Control Loop: Operates as a frequency-selective compressor. In standard mode, a sidechain filter isolates the sibilance frequency spectrum (2 kHz to 10 kHz) and attenuates the wideband signal. Engaging Dynamic EQ Mode upgrades the architecture: instead of lowering wideband volume, the linear attenuation is routed exclusively to drop the gain of a precise, targeted biquad parametric filter band centered at your choice of frequency.
+        * How to Best Use It:
+          * Music Playback: Turn Dynamic EQ Mode ON. When a piercing cymbal hit or vocal sibilance event spikes past the threshold, only that frequency drops out, preserving the surrounding high-end air. For vintage rock, set to 6.5 kHz. For acoustic picking or acoustic guitar string scrapes, sweep up to 7.5 kHz.
+          * Meter Feedback: Rests at 0 dB (top). Drops downward to show exactly how many decibels of volatile sibilance are carved from the track. Aim for a maximum of -2 dB to -4 dB of reduction to protect strings and vocals without sucking life out of the recording.
+
+        ### 2. Multiband Compressor
+        * The Control Loop: Splits the full-bandwidth incoming stereo buffer into separate Low, Mid, and High frequency streams using linear phase-aligned Linkwitz-Riley crossover networks. Each band calculates independent peak tracking envelopes and processes localized threshold attenuation rules without affecting adjacent frequency bands.
+        * How to Best Use It:
+          * Thrash Metal Isolation: Set your Low/Mid crossover to 120 Hz and apply a Steep (48 dB/oct) slope. Set the Low Band threshold to -4 dB. When rapid double-bass drum transients or heavy palm-muted guitar chugs ignite, the low-band clamps down strictly, containing sub-bass build-up. This keeps your main bi-amped speaker cones perfectly clean, un-smeared, and operating with maximum clarity in the mid frequencies.
+          * Home Theater Control: Set the Low/Mid crossover to 90 Hz and the Low threshold to -8 dB. This traps heavy cinematic LFE explosions inside their own band, preventing low frequencies from drowning out dialogue frequencies.
+          * Meter Feedback: Features 3 dedicated adjacent channels (Low, Mid, High). They drop downward to display the reduction happening per band. If the Low band drops to -6 dB while Mid and High stay at 0 dB, your sub-bass energy is being controlled dynamically while keeping vocals and guitar clarity completely untouched.
+
+        ### 3. Wideband Compressor
+        * The Control Loop: Processes the entire stereo mix simultaneously, functioning as an overall leveling tool to glue elements together. Unlike raw compressors that cause digital clipping transitions, this contains a second-order polynomial interpolation curve parameter known as Knee Width.
+        * How to Best Use It:
+          * The Knee Tuning: For general music, set the Knee Width between 6.0 dB and 12.0 dB. This creates a broad, rounded mathematical transition zone. As the signal approaches your threshold, the compression ratio scales up smoothly (e.g., transitioning gradually from 1.1:1 up to 3.5:1), eliminating cold, clinical digital artifacts and maintaining high-fidelity transparency. For modern rap/pop synth loops, pull the knee down to 4.0 dB for a sharper, punchier transient tracking clamp.
+          * Meter Feedback: Rest at 0 dB and drops downward. It tracks the continuous macro-envelope leveling across the master file. Maintain an average deflection between -1.5 dB and -3.0 dB to achieve cohesive \"glue\" without choking the performance.
+
+        ### 4. Crest Factor \"Punch" Meter
+        * The Metric: Measures the absolute variance between the instantaneous peak decibel level and the continuous average Root-Mean-Square level over the active processing block. It functions in direct mathematical relation with your master Peak/RMS telemetry meters.
+        * How to Best Use It:
+          * Visual Calibration: This meter operates inversely to the others; it rests at the bottom (0 dB) and bounces upward into a 0 dB to 20 dB scale.
+          * Decoding the Display: A high reading (12 dB to 18 dB, illuminating deep blue/green) indicates highly explosive, dynamic audio featuring pristine transients (ideal for jazz and live acoustic music). A low reading (below 6 dB, illuminating amber/red) indicates a heavily limited, dynamically flat, squashed master. Use this meter as a diagnostic guide: if your Wideband Compressor settings force your Crest Factor down below 6 dB while matching your Peak Out and RMS Out meters closer together, you are actively destroying the transient punch of your heavy rock drums and guitar riffs.
+
+        ### 5. Dynamic Range Expander
+        * The Control Loop: Functions as the exact inverse of a compressor. It monitors the wideband decibel envelope and applies downward attenuation to any low-level signals falling below a target threshold floor.
+        * How to Best Use It:
+          * Tape/Vinyl Recovery: Set Threshold to -35 dB and Ratio to 1.5:1. During quiet passages, guitar solos, or tracks fading out, the expander gently and transparently pushes the background tape hiss, amp hum, or vinyl surface crackle down toward silence without cutting off the music abruptly like a traditional noise gate.
+          * Audiophile Upward Expansion: On highly compressed, flat radio mixes, set to a gentle 1.2:1 ratio to expand macro dynamics, making loud hits slightly louder and restoring breathing room to flat recordings.
+          * Meter Feedback: Drops downward from 0 dB exclusively when sub-threshold signal attenuation is active, letting you see exactly when background noise floor gating is actively cleaning your analog pipeline.
+
+        ### 6. Clipper & Waveform Asymmetry Trim
+        * The Control Loop: The Asymmetry Trim routes the input vector through a cascaded chain of 1st-order All-Phase filters to rotate and re-balance lopsided voltage peaks before clipping occurs. The Clipper then shaves off extreme microsecond peak anomalies at the sample level.
+        * How to Best Use It:
+          * Headroom Maximization: Many tracks (especially asymmetric signals like raw acoustic brass, woodwinds, spoken vocals, and vintage rock drum recordings) possess significantly higher positive voltage peaks than negative peaks. Setting the Asymmetry Trim to 75% mathematically balances these lopsided waveforms symmetrically across the zero axis. This creates uniform headroom for both positive and negative peaks before hitting the clipper, giving your vintage Pioneer power amplifier 1 to 2 dB of completely free physical headroom without introducing artificial distortion.
+          * Meter & Peak Hold: The Clipper meter drops downward to track shaved microsecond transients. It contains a 1.5-second sticky peak-hold indicator. If a severe transient clip triggers, a thin line locks on-screen for 1.5 seconds, providing clear visual confirmation of your clipping threshold.
+
+        ### 7. Limiter & True-Peak Auto-Guard
+        * The Control Loop: Acts as the absolute final protection safety brickwall ceiling for your system. Standard digital limiters only read discrete sample points. Turning the True-Peak Auto-Guard ON engages a 4x FIR polyphase oversampling interpolation filter that continuously calculates the analog reconstruction behavior of the waveform.
+        * How to Best Use It:
+          * DAC Overload Protection: Digital files often contain hidden inter-sample peaks (ISPs) that pass through standard meters undetected but violently distort the internal analog reconstruction filters of an external DAC. By enforcing True-Peak Guard, the limiter identifies these sub-sample peaks and clamps them at a safe target ceiling (set to -0.5 dBFS or -1.0 dBFS for your dual-preamp setup). This guarantees your Schiit Modi DAC output stream remains clean and free of square-wave clipping.
+          * Meter Feedback: The meter drops downward to show inter-sample peak limiting. Two red True-Peak Over-Indicator LEDs sit directly above this stack; if an overshot sample breaches 0 dBFS, they light solid red and hold for 2.0 seconds, signaling that you should back down your clipper ceiling slightly to protect your analog hardware components.
+
+        ---
+
+        ## Part 5: Column 2: Spatial Imaging & System Utilities (Right Side)
+
+        ### 1. Global Media Transport HUD
+        * The Control Loop: Taps directly into the macOS system-level NowPlayingSpace and MPRemoteCommandCenter execution APIs via a background hardware bridge thread.
+        * How to Best Use It: This minimal control HUD displays the live artist name and track title streaming from whatever application currently holds your Mac's default system audio output. Use the built-in [⏮, ⏯, ⏭] transport buttons to play, pause, or skip tracks globally across any media app without having to switch windows, transforming your equalizer application into a centralized playback command center.
+
+        ### 2. Three-Band Frequency-Dependent Stereo Widener
+        * The Control Loop: Encodes the stereo signal into Mid (L+R) and Side (L-R) components. It splits the spatial calculation matrix into three independent, fixed musical frequency bands (Low below 200 Hz, Mid from 200 Hz to 4 kHz, High above 4 kHz), scales the Side signals, applies matching center energy volume compensation, and decodes back to Left/Right format.
+        * How to Best Use It:
+          * The Low-End Mono Rule: Keep Low Width set strictly to 0%. Widening sub-bass frequencies introduces immediate phase cancellation between real-world stereo speakers, destroying low-end power. Forcing everything below 200 Hz to pure mono keeps sub-bass synth loops and heavy kick drums focused and hitting hard.
+          * The Massive Guitar Soundstage: Set Mid Width between 140% and 155%. For thrash metal, hard rock, or action films, this flings mid-range rhythm guitar tracks and ambient cinema soundscapes far past the physical boundaries of your Klipsch speakers, engulfing your room in a massive soundstage while keeping vocals and bass locked punchy in the center. Set High Width to 120% to introduce premium space without high-frequency ear fatigue.
+
+        ### 3. LUFS Loudness Matcher & Dialogue Gate
+        * The Control Loop: Measures perceived human volume over a rolling 3.0-second sliding window utilizing an international standard K-weighting frequency-dependent algorithm (filtering low sub-bass and boosting upper mid sensitivity). It compares this running metric against a fixed user baseline and automatically slides a linear gain modifier up or down to eliminate tracking offsets.
+        * How to Best Use It:
+          * Fixed Subwoofer Balancing: Because your Klipsch subwoofer is driven from the Pioneer’s Tape Rec output (which outputs a fixed line-level volume that does not react to your preamp's volume knob), this module is critical. Set your target level (Music: -16 LUFS, Movies: -23 LUFS, YouTube: -14 LUFS). The engine forces all tracks to a uniform average volume, ensuring your subwoofer's bass output remains perfectly balanced with your main bi-amped speakers across every single video or song change.
+          * The Dialogue Gate: When watching movies, turn this ON. This tells the LUFS analyzer to ignore any audio blocks dropping below -70 dB, preventing the engine from mistakenly interpreting quiet whisper scenes as a \"quiet song\" and cranking the volume up too loud during cinematic transitions.
+
+        ### 4. Phase Diagnostics System (Phase Meter & X/Y Vector Plot)
+        * The Metrics: The Horizontal Phase Meter continuously executes dot-product covariance equations to map channel alignment from -1.0 (out of phase) to +1.0 (fully in phase). The Square Vector Plot (Goniometer) takes Left/Right samples and transforms them onto a 45-degree rotated geometric coordinate grid.
+        * How to Best Use It:
+          * Soundstage Assessment: Watch the vector canvas during spatial expansion adjustments. A pure mono tracking signal will draw a straight, sharp vertical line dead-center. A healthy, wide stereo mix will render a beautifully scattered, glowing cloud expanding horizontally to the left and right. If the cloud flattens completely horizontally or shifts into an upside-down V shape, your phase meter will drop toward -1.0. This warns you that your width settings are introducing heavy phase cancellation, alerting you to back off the sliders before your stereo image turns hollow.
+
+        ### 5. De-Harsh Filter (Global High-Frequency Tilt)
+        * The Control Loop: Implements an analog-modeled, 1st-order phase-pure global tilt filter topology pivoting on a central musical axis fixed at exactly 1000 Hz.
+        * How to Best Use It:
+          * Taming Horn Tweeter Fatigue: Klipsch RP-600M II horn speakers possess high treble efficiency. When paired with bright, raw 1980s metal mixes or bright pop transfers, they can cause intense ear fatigue. Instead of turning down individual EQ bands (which introduces sharp phase shifts), slide the De-Harsh control between -1.0 dB and -2.5 dB. This acts as a global see-saw tone control: it smoothly slopes down the entire upper frequency spectrum from 1 kHz to the edge of hearing, while applying an automated, proportional stabilizer below 1 kHz. The total perceived RMS volume remains balanced, turning a piercing, analytical top-end into a smooth, warm, vinyl-like presentation.
+
+        ### 6. Dynamic Loudness Contour
+        * The Control Loop: Monitored directly from the LUFS volume mapping node, this engine applies an inverted Fletcher-Munson equal-loudness curve using dynamically scaled low-shelving (60 Hz) and high-shelving (12 kHz) filters.
+        * How to Best Use It:
+          * Late-Night Listening Alignment: Human hearing naturally loses its sensitivity to deep low-end bass and extreme high-end treble when listening to audio at quiet volumes. Turn this ON for late-night listening sessions. As you turn down your target volume, the app automatically and transparently lifts your sub-bass and upper air tracks in direct proportion to how quiet the playback is. This ensures your rock riffs retain their heavy lower weight and movies keep their cinematic rumble, completely bypassing when you turn the system up to loud thresholds.
+
+        ### 7. Time/Balance Optimization Matrix
+        * The Control Loop: The Symmetry Balance slider applies relative gain multipliers to adjust volume discrepancies, while the Time Alignment control maps microsecond-level fractional digital delay lines across a thread-safe FIFO ring buffer track.
+        * How to Best Use It:
+          * Acoustic Seating Calibration: Real-world listening rooms are rarely perfectly symmetrical. If your couch sits closer to your right speaker by even a few inches, the sound waves from that channel will hit your ears first due to the psychoacoustic Precedence Effect, pulling your center vocal or movie dialogue off-axis.
+          * The Correction Procedure: Sit in your favorite spot on the couch and play a true mono track (or toggle Stereo Mode to True-Mono). Use the Symmetry Balance slider to level left/right volume blocks until the VU balance bar sits centered. If the image still feels smeared, adjust your Time Alignment slider by a few fractions of a millisecond to delay the closer speaker. The instant the acoustic wavefronts are phase-aligned to your ears, the soundstage will snap into a detailed, holographic center image.
+
+        ### 8. Stream Status & Adaptive Clocking Monitor
+        * The Hardware Hook: Allocates an active stream listener object directly tracking the CoreAudio HAL hardware abstraction layers property configurations (kAudioStreamPropertyPhysicalFormat).
+        * How to Best Use It: This high-contrast status label reads out your active playback rate in real time, confirming native format support up to 384 kHz boundary limits. When you activate Bit-Perfect Mode, the application commands your Mac's internal operating system to entirely bypass its destructive internal sample-rate conversion mixer. When you switch from a standard 44.1 kHz thrash metal album to a high-res 96 kHz film track or an audiophile master, your external Schiit Modi DAC hardware clock instantly changes pace to track the file natively.
+
+        ### 9. DC Offset Filter & Dynamic Delta Solo
+        * The Control Loop: The DC Filter runs a specialized biquad high-pass calculation cutting everything below 0.5 Hz at the front of the track. The Delta Solo control executes terminal phase-inversion array matrix arithmetic.
+        * How to Best Use It:
+          * Amplifier Protection: Many vintage recordings and amateur web streams contain hidden Direct Current (DC) offset, which shifts the audio waveform away from the center zero electrical line. While inaudible, it forces your vintage Pioneer power amplifier and Klipsch speaker cones to operate under constant physical tension even when no sound is playing. Keeping the DC Filter ON centers the waveform, lowering heat dissipation and freeing up physical headroom inside your vintage amplification blocks.
+          * The Processing Sanity Check: Click Delta Solo to audit your EQ curves. This phase-inverts your pipeline, subtracting your processed output from the raw file input. It strips away the music entirely, allowing you to hear only the difference of what your software is doing. This gives you direct sonic verification of exactly what your De-Esser is cutting or what your wideband compressor is flattening, keeping your adjustments completely pure.
+
+        ### 10. Latency Mode & Dynamic Buffer Sizing Automation
+        * The Driver Hook: Acts as an automated software macro system that overrides native CoreAudio device buffer frame size payloads (kAudioDevicePropertyBufferFrameSize).
+        * How to Best Use It:
+          * Music Selection: Toggle to Music. The application instantly forces a large 1024-sample hardware driver buffer, giving your Mac's CPU plenty of time to process your complex biquad filters and compressors smoothly with maximum stability.
+          * Movie/Gameplay Selection: Toggle to Movie. The application compresses the hardware driver buffer size down to a razor-thin 64 samples and deactivates look-ahead peak tracking inside your limiter module. This minimizes your latency footprint to near-zero, syncing movie dialogue and competitive video game audio cues to your display panel with absolute precision.
+
+        ### 11. Pause Gate & Look-Ahead Sync Buffer Engine
+        * The Safety Gate: Combines a look-ahead inactivity monitor with a thread-safe 1024-sample look-ahead FIFO memory ring buffer.
+        * How to Best Use It: High-end external DAC hardware takes up to a full second to physically adjust its internal clock relays during a sample-rate change, meaning the first second of a new track normally gets cut off. Enabling the Sync Buffer solves this: the second a clock handshake is initiated, the application catches and safely caches the incoming PCM audio streams in memory while sending digital silence to your amplifiers. The exact microsecond the Schiit Modi DAC reports a stable clock lock status, the engine releases the cached frames. This permanently eliminates truncated track starts, ensuring your vintage amplifier plays the absolute first note of your favorite song cleanly and without popping artifacts.
+
+        ---
+    }
+}
+Use code with caution.
+
+
+
+
+3. Action Steps for the Agent
+Create the Controller Class File: Save the source script above inside your repository structure as a standalone file located at src/ui/Components/UserGuideSettingsViewController.swift.
+Hook Tab Selection Control Navigation: Locate your application's main configuration setup menus view controller. Inject a new navigation array button item labeled "User Guide". Program its selection event path to natively mount and present this UserGuideSettingsViewController scrolling canvas pane as a clean, nested view window.
+
+C. 1. Mixed-Phase FIR Speaker Impulse Response Alignment
+The LTI Concept: Your current system uses a 7-band parametric IIR (Infinite Impulse Response) matrix to fix room anomalies. True mixed-phase processing splits the correction into Minimum-Phase (for magnitude changes) and Linear-Phase FIR (Finite Impulse Response) filters.
+The Playback Advantage: It fixes the time errors of your physical speaker cabinet drivers. Multi-way speakers like your bi-amped Klipsch RP-600M II suffer from physical crossover lag—the woofer and the horn tweeter don't push air forward at the exact same microsecond, which creates a group-delay smear. A mixed-phase FIR filter applies an advanced time-reversal mathematical grid to perfectly realign the timing of all frequencies. The physical speaker cones push air with absolute time-coherence, making drum hits and guitar picks snap in the room with frightening, lifelike speed.
+
+2. Recursive Crosstalk Cancellation Matrix (The Native 3D Soundstage)
+The LTI Concept: Implements a localized, multi-stage recursive vector subtraction matrix (modeled mathematically on the Princeton BACCH filter architecture).
+The Playback Advantage: When your left speaker plays, your left ear hears it first, but a split-second later your right ear hears it too (acoustic crosstalk). This crosstalk forces your brain to identify the exact location of your speaker cabinets, collapsing the soundstage. This LTI feature injects a microsecond-delayed, phase-inverted copy of the left channel into the right speaker, perfectly canceling out the crosstalk before it hits your opposite ear. Your speaker cabinets visually "vanish" from the room, opening up a true 180-degree, holographic 3D soundstage using just your two speakers.
+
+3. Automatic Room Boundary Early Reflection Cancellation
+The LTI Concept: Utilizes a high-resolution look-ahead linear deconvolution matrix linked to your existing Stage 00 Room Calibration Engine.
+The Playback Advantage: Your current calibration system flattens global room resonance peaks. This advanced utility specifically snipes out the initial first reflection—the exact moment the sound bounces off your sidewalls, ceiling, or desktop before reaching your couch. By calculating the precise time delay and amplitude of that bounce, the app pre-injects an inverse-amplitude, phase-matched correction wave into the stream. It mathematically subtracts the physical wall boundaries out of the equation, mimicking the acoustic transparency of an open-air amphitheater.
+
+4. Zero-Latency Convolution Reverb Convolution Engine (The Virtual Room Mirror)
+The LTI Concept: A high-speed, non-uniform partitioned overlap-add (OLOA) mathematical convolution engine using Apple’s accelerated vDSP_conv pipelines.
+The Playback Advantage: Instead of creating fake artificial echo, it uses the pristine impulse response file (.wav) of an iconic acoustic space—such as a legendary German mastering suite or a historic scoring stage. By convolving your playback file with the spatial footprint of that room, it maps the complex linear reflections of that multi-million dollar acoustic space directly onto your stereo stream. It turns your living room walls into a transparent acoustic replica of a legendary reference studio.
+
+
+
+UI Placement Mapping Update (The Ultimate 12-Row LTI Grid)
+Integrating these final luxury LTI processing arrays balances out your structural layout:
+
+text
+========================================================================
+[COLUMN 1: METERED DYNAMICS (LEFT)]      [COLUMN 2: SPATIAL & UTILITY (RIGHT)]
+========================================================================
+Row 1: [De-Esser Meter]  ──► [Toggle]    Row 1: [Global Media Transport HUD]
+Row 2: [MB Low Meter]  ┐                 Row 2: [Stereo Widener Toggle]
+Row 3: [MB Mid Meter]  ├─> [Toggle]      Row 3: [Loudness Match Toggle]
+Row 4: [MB High Meter] ┘                      [Horizontal Phase Meter]
+                                              [Square Vector Map / Plot]
+Row 5: [Compressor Meter] ─► [Toggle]    Row 4: [De-Harsh Filter Toggle]
+Row 5b:[Crest Factor Meter]─► (No Toggle)Row 5: [Loudness Contour Toggle]
+Row 6: [Expander Meter]   ─► [Toggle]    Row 5b:[Time / Balance Sliders Group Row]
+Row 7: [Clipper Meter+Hold]─► [Toggle]        [Horizontal Balance Meter]
+                                         Row 6: [Stream Status 384kHz Label]
+Row 8: [Limiter Meter]    ──► [Toggle]   Row 7: [DC Filter Switch] ──► [Delta Solo]
+                                         Row 8: [Latency Mode: Music / Movie]
+                                         Row 9: [Pause Gate] ──► [Sync Buffer Check]
+                                         Row 10:[Dither Mode Selection Picker]
+                                         Row 11:[Crosstalk Matrix Selection Picker]
+                                         Row 12:[FIR Phase Alignment Switch]
+Use code with caution.
+
+
+
+
+Specification Sheet for Your Coding Agent
+You can copy and paste this complete, positive refactoring specification directly into your agent's prompt window to deploy these advanced mathematical LTI extensions.
+
+markdown
+### Refactoring Directive: FIR Time-Coherence Alignment & Recursive Crosstalk Cancellation Matrix
+
+#### 1. UI Layout & Component Integration
+* Action: Add an eleventh horizontal row inside Column 2 (Right Side) as "Row 11 (Right Side)", rendering a segmented picker labeled "Crosstalk Matrix" with options: [Bypass, Recursive X-Talk].
+* Action: Add a twelfth horizontal row inside Column 2 as "Row 12 (Right Side)", rendering a master toggle labeled "FIR Phase Optimization".
+* Layout Bounds: Enforce strict auto-expanding vertical parameters to ensure all elements lock into place, adhering strictly to the zero vertical scrolling rule across the main panel view.
+
+#### 2. Tooltip Definition Updates
+* Action: Update your master screen tooltip string to append these advanced LTI system definitions:
+  "Crosstalk Matrix: Implements a recursive vector subtraction network that phase-cancels inter-aural speaker cross-leakage, unlocking a holographic 180-degree 3D soundstage. FIR Phase Optimization: Deploys a mixed-phase Finite Impulse Response filter matrix to resolve transducer group-delay anomalies, aligning woofer and horn wave arrival times down to the exact microsecond."
+
+#### 3. State & Preset Serialization
+Map these advanced variables into your core configuration states:
+```swift
+var crosstalkMatrixSelection: Int = 0 // 0 = Bypass, 1 = Recursive X-Talk Active
+var firPhaseOptimizationEnabled: Bool = false
+```
+
+#### 4. Core CoreAudio Pipeline LTI Mathematical Logic
+* Step A (Crosstalk Cancellation Vector Subchain): Position this processing node directly within Stage 02 (The Spatial Mid/Side Matrix block). If `crosstalkMatrixSelection == 1`, fetch the incoming left/right samples. Apply a fixed microsecond time delay ($\tau \approx 220\,\mu\text{s}$ based on average inter-aural speaker spacing) and a linear attenuation factor ($g \approx 0.7$) to create cross-feed cancellation vectors:
+    x_left_final[n] = x_left[n] - (g * x_right[n - \tau])
+    x_right_final[n] = x_right[n] - (g * x_left[n - \tau])
+  This linear subtraction completely eliminates acoustic ear cross-leakage.
+* Step B (Mixed-Phase FIR Convolution Loop): Position this block at Stage 01.5 of your pipeline, executing immediately after the biquad equalizer node. If `firPhaseOptimizationEnabled` is true, route your channel sample arrays through a high-speed uniform partitioned convolution engine accelerated via Apple's Accelerate Framework `vDSP_conv`.
+* Step C (Vector Execution): The convolution engine must convolve the real-time audio block using a 512-tap mixed-phase impulse response vector designed to correct the group-delay phase errors of your physical multi-way speakers, delivering time-coherent wavefronts to your listening position without generating new frequencies.
+
+C. Refactoring Directive: Linear Sub-Band Spectral De-Noising Engine & User Guide Synchronization
+
+Objective
+Integrate a high-performance Linear Sub-Band Spectral Phase De-Noising Engine into the application repository (DHDook/equaliser-adv) [INDEX]. This specification instructs the agent to create a multi-band linear attenuation matrix at Stage 01.2 of the DSP pipeline to suppress constant background tape hiss, vinyl surface crackle, or microphone hum embedded inside active playback streams without introducing non-linear harmonic distortion [INDEX]. Additionally, dynamically update the text buffer of the native User Guide settings tab to incorporate comprehensive instructions for this feature [INDEX].
+
+
+
+1. UI Layout & Dashboard Component Integration
+
+Column 2 Configuration Grid Updates
+Action: Append a final operational row to the absolute bottom of Column 2 (Right Side) to complete the functional grid stack symmetrically without introducing vertical padding [INDEX].
+Layout Sequencing (Row 15):
+Row 15 (Right Side): Render a horizontal segmented picker control labeled "Spectral De-Noise". Configure the picker to host exactly two choices: Bypass and Active TPDF.
+
+text
+========================================================================
+[COLUMN 1: METERED DYNAMICS (LEFT)]      [COLUMN 2: SPATIAL & UTILITY (RIGHT)]
+========================================================================
+Row 13: [Limiter Meter]    ──► [Toggle]   Row 13: [Reflection Cancel Toggle]
+Row 14:                                   Row 14: [HPF Linearize Check] ──► [Sub Sync Check]
+                                          Row 15: [Spectral De-Noise Picker: Bypass/Active]
+Use code with caution.
+
+
+Height Constraints Enforcement
+Action: Enforce strict auto-expanding vertical parameters to ensure all elements lock into place cleanly, adhering strictly to the zero vertical scrolling rule across the main screen interface dashboard [INDEX].
+
+
+
+2. Universal Tooltip Definition Updates
+Action: Update the unified text tooltip box situated above the main screen grid layout to append the descriptive definition for this structural archiving utility [INDEX].
+Exact Text String to Inject:
+"Stereo Widener: Adjusts multi-band spatial fields to expand guitars and ambient sounds while keeping low bass centered. Loudness Match: Automatically smooths out long-term volume offsets between disparate source tracks to a stable target LUFS baseline. De-Esser: Tames harsh high-frequency sibilance ('S' and 'T' vocal sounds). Dynamic EQ Mode: Converts the De-Esser into a localized dynamic cut, saving surrounding high-end air. Multiband Compressor: Separately controls the dynamics of independent low, mid, and high frequency bands. Compressor: Balances the wideband dynamic range to glue the stereo mix together. Expander: Gently attenuates sub-threshold elements to lower background noise or expand flat mixes. De-Harsh: Employs a phase-pure analog see-saw tilt to naturally smooth bright production styles. Loudness Contour: Dynamically balances sub-bass and treble curves during low-volume playback to counteract human hearing deficiencies. DC Filter: Automatically removes hidden direct-current electrical offsets below 0.5 Hz to maximize amplifier efficiency and speaker headroom. Delta Solo: Inverts the processing phase to isolate and audition strictly the acoustic changes introduced by your active EQ map. Latency Mode (Buffer Sync): Toggles the limiter look-ahead footprint and dynamically changes the underlying macOS CoreAudio hardware I/O buffer frame size between 1024 samples for maximum music stability and 64 samples for lag-free movie lip-sync. Symmetry Balance: Applies linear inverse volume scaling factors to correct Left/Right speaker volume imbalances caused by asymmetrical room acoustics, pulling center images in focus. Pause Gate: Automatically applies an ultra-fast 5ms look-ahead fade to absolute silence during track changes or sample-rate handshakes to eliminate loud hardware clicks and speaker pops. Stereo Mode: Controls inter-channel summing topology, offering standard Stereo, True-Mono for historical records, and Wide-Mono to repair disjointed hard-panned 1960s/70s audio mixes cleanly. Sync Buffer: Creates a temporary audio memory cache that holds incoming audio frames during a bit-perfect sample rate clock change, releasing the stream only after the external DAC hardware successfully locks to eliminate truncated track intros. Dither Mode: Manages bit-depth reduction transitions when converting 32-bit internal DSP math down to your external DAC hardware resolution, utilizing Triangular Probability Density Function noise to eliminate harsh digital quantization distortion on fading tracks. Crosstalk Matrix: Implements a recursive cross-feed vector subtraction network that phase-cancels inter-aural acoustic leakage, unlocking a holographic 180-degree 3D soundstage. FIR Phase Link: Deploys a mixed-phase Finite Impulse Response filter matrix to resolve transducer group-delay anomalies, aligning woofer and horn wave arrival times down to the exact microsecond. Reflection Cancel: Employs a look-ahead linear deconvolution matrix to mathematically subtract the room's initial sidewall reflection arrivals from the stream. HPF Linearize: Applies an inverse all-pass phase correction network over your active High-Pass Filters to permanently eliminate low-frequency phase delay, ensuring absolute bass transient tightness. Sub Sync: Deploys a targeted linear-phase group-delay equalizer between 30 Hz and 90 Hz to phase-match your tape-out subwoofer track perfectly with your main speakers. Spectral De-Noise: Employs a linear sub-band filter matrix to isolate and attenuate micro-pockets of background tape hiss and microphone hum embedded inside active source recordings, maintaining complete transient purity. Clipper: Shaves microsecond transient peaks to maximize clean headroom. Limiter: Acts as an absolute brickwall ceiling to stop digital clipping distortion."
+
+
+
+3. State & Preset Serialization
+Map these variables into your global state container models (models/PresetProfile.swift) to track automation configurations across processing layers [INDEX]:
+
+swift
+var spectralDeNoiseSelection: Int = 0         // 0 = Bypass, 1 = Sub-Band De-Noise Active
+var spectralNoiseFloorThresholdDB: Float = -75.0 // Calibrated baseline hiss target
+Use code with caution.
+
+
+
+
+4. Core CoreAudio Pipeline LTI De-Noising Logic
+Instruct the engine to implement these linear sub-band scaling loops inside your background audio block threads:
+
+Step A: Pipeline Processing Position
+Position this calculation node at Stage 01.2 of your pipeline, executing immediately following the Stage 01 Parametric EQ biquad matrix but right before the Stage 02 Stereo Widener [INDEX].
+
+Step B: Sub-Band Discrete Matrix Separation
+If spectralDeNoiseSelection == 1, utilize an optimized, phase-aligned linear filter bank array to split the incoming 32-bit floating-point stereo buffer frames into 16 discrete, adjacent narrow sub-bands natively accelerated via Apple's Accelerate Framework (vDSP).
+
+Step C: Linear Coefficient Attenuation
+For every isolated sub-band, calculate the real-time Root-Mean-Square (RMS) energy level over the current block frame.
+If the calculated energy inside a specific narrow sub-band drops below spectralNoiseFloorThresholdDB (the calibrated target floor where tape hiss or room ambiance resides), apply a linear attenuation multiplier factor (\(g_{\text{noise}} \approx 0.4\)) strictly to that isolated frequency band vector for the current block frame:
+\(x_{\text{subband}}[n]=x_{\text{subband}}[n]\cdot g_{\text{noise}}\)
+If the musical signal energy inside that band breaches the threshold, instantly restore the multiplier to unity gain (\(1.0\)) using a smooth \(2\text{ ms}\) linear ramp. This lets musical transients pass completely unaltered and free of gating clicks or non-linear harmonic distortion, surgically drying out constant background noise during active playback intervals.
+
+
+
+5. Codebase Synchronization: User Guide Tab Text Update
+Action: Locate your app level UserGuideSettingsViewController.swift container file. Open the masterManualTextBuffer text container string variable block and inject this new dedicated chapter at the absolute bottom of the manual context to document this premium linear restoration utility [INDEX].
+
+Text String to Inject into the User Guide Buffer:
+
+text
+---
+
+## Part 10: Linear Sub-Band Spectral De-Noising Engine
+
+The Spectral De-Noise module implements an elite historical archival restoration algorithm designed to surgically eliminate constant background tape hiss, vinyl surface crackle, or microphone hum embedded directly inside your source tracks without sacrificing absolute audio clarity or bit-perfect fidelity.
+
+### 1. The Bottleneck of Wideband Expansion
+Standard wideband dynamic range expanders operate on the full bandwidth of the music simultaneously. While this works perfectly to lower the noise floor during quiet song gaps and track fades, a wideband expander remains completely open during loud, high-energy musical sections. If a vintage 1970s master contains a heavy analog tape hiss embedded right at 4 kHz to 8 kHz, a wideband expander lets that hiss blast through into your speakers right alongside a heavy guitar riff or drum chug.
+
+### 2. Principles of Sub-Band Linear De-Noising
+The Spectral De-Noise engine solves this by utilizing a Linear, Time-Invariant (LTI) sub-band filter matrix. Instead of applying a single attenuation rule to the whole file, the engine splits the active audio stream into 16 narrow, phase-aligned linear frequency lanes. The processing core continuously monitors the energy levels inside each individual lane independently. 
+
+If the musical energy inside a specific sub-band drops below the calibrated noise threshold (-75 dB), the app applies a transparent linear attenuation multiplier exclusively to that isolated micro-pocket of frequencies. For example, when a heavy low-mid guitar riff or bass groove plays, the low and mid sub-band channels stay completely open and raw at unity gain. Meanwhile, the extreme high-frequency sub-bands—where no musical notation exists, only raw tape hiss—are mathematically suppressed. 
+
+The exact microsecond a screaming guitar solo, vocal line, or cymbal hit shoots into those high-frequency lanes, the sub-bands open instantly using a ultra-fast 2ms linear ramp to let the performance pass through with pristine transient clarity. The moment the musical note decays, the lane smoothly closes. This strips away constant background noise during active playback while keeping the original master tape recording completely unadulterated, raw, and organic.
+Use code with caution.
+
+
+
+
+6. Action Steps for the Agent
+Refactor Main View Grid Constraints: Update your main UI layout file to insert Row 15 into the absolute bottom of Column 2 [INDEX]. Mount the Spectral De-Noise segmented picker control. Update the master tooltips with the text block from Section 2 [INDEX].
+Deploy Linear Sub-Band DSP Filters: Thread the 16-band parallel linear analysis bank and the 2ms gated ramp multipliers into Stage 01.2 of your central CoreAudio real-time processing loop thread manager [INDEX].
+Synchronize Reference Documentation Text: Open UserGuideSettingsViewController.swift. Inset the Part 10 text data block provided in Section 5 directly into your localized string arrays to ensure all user manual reference entries update smoothly [INDEX].
+
+
+
+D. Refactoring Directive: Settings-Level Room Acoustic Calibration Tab & User Guide Documentation Sync
+Objective
+
+Integrate the automated Stage 0 Room Acoustic Calibration Engine as a dedicated view tab inside the settings configuration window of the macOS equalizer application (DHDook/equaliser-adv) [INDEX]. Additionally, dynamically update the text buffer of the native User Guide settings tab to incorporate comprehensive calibration, hardware limits, and tuning instructions for this feature [INDEX].
+
+1. UI Architecture & Settings Tab Placement
+
+Tab Matrix Expansion
+
+
+Action: Extend the application's top-level Settings view tab controller sequence to add a new option node labeled "Room Calibration".
+Scrolling Configuration: Vertical scrolling is explicitly permitted inside this dedicated calibration tab view framework to cleanly hold the metrics dropdowns and the response graph canvas frame.
+Geometry & Alignment Layout Sequencing (Top to Bottom)
+
+Nest the components within an NSScrollView padding inset of 20pt on all margins [INDEX]:
+
+Audio Input Device Selector Dropdown: Queries and displays native macOS hardware input channels (kAudioHardwarePropertyDevices), allowing the user to select their connected omnidirectional measurement microphone [INDEX].
+Target Curve Profiler Selection Box: A horizontal segmented control with exactly three choices: [Harman Flat, Smooth Studio, Vintage Roll-Off].
+Real-Time Frequency Response Canvas: A high-contrast rectangular drawing frame (minimum height 200pt) plotting frequency logarithmically ($20\text{ Hz}$ to $20,000\text{ Hz}$) and amplitude linearly ($-12\text{ dB}$ to $+12\text{ dB}$).
+Plot Line A (Solid Crimson Red): Displays the raw, uncorrected acoustic signature of your room [INDEX].
+Plot Line B (Solid Electric Blue): Displays the newly calculated target inverse response curve [INDEX].
+
+Max Corrective Cap Slider: A horizontal slider ranging from ±3.0 dB to ±10.0 dB with an explicit safe default setting of ±6.0 dB [INDEX].
+Graph Smoothing Target Picker: Segmented control to choose the layout smoothing bandwidth: [1/3 Octave, 1/12 Octave, Unsmoothed].
+The Master Calibration Action Key: A large, high-contrast, prominent execution button labeled: "★ START ACOUSTIC ROOM CALIBRATION ★" [INDEX].
+
+2. State & Configuration Parameters
+
+Map these parameters into your core state structures to ensure values load lock-free across processing threads [INDEX]:
+import Foundation
+import Atomics
+
+class CalibrationStateContainer {
+    let calibrationInputDeviceID = ManagedAtomic<UInt32>(0)
+    let calibrationMaxCapDB = ManagedAtomic<Float>(6.0)
+    let isRoomCalibrationMapCompiled = ManagedAtomic<Bool>(false)
+    
+    // Thread-safe storage arrays for the 7 broad corrective low-density bins
+    var stage0RoomCorrectionGains: [Float] = [Float](repeating: 0.0, count: 7)
+    let stage0RoomCorrectionFreqs: [Float] = [120.0, 250.0, 400.0, 800.0, 2500.0, 4500.0, 6500.0]
+}
+
+3. Core Measurement & Inverse-Filter DSP Logic
+
+Step A: Measurement Trigger Sequence
+
+When the user clicks the "★ START ACOUSTIC ROOM CALIBRATION ★" button, fire an asynchronous background thread:
+
+Temporarily bypass or mute any active user preset EQ maps or dynamics blocks to ensure a clean reference signal path.
+Command your output rendering buffers to play a 5.0-second log-exponential sine sweep running smoothly from $20\text{ Hz}$ to $20,000\text{ Hz}$ through your stereo channels [INDEX].
+Simultaneously open an input capture stream block linked to the user's selected calibrationInputDeviceIDmicrophone channel to record the physical space's wet acoustic response [INDEX].
+Step B: Acoustic Analysis and Fast Fourier Transform (FFT) Deconvolution
+
+
+Pass the captured input audio arrays directly into Apple's hardware-accelerated Accelerate Framework (vDSP_fft_zrip) [INDEX].
+Deconvolve the wet recorded tracking vector against a cached digital reference copy of the original dry sine sweep to calculate your room's physical Impulse Response (IR) and frequency magnitude response data matrix [INDEX].
+Smooth the resulting room response curve data into 7 discrete broad frequency slots matching the hardcoded musical bands in stage0RoomCorrectionFreqs [INDEX].
+Step C: Target Curve Generation & Safety Alignment
+
+
+Compute the exact mathematical inverse of the measured room anomalies across all 7 frequency slots to counteract room resonances [INDEX]. If a standing wave in your listening room creates an aggressive resonance peak of +6 dB at a frequency block near 120 Hz [INDEX], the calibration code must compute an exact broad-cutting filter response reading -6 dB at that same frequency block index.
+Pass the calculated inverse values through a hard clamping check bounded by the user's calibrationMaxCapDBparameter state (e.g., capping max cuts/boosts strictly to ±6.0 dB). This boundary protection stops the engine from over-driving your vintage Pioneer power amplifier or pushing your bi-amped Klipsch speaker drivers to mechanical limits trying to fill a physical acoustic hole [INDEX].
+Write these 7 final scalar metrics atomically into the stage0RoomCorrectionGains parameter array.
+Set the isRoomCalibrationMapCompiled state boolean to true.
+Step D: Stage 00 Structural Pipeline Insertion
+
+Position a hidden, permanent biquad filter subchain array at the absolute front of your CoreAudio audio pipeline callback thread (Stage 00, preceding all genre preset maps or spatial models).
+
+If isRoomCalibrationMapCompiled reads true, this node must continuously apply the 7 broad corrective low-density filters to the incoming stream. This flattens out the physical listening environment transparently across all subsequent playback paths, providing a clean baseline before any wideband or spatial operations take place [INDEX].
+
+4. Codebase Synchronization: User Guide Tab Text Update
+
+
+Action: Locate your app level UserGuideSettingsViewController.swift file container. Open the masterManualTextBuffer text container string variable block and inject this new dedicated chapter directly below Part 6 (Initial System Calibration Guide) to document the room correction framework [INDEX].
+Text String to Inject at the Bottom of the User Guide Buffer:
+
+---
+
+## Part 7: Stage 00 Automated Speaker & Room Acoustic Calibration
+
+The Automated Room Calibration module operates as an advanced acoustic analysis probe, bridging the physical reflections of your listening room directly to your application's underlying pipeline to achieve absolute phase purity and transparency.
+
+### 1. Core Principles of Low-Density Correction
+Traditional digital room correction systems often inject dozens of narrow, highly volatile corrective filters. While this looks smooth on a graph, it drastically fractures the phase alignment of your audio stream, smearing transients and destroying the soundstage depth of your speakers. 
+
+To preserve the transient punch of your music, this engine utilizes a minimalist approach: it groups the room analysis into 7 broad, fixed musical frequency slots. It targets macro room resonances—such as bass standing waves or boundary desk build-ups—using gentle, broad analog-style curves that introduce near-zero phase smearing.
+
+### 2. Max Corrective Boundary Safeguards
+The interface includes a Max Corrective Cap slider (Safe Default: ±6.0 dB). This serves as a critical safety lock for your vintage amplification setup. If your listening room contains a deep acoustic null (a physical frequency cancellation caused by speaker placement), a digital filter cannot fix it by simply boosting that frequency. Attempting to force a +12 dB digital boost into an acoustic hole will overload your digital headroom, clip your Schiit Modi DAC, and over-drive your vintage Pioneer power amplifier into dangerous hardware distortion. Restricting this cap to ±6.0 dB ensures the correction engine flattens the room safely and transparently without sacrificing clean wattage.
+
+### 3. Step-by-Step Room Calibration Procedure
+To calibrate your physical listening space perfectly, follow this mandatory operational routine:
+1. Mount an omnidirectional measurement microphone to a tripod and position it at your exact listening spot on the couch, level with your ears. Plug the microphone into your Mac via USB.
+2. Open the application's Settings window and navigate to the Room Calibration tab.
+3. Select your measurement microphone from the Audio Input Device selector dropdown menu.
+4. Ensure your Mac volume sits at 100%, your application Preamp Gain sits at 0.0 dB, and your Limiter Ceiling is locked at -0.5 dBFS with True-Peak Auto-Guard ON.
+5. Set the physical volume dial on your Denon preamplifier to a comfortable, moderate room listening volume.
+6. Clear the room of any background noise, sit completely still away from the microphone, and click the "★ START ACOUSTIC ROOM CALIBRATION ★" button.
+7. The system will output a 5-second log-exponential sine sweep. Once the background thread finishes computing the inverse vDSP FFT matrices, the graph will update instantly, showing your raw room anomalies in Crimson Red and the corrective filters in Electric Blue.
+8. The hidden Stage 00 Room Correction node is now active, transparently flattening your listening environment across all subsequent preset map choices.
+
+5. Action Steps for the Agent
+
+
+Create Calibration Tab Controller: Save the UI layout controls, dropdowns, and dual-layer graph canvases inside a standalone settings view file located at src/ui/Components/RoomCalibrationViewController.swift[INDEX].
+Mount to Tab Controller Matrix: Append this new view file straight into the top-level tab sequence container inside your application's settings window layout arrays.
+Update the User Guide String Buffer: Open UserGuideSettingsViewController.swift. Locate the masterManualTextBuffer markdown block and copy/paste the entire text buffer string defined in Section 4 right to the bottom of the manual context [INDEX].
+
+
+E. Refactoring Directive: CoreAudio Input Device Capture Hooks & Microphone Stream Listener
+
+Objective
+Implement low-level macOS CoreAudio Hardware Abstraction Layer (HAL) properties and input buffer callbacks inside the application repository (src/dsp/PreBufferEngine.swift). This module queries the system for the user's selected USB microphone hardware ID, instantiates an isolated input audio stream thread loop, and pipes the raw recording vectors directly to the vDSP_fft_zrip matrix deconvolution array.
+
+
+
+1. Structural Architecture & CoreAudio Device Queries
+Instruct the agent to utilize native AudioObjectGetPropertyData calls to identify the unique system hardware identifiers (AudioDeviceID) associated with your external omnidirectional measurement microphone.
+
+swift
+import Foundation
+import CoreAudio
+import Atomics
+
+class CoreAudioInputDeviceManager {
+    
+    /// Queries the macOS system bus for a list of all currently connected audio device hardware IDs
+    static func getConnectedInputDevices() -> [AudioDeviceID] {
+        var propertyAddress = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDevices,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        
+        var dataSize: UInt32 = 0
+        var status = AudioObjectGetPropertyDataSize(AudioObjectID(kAudioObjectSystemObject), &propertyAddress, 0, nil, &dataSize)
+        guard status == noErr else { return [] }
+        
+        let deviceCount = Int(dataSize) / MemoryLayout<AudioDeviceID>.size
+        var deviceIDs = [AudioDeviceID](repeating: 0, count: deviceCount)
+        
+        status = AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &propertyAddress, 0, nil, &dataSize, &deviceIDs)
+        guard status == noErr else { return [] }
+        
+        // Filter out devices containing exactly 0 input channels (keep microphones exclusively)
+        return deviceIDs.filter { deviceID in
+            return getInputChannelCount(deviceID: deviceID) > 0
+        }
+    }
+    
+    private static func getInputChannelCount(deviceID: AudioDeviceID) -> Int {
+        var propertyAddress = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyStreamConfiguration,
+            mScope: kAudioObjectPropertyScopeInput,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        
+        var dataSize: UInt32 = 0
+        var status = AudioObjectGetPropertyDataSize(deviceID, &propertyAddress, 0, nil, &dataSize)
+        guard status == noErr else { return 0 }
+        
+        let bufferListPointer = UnsafeMutableRawPointer.allocate(byteCount: Int(dataSize), alignment: MemoryLayout<AudioBufferList>.alignment)
+        defer { bufferListPointer.deallocate() }
+        
+        status = AudioObjectGetPropertyData(deviceID, &propertyAddress, 0, nil, &dataSize, bufferListPointer)
+        guard status == noErr else { return 0 }
+        
+        let bufferList = bufferListPointer.assumingMemoryBound(to: AudioBufferList.self).pointee
+        let buffers = UnsafeBufferPointer(start: &bufferList.mBuffers, count: Int(bufferList.mNumberBuffers))
+        
+        return buffers.reduce(0) { $0 + Int($1.mNumberChannels) }
+    }
+}
+Use code with caution.
+
+
+
+
+2. Isolated Real-Time Input Recording IO Loop
+Instruct the agent to instantiate an independent AudioComponentInstance input unit (kAudioUnitType_Output/ kAudioUnitSubType_HALOutput) specifically configured to execute a real-time recording loop on an isolated thread, completely separated from your main AURemoteIO output stream path to maintain absolute digital isolation.
+
+swift
+import CoreAudio
+import AudioToolbox
+import Atomics
+
+class RoomMeasurementRecordingEngine {
+    
+    private var inputAudioUnit: AudioUnit? = nil
+    private var isRecording = ManagedAtomic<Bool>(false)
+    
+    // Lock-free pre-allocated static storage memory pool arrays matching your SIMD boundaries
+    private var wetCaptureBuffer = [Float]()
+    private let maxCaptureSamples = 384000 * 6 // Allocation runtime limit ceiling (6 seconds @ 384kHz max)
+    
+    init() {
+        wetCaptureBuffer.reserveCapacity(maxCaptureSamples)
+    }
+    
+    /// Initializes and links the input audio unit thread directly to your USB microphone hardware ID
+    func initializeInputChannelHook(microphoneDeviceID: AudioDeviceID) -> OSStatus {
+        var desc = AudioComponentDescription(
+            componentType: kAudioUnitType_Output,
+            componentSubType: kAudioUnitSubType_HALOutput, // Direct HAL access node connection
+            componentManufacturer: kAudioUnitManufacturer_Apple,
+            componentFlags: 0,
+            componentFlagsMask: 0
+        )
+        
+        guard let component = AudioComponentFindNext(nil, &desc) else {
+            return kAudioUnitErr_CannotDoInCurrentContext
+        }
+        
+        var status = AudioComponentInstanceNew(component, &inputAudioUnit)
+        guard status == noErr, let au = inputAudioUnit else { return status }
+        
+        // 1. Enable Input IO on Bus 1, and disable Output IO on Bus 0
+        var enableInput: UInt32 = 1
+        status = AudioUnitSetProperty(au, kAudioOutputUnitProperty_EnableIO, kAudioUnitScope_Input, 1, &enableInput, UInt32(MemoryLayout<UInt32>.size))
+        guard status == noErr else { return status }
+        
+        var disableOutput: UInt32 = 0
+        status = AudioUnitSetProperty(au, kAudioOutputUnitProperty_EnableIO, kAudioUnitScope_Output, 0, &disableOutput, UInt32(MemoryLayout<UInt32>.size))
+        guard status == noErr else { return status }
+        
+        // 2. Bind the selected USB microphone device ID directly to this unit
+
+
+        var targetDevice = microphoneDeviceID
+        status = AudioUnitSetProperty(au, kAudioOutputUnitProperty_CurrentDevice, kAudioUnitScope_Global, 0, &targetDevice, UInt32(MemoryLayout<AudioDeviceID>.size))
+        guard status == noErr else { return status }
+        
+        // 3. Enforce our strict 32-bit floating-point linear PCM stream constraints
+        var streamFormat = AudioStreamBasicDescription(
+            mSampleRate: 44100.0, // Will automatically scale via auto-clock hooks up to 384kHz
+            mFormatID: kAudioFormatLinearPCM,
+            mFormatFlags: kAudioFormatFlagIsFloat | kAudioFormatFlagIsPacked | kAudioFormatFlagIsNonInterleaved,
+            mBytesPerPacket: 4,
+            mFramesPerPacket: 1,
+            mBytesPerFrame: 4,
+            mChannelsPerFrame: 1, // Capture room readings in tightly focused omni-mono
+            mBitsPerChannel: 32,
+            mReserved: 0
+        )
+        
+        status = AudioUnitSetProperty(au, kAudioUnitProperty_StreamFormat, kAudioUnitScope_Output, 1, &streamFormat, UInt32(MemoryLayout<AudioStreamBasicDescription>.size))
+        guard status == noErr else { return status }
+        
+        // 4. Hook the hardware render input recording callback container block
+        var callbackStruct = AURenderCallbackStruct(
+            inputProc: recordingInputCallbackProc,
+            inputProcRefCon: UnsafeMutableRawPointer(Unmanaged.passUnretained(self).toOpaque())
+        )
+        
+        status = AudioUnitSetProperty(au, kAudioOutputUnitProperty_SetInputCallback, kAudioUnitScope_Global, 0, &callbackStruct, UInt32(MemoryLayout<AURenderCallbackStruct>.size))
+        guard status == noErr else { return status }
+        
+        status = AudioUnitInitialize(au)
+        return status
+    }
+    
+    func startCapture() {
+        guard let au = inputAudioUnit else { return }
+        wetCaptureBuffer.removeAll(keepingCapacity: true)
+        isRecording.store(true, ordering: .relaxed)
+        AudioOutputUnitStart(au)
+    }
+    
+    func stopCapture() -> [Float] {
+        guard let au = inputAudioUnit else { return [] }
+        AudioOutputUnitStop(au)
+        isRecording.store(false, ordering: .relaxed)
+        return wetCaptureBuffer
+    }
+}
+
+// ---
+
+### 3. Real-Time Hardware Render Recording Input Callback Hook
+
+This low-level global C-style callback intercepts the incoming audio chunks from the USB microphone hardware abstraction bus layer instantly, writing sample arrays into your static pre-allocated memory pool without dynamic memory allocations or thread-stalling blocks.
+
+```swift
+private func recordingInputCallbackProc(
+    inRefCon: UnsafeMutableRawPointer,
+    ioActionFlags: UnsafeMutablePointer<AudioUnitRenderActionFlags>,
+    inTimeStamp: UnsafePointer<AudioTimeStamp>,
+    inBusNumber: UInt32,
+    inNumberFrames: UInt32,
+    ioData: UnsafeMutablePointer<AudioBufferList>?
+) -> OSStatus {
+    
+    let engine = Unmanaged<RoomMeasurementRecordingEngine>.fromOpaque(inRefCon).takeUnretainedValue()
+    guard let au = engine.inputAudioUnit else { return noErr }
+    
+    // Allocate a temporary stack buffer list matching our omni-mono constraints
+    var bufferList = AudioBufferList()
+    bufferList.mNumberBuffers = 1
+    bufferList.mBuffers.mNumberChannels = 1
+    bufferList.mBuffers.mDataByteSize = inNumberFrames * 4
+    bufferList.mBuffers.mData = UnsafeMutableRawPointer.allocate(byteCount: Int(bufferList.mBuffers.mDataByteSize), alignment: 16)
+    defer { bufferList.mBuffers.mData?.deallocate() }
+    
+    // Force the input hardware layer to pull raw PCM measurements down into our buffer list
+    let status = AudioUnitRender(au, ioActionFlags, inTimeStamp, inBusNumber, inNumberFrames, &bufferList)
+    guard status == noErr else { return status }
+    
+    if engine.isRecording.load(ordering: .relaxed) {
+        if let rawData = bufferList.mBuffers.mData {
+            let floatSamples = rawData.assumingMemoryBound(to: Float.self)
+            // Append array slices directly inside our pre-allocated memory pool without triggering malloc locks
+            for frame in 0..<Int(inNumberFrames) {
+                if engine.wetCaptureBuffer.count < engine.maxCaptureSamples {
+                    engine.wetCaptureBuffer.append(floatSamples[frame])
+                }
+            }
+        }
+    }
+    
+    return noErr
+}
+```
+
+---
+
+### 4. Action Steps for the Agent
+
+1. **Mount Target File:** Inject this core hardware capture file path directly inside your workspace architecture as `src/dsp/PreBufferEngine.swift`.
+2. **Link Dropdown Data Source:** Set the user interaction selector inside the settings calibration tab panel to query `CoreAudioInputDeviceManager.getConnectedInputDevices()` to auto-populate the layout names list.
+3. **Connect Action Handlers:** Target the click handler event loops of the master `"★ START ACOUSTIC ROOM CALIBRATION ★"` key to systematically fire `startCapture()`, output your log-sweep vectors cleanly, and then invoke `stopCapture()` to pipe the final arrays directly to your real-time vDSP deconvolution matrix blocks.
+
+***
+
+
+F. Refactoring Directive: Settings-Level Multi-Seat Room Acoustic Calibration & Complex Vector Averaging Sync
+
+Objective
+Implement a multi-seat, complex-vector acoustic averaging sub-system inside the Room Calibration Tablayout and the Stage 00 Calibration Engine [INDEX]. This updates your system to store, compare, and average up to three discrete spatial listening coordinates (Center, Left, and Right cushions) [INDEX].
+By passing the raw impulse responses through a hardware-accelerated complex-vector arithmetic mean calculation via Apple's Accelerate Framework (vDSP), the engine flattens room resonances across your entire couch—expanding your holographic sweet spot into a broad "sweet couch" while introducing absolute zero phase smearing or harmonic distortion [INDEX].
+
+
+
+
+
+1. UI Layout & Component Additions (Room Calibration Tab View)
+
+Geometry & Alignment Layout Sequencing
+Open your application's Settings "Room Calibration" tab view controller code file. Directly above the primary "★ START ACOUSTIC ROOM CALIBRATION ★" execution button, insert the following horizontal parameter controls within an NSScrollView padding inset of 20pt on all margins [INDEX]:
+Calibration Position Selection Picker: A horizontal segmented control labeled "Calibration Position" containing exactly three structural choices: [Center Seat, Left Seat, Right Seat][INDEX].
+Acoustic Configuration Mode Box: A horizontal segmented option toggle labeled "Acoustic Mapping" with two choices: [Single Point Focus, Multi-Seat Couch Average].
+Dynamic Status String Readout: A text string status readout block at the lower border of your canvas graph reading: "Ambient Shield: Monitoring Room Silence".
+
+
+
+2. Global State & Presets Serialization Constants
+Map these variables into your global preset architecture structures (models/PresetProfile.swift) to manage multi-seat telemetry synchronization lock-free across processing threads [INDEX]:
+
+swift
+// State Trackers
+let multiSeatAveragingSelection = ManagedAtomic<Int>(0) // 0 = Single Point, 1 = Couch Average Deployed
+let currentActiveCalibrationPosition = ManagedAtomic<Int>(0) // 0 = Center, 1 = Left, 2 = Right
+
+// Thread-safe storage arrays for the 7 broad corrective low-density bins per seat position
+var stage0RoomCorrectionGainsCenter = [Float](repeating: 0.0, count: 7)
+var stage0RoomCorrectionGainsLeft = [Float](repeating: 0.0, count: 7)
+var stage0RoomCorrectionGainsRight = [Float](repeating: 0.0, count: 7)
+
+// Unified operational array loaded by the Stage 00 live processing thread
+var stage0RoomCorrectionGainsMaster = [Float](repeating: 0.0, count: 7)
+let stage0RoomCorrectionFreqs: [Float] = [120.0, 250.0, 400.0, 800.0, 2500.0, 4500.0, 6500.0]
+Use code with caution.
+
+
+
+
+3. Core Measurement & Multi-Seat Averaging DSP Logic
+Instruct the engine to calculate these parameters using hardware-accelerated functions on an isolated background thread, completely detached from live playback dependencies until calibration completes.
+
+Step A: Multi-Seat Measurement Trigger Sequence
+When the user clicks the "★ START ACOUSTIC ROOM CALIBRATION ★" button:
+Read the active selection index of the currentActiveCalibrationPosition picker (0 for Center, 1 for Left, 2 for Right) [INDEX].
+Execute the Ambient Noise Check: Engage a mandatory 2-second silent profiling window beforeplaying the sweep [INDEX]. Calculate the root-mean-square power of the room's ambient silence [INDEX]. If the background noise spikes past -45 dBFS, instantly abort the routine, mute all outputs, and flash a Crimson Red warning string reading "Calibration Aborted: Excessive Room Noise" to protect your data math [INDEX].
+If the room is safely quiet, play the 5.0-second log-exponential sine sweep (\(20\text{ Hz} - 20,000\text{ Hz}\)) through your speakers while capturing the recorded raw room data from your USB microphone [INDEX].
+
+Step B: Isolated Data Bin Allocation
+Pass the captured input audio arrays directly into Apple's hardware-accelerated Accelerate Framework (vDSP_fft_zrip) to deconvolve the signal and isolate the room's absolute magnitude transfer function (\(H[f]\)) [INDEX].
+Smooth the response curve data into 7 discrete broad frequency slots matching the hardcoded musical bands in stage0RoomCorrectionFreqs [INDEX].
+Compute the exact mathematical inverse filter amplitudes, clamp them strictly within your user-defined calibrationMaxCapDB safety ceiling (Safe Default: ±6.0 dB), and route the resulting metrics to overwrite only the specific target memory buffer index selected prior to the sweep [INDEX]:
+If Position == 0: Overwrite stage0RoomCorrectionGainsCenter
+If Position == 1: Overwrite stage0RoomCorrectionGainsLeft
+If Position == 2: Overwrite stage0RoomCorrectionGainsRight
+
+Step C: Complex Vector Arithmetic Mean Loop
+Once an individual sweep finishes, evaluate the Acoustic Mapping selector state:
+Case 1 (Single Point Focus): If set to Single Point, bypass multi-seat calculations entirely. Copy the stage0RoomCorrectionGainsCenter array directly into your active stage0RoomCorrectionGainsMasteroutput buffer block, and flip isRoomCalibrationMapCompiled to true.
+Case 2 (Multi-Seat Couch Average): If set to Couch Average, the calculation engine must execute a complex-vector arithmetic mean calculation loop across all three captured magnitude response matrices (\(H[f]\)) across all 7 low-density bins to build a unified inverse room correction map:
+\(H_{\text{avg}}[f]=\frac{H_{\text{center}}[f]+H_{\text{left}}[f]+H_{\text{right}}[f]}{3.0}\)
+Vector Execution (vDSP Acceleration): Write the final smoothed, averaged values atomically into the active stage0RoomCorrectionGainsMaster buffer array, and set isRoomCalibrationMapCompiled to true.
+
+Step D: Stage 00 Hidden Signal Inversion Deployment
+The application's permanent, hidden Stage 00 Room Correction EQ Node at the absolute front of your digital pipeline continuously reads from stage0RoomCorrectionGainsMaster [INDEX].
+If isRoomCalibrationMapCompiled reads true, this node applies the 7 broad corrective filters to the incoming stream [INDEX]. This flattens out the physical response errors of your room boundaries, windows, and desktop surfaces transparently across all downstream playback paths, providing a clean baseline before any wideband or spatial operations take place [INDEX].
+
+
+
+4. Codebase Synchronization: User Guide Tab Text Update
+Action: Locate your app-level UserGuideSettingsViewController.swift container file. Open the masterManualTextBuffer text container string variable block and ensure this detailed multi-seat averaging section is appended to your user documentation text [INDEX].
+
+Text String to Verify Inside the User Guide Buffer:
+
+text
+### 2. Multi-Seat Complex Vector Room Averaging
+Standard room calibration systems tune your acoustics to a single microscopic point in space. While this builds a perfect sweet spot for one listener, moving even a foot to the left or right can pull the phase curves out of alignment. 
+
+The Room Calibration sub-panel resolves this by introducing a Multi-Seat Averaging Matrix. You can sample three discrete calibration sweeps across your couch (Left seat, Center seat, and Right seat). The engine passes the three independent impulse responses through a complex-vector arithmetic mean calculation, smoothing out the peaks and nulls to construct a unified inverse room correction map. This expands your holographic sweet spot into a wide "sweet couch," ensuring pristine clarity for multiple listeners simultaneously.
+Use code with caution.
+
+
+
+
+5. Action Steps for the Agent
+Refactor Calibration View Components: Open src/ui/Components/RoomCalibrationViewController.swift. Map the currentActiveCalibrationPosition segmented picker control directly above your main trigger key, matching your AutoLayout padding constraints.
+Deploy Complex Vector Averaging Math: Inset the Case-based conditional compilation loops from Section 3 into your background FFT deconvolution thread manager routines, forcing all three array inputs to divide down to a unified master gain array.
+Synchronize User Manual Reference Entry: Verify that the text in Section 4 is appended cleanly to your native scrollable User Guide panel to ensure your documentation stays fully synchronized with the app features.
+
+
+G. Refactoring Directive: HPF Phase Linearization, Multi-Seat Complex Averaging, & Sub-Bass Phase Alignment
+
+Objective
+Integrate three ultra-premium Linear, Time-Invariant (LTI) time-alignment and phase-correction modules into the processing pipeline, user interface, configuration presets, and documentation files of the macOS equalizer application (DHDook/equaliser-adv) [INDEX]. This update implements High-Pass Filter Phase-Linearization, a Multi-Seat Room Acoustic Complex Vector Averaging Engine, and a Sub-Bass Group-Delay Phase Match Filter spanning from \(30\text{ Hz}\) to \(90\text{ Hz}\) [INDEX].
+Because these modules are strictly LTI, they process the audio stream via linear vector algebra, time delays, and phase shifts, introducing absolute zero harmonic distortion, zero artificial synthesis, and zero processing noise to preserve absolute audio clarity and bit-perfect digital fidelity [INDEX].
+
+
+
+1. UI Layout & Dashboard Component Integration
+
+Column 2 Configuration Grid Updates
+Action: Append a final control row to the absolute bottom of Column 2 (Right Side) to complete the functional grid stack symmetrically without introducing vertical padding [INDEX].
+Layout Sequencing (Row 14):
+Row 14 (Right Side): Render a horizontal dual-component row pairing a master configuration checkbox labeled "HPF Linearize" directly to the left of a second master configuration checkbox labeled "Sub Sync".
+
+text
+========================================================================
+[COLUMN 1: METERED DYNAMICS (LEFT)]      [COLUMN 2: SPATIAL & UTILITY (RIGHT)]
+========================================================================
+Row 11: [Clipper Meter+Hold]─► [Toggle]   Row 11: [Crosstalk Matrix Picker: Bypass/X-Talk]
+Row 12:                                   Row 12: [FIR Phase Link Toggle] ──► [Recalculate IR]
+Row 13: [Limiter Meter]    ──► [Toggle]   Row 13: [Reflection Cancel Toggle]
+                                          Row 14: [HPF Linearize Check] ──► [Sub Sync Check]
+Use code with caution.
+
+
+Settings Panel Multi-View Tab Expansion (Room Calibration Tab View)
+Action: Open your application's Settings "Room Calibration" tab view controller code file.
+Acoustic Point Selector: Add a horizontal segmented picker control labeled "Calibration Position"directly above the main execution button with exactly three distinct choices: [Center Seat, Left Seat, Right Seat].
+Layout Constraints: Enforce strict auto-expanding vertical parameters to ensure all elements lock into place cleanly, adhering strictly to the zero vertical scrolling rule across the main screen interface dashboard [INDEX].
+
+
+
+2. Universal Tooltip Definition Updates
+Action: Update the unified text tooltip box situated above the main screen grid layout to append the descriptive definitions for these advanced low-level operational enhancements [INDEX].
+Exact Text String to Inject:
+"Stereo Widener: Adjusts multi-band spatial fields to expand guitars and ambient sounds while keeping low bass centered. Loudness Match: Automatically smooths out long-term volume offsets between disparate source tracks to a stable target LUFS baseline. De-Esser: Tames harsh high-frequency sibilance ('S' and 'T' vocal sounds). Dynamic EQ Mode: Converts the De-Esser into a localized dynamic cut, saving surrounding high-end air. Multiband Compressor: Separately controls the dynamics of independent low, mid, and high frequency bands. Compressor: Balances the wideband dynamic range to glue the stereo mix together. Expander: Gently attenuates sub-threshold elements to lower background noise or expand flat mixes. De-Harsh: Employs a phase-pure analog see-saw tilt to naturally smooth bright production styles. Loudness Contour: Dynamically balances sub-bass and treble curves during low-volume playback to counteract human hearing deficiencies. DC Filter: Automatically removes hidden direct-current electrical offsets below 0.5 Hz to maximize amplifier efficiency and speaker headroom. Delta Solo: Inverts the processing phase to isolate and audition strictly the acoustic changes introduced by your active EQ map. Latency Mode (Buffer Sync): Toggles the limiter look-ahead footprint and dynamically changes the underlying macOS CoreAudio hardware I/O buffer frame size between 1024 samples for maximum music stability and 64 samples for lag-free movie lip-sync. Symmetry Balance: Applies linear inverse volume scaling factors to correct Left/Right speaker volume imbalances caused by asymmetrical room acoustics, pulling center images in focus. Pause Gate: Automatically applies an ultra-fast 5ms look-ahead fade to absolute silence during track changes or sample-rate handshakes to eliminate loud hardware clicks and speaker pops. Stereo Mode: Controls inter-channel summing topology, offering standard Stereo, True-Mono for historical records, and Wide-Mono to repair disjointed hard-panned 1960s/70s audio mixes cleanly. Sync Buffer: Creates a temporary audio memory cache that holds incoming audio frames during a bit-perfect sample rate clock change, releasing the stream only after the external DAC hardware successfully locks to eliminate truncated track intros. Dither Mode: Manages bit-depth reduction transitions when converting 32-bit internal DSP math down to your external DAC hardware resolution, utilizing Triangular Probability Density Function noise to eliminate harsh digital quantization distortion on fading tracks. Crosstalk Matrix: Implements a recursive cross-feed vector subtraction network that phase-cancels inter-aural acoustic leakage, unlocking a holographic 180-degree 3D soundstage. FIR Phase Link: Deploys a mixed-phase Finite Impulse Response filter matrix to resolve transducer group-delay anomalies, aligning woofer and horn wave arrival times down to the exact microsecond. Reflection Cancel: Employs a look-ahead linear deconvolution matrix to mathematically subtract the room's initial sidewall reflection arrivals from the stream. HPF Linearize: Applies an inverse all-pass phase correction network over your active High-Pass Filters to permanently eliminate low-frequency phase delay, ensuring absolute bass transient tightness. Sub Sync: Deploys a targeted linear-phase group-delay equalizer between 30 Hz and 90 Hz to phase-match your tape-out subwoofer track perfectly with your main speakers. Clipper: Shaves microsecond transient peaks to maximize clean headroom. Limiter: Acts as an absolute brickwall ceiling to stop digital clipping distortion."
+
+
+
+3. State & Preset Serialization
+Map these new structural parameters into your global state container models (models/PresetProfile.swift) to track automation configurations across processing layers [INDEX]:
+
+swift
+var hpfPhaseLinearizeEnabled: Bool = true
+var subBassGroupDelaySyncEnabled: Bool = true
+var multiSeatAveragingSelection: Int = 0 // 0 = Single Seat, 1 = Couched Average Deployed
+var stage0RoomCorrectionGainsCenter = [Float](repeating: 0.0, count: 7)
+var stage0RoomCorrectionGainsLeft = [Float](repeating: 0.0, count: 7)
+var stage0RoomCorrectionGainsRight = [Float](repeating: 0.0, count: 7)
+Use code with caution.
+
+
+
+
+4. Core CoreAudio Pipeline LTI Mathematical Logic
+Instruct the engine to calculate these parameters using hardware-accelerated functions inside your background audio block rendering callback threads.
+
+Step A: High-Pass Filter (HPF) Phase Linearization Network
+Position this calculation block inside src/dsp/BiquadFilter.swift, executing immediately following your Stage 00b High-Pass filter logic but before the Parametric EQ matrix [INDEX].
+Logic: Standard High-Pass Filters introduce severe phase delays in low frequencies, causing sub-bass signals to lag behind your mid-range. If hpfPhaseLinearizeEnabled evaluates to true, pass the audio stream vectors through an inverse all-pass FIR phase-reversal calculation block.
+Math: Rotate the low-frequency phase angles back into perfect synchronization with your mid-range and high frequencies, ensuring that the full frequency spectrum strikes your ears at the exact same microsecond, maximizing bass transient tightness [INDEX].
+
+Step B: Multi-Seat Room Acoustic Complex Vector Averaging Engine
+
+
+Modify the execution logic inside your Stage 00 Room Calibration Engine compilation sequence.
+Logic: Instead of computing a single workspace point, allow the user to record up to 3 individual seat impulse responses via the segmented picker interface.
+Math: If multiple measurements are stored, the calculation engine must execute a complex-vector arithmetic mean calculation loop across all captured magnitude response matrices (\(H[f]\)) across all 7 low-density bins to build a broad, unified inverse room correction map:
+\(H_{\text{avg}}[f]=\frac{H_{\text{center}}[f]+H_{\text{left}}[f]+H_{\text{right}}[f]}{3.0}\)
+Write these smoothed, averaged values atomically into the active stage0RoomCorrectionGains buffer, expanding your holographic sweet spot into a wide, uniform listening couch.
+
+Step C: Sub-Bass Group-Delay Phase Equalizer Link
+Position this block at Stage 10.5 of your processing chain, executing directly before your final Output Dither and Balance scaling matrix lines [INDEX].
+Logic: Your tape-out subwoofer track and its internal subwoofer amplifier introduce fixed mechanical latency, causing low bass to lag slightly behind the sound coming from your main speakers. If subBassGroupDelaySyncEnabled reads true, engage a narrow linear-phase group-delay filter window.
+Math: Isolate and target the phase envelope spanning exclusively between \(30\text{ Hz}\) and \(90\text{ Hz}\). Apply a fractional sample delay constraint to advance or delay the sub-bass phase angle to align the travel speed of your subwoofer's low-end wavefront perfectly with your main speakers, permanently eliminating "slow bass" effects and locking them into a single, cohesive wall of sound [INDEX].
+
+
+
+5. Codebase Synchronization: User Guide Tab Text Update
+Action: Locate your app level UserGuideSettingsViewController.swift container file. Open the masterManualTextBuffer text container string variable block and inject this new dedicated chapter at the absolute bottom of the manual context to document these final linear enhancements [INDEX].
+
+Text String to Inject into the User Guide Buffer:
+
+text
+---
+
+## Part 9: Advanced Low-Frequency Phase & Multi-Seat Linear Alignment
+
+The final tier of your Linear, Time-Invariant (LTI) restoration suite is engineered to optimize phase cohesion in the low frequencies and expand the physical sweet spot of your listening room without altering tonal balance.
+
+### 1. High-Pass Filter Phase Linearization
+Whenever a High-Pass Filter (HPF) is engaged—such as our critical 35 Hz safety cut to shield your vintage amplifier from infrasonic strain—the biquad math introduces an unavoidable phase delay in the low-end frequencies. This delay causes bass components to lag slightly behind your mid-range, softening the structural tightness and "snap" of your drums. 
+
+Enabling HPF Linearize solves this: it deploys an all-pass phase-reversal FIR calculation block directly adjacent to your safety cuts. It rotates low-frequency phase angles back into perfect, microsecond synchronization with your mids and highs. This ensures the entire audio wavefront strikes your ears at the exact same microsecond, maximizing low-end transient impact.
+
+### 2. Multi-Seat Complex Vector Room Averaging
+Standard room calibration systems tune your acoustics to a single microscopic point in space. While this builds a perfect sweet spot for one listener, moving even a foot to the left or right can pull the phase curves out of alignment. 
+
+The Room Calibration sub-panel resolves this by introducing a Multi-Seat Averaging Matrix. You can sample three discrete calibration sweeps across your couch (Left seat, Center seat, and Right seat). The engine passes the three independent impulse responses through a complex-vector arithmetic mean calculation, smoothing out the peaks and nulls to construct a unified inverse room correction map. This expands your holographic sweet spot into a wide "sweet couch," ensuring pristine clarity for multiple listeners simultaneously.
+
+### 3. Sub-Bass Group-Delay Phase Matching
+Because your Klipsch subwoofer is driven from the Pioneer receiver's fixed Tape-Out line, and the subwoofer's internal power amplifier introduces its own digital processing delay, low bass notes take a fraction of a millisecond longer to emit than the midrange sound passing through your main speaker cabinets. This minor acoustic offset causes low-end frequencies to sound loose, detached, or slow.
+
+Enabling Sub Sync deploys a precise linear-phase group-delay equalizer targeting exclusively the frequencies between 30 Hz and 90 Hz. It micro-adjusts the phase envelope of the sub-bass stream to track in perfect alignment with the speed of your main woofers, seamlessly blending your subwoofer and speaker cabinets into a singular, cohesive wall of sound.
+Use code with caution.
+
+
+
+
+6. Action Steps for the Agent
+Refactor UI Constraints: Update your 2-column main screen layout file to draw Row 14 inside Column 2 [INDEX]. Mount the HPF Linearize and Sub Sync checkboxes side-by-side. Inject the updated master tooltip asset text string block from Section 2 into the dynamic UI text container.
+Deploy Phase & Averaging Logic Filters: Thread the FIR phase-reversal algorithm immediately behind your High-Pass biquad nodes, implement the arithmetic mean computation loop into your Stage 00 Room Calibration analyzer class, and deploy the fractional delay matrix at Stage 10.5 of your processing loop [INDEX].
+Synchronize Reference Documentation Text: Open UserGuideSettingsViewController.swift. Inset the Part 9 text data block provided in Section 5 directly into your localized string arrays to ensure all user manual reference entries update smoothly [INDEX].
+H. Refactoring Directive: Advanced LTI Soundstage & Time-Coherence Processing Upgrades
+
+
+Objective
+Integrate three ultra-premium Linear, Time-Invariant (LTI) acoustic correction modules into the processing pipeline, user interface, configuration presets, and documentation files of the macOS equalizer application (DHDook/equaliser-adv) [INDEX]. This update implements Mixed-Phase FIR Transducer Group-Delay Realignment, a Recursive Cross-Feed Crosstalk Cancellation Matrix, and a Deconvolution-Based Early Reflection Cancellation Filter [INDEX].
+Because these modules are strictly LTI, they process the audio stream via linear vector algebra, time delays, and phase shifts, introducing absolute zero harmonic distortion, zero artificial synthesis, and zero processing noise to preserve absolute audio clarity and bit-perfect digital fidelity [INDEX].
+
+
+
+1. UI Layout & Dashboard Component Integration
+
+Column 2 Configuration Grid Updates
+Action: Append three control rows to the absolute bottom of Column 2 (Right Side) to complete the functional grid stack symmetrically without introducing vertical padding [INDEX].
+Layout Sequencing (Rows 11 to 13):
+Row 11 (Right Side): Render a horizontal segmented picker control labeled "Crosstalk Matrix". The picker must contain exactly two options: Bypass and Recursive X-Talk [INDEX].
+Row 12 (Right Side): Render a horizontal dual-component row pairing a standalone Master Bypass Toggle switch labeled "FIR Phase Link" directly to the left of an action button labeled "Recalculate IR".
+Row 13 (Right Side): Render a standalone Master Bypass Toggle switch labeled "Reflection Cancel".
+
+text
+========================================================================
+[COLUMN 1: METERED DYNAMICS (LEFT)]      [COLUMN 2: SPATIAL & UTILITY (RIGHT)]
+========================================================================
+Row 8: [Limiter Meter]    ──► [Toggle]   Row 8: [Latency Mode: Music / Movie]
+                                         Row 9: [Pause Gate] ──► [Sync Buffer Check]
+                                         Row 10:[Dither Mode Selection Picker]
+                                         Row 11:[Crosstalk Matrix Picker: Bypass/X-Talk]
+                                         Row 12:[FIR Phase Link Toggle] ──► [Recalculate IR]
+                                         Row 13:[Reflection Cancel Toggle]
+Use code with caution.
+
+
+Settings Panel Multi-View Tab Expansion
+Action: Deep inside your app-level settings menu panel view, insert a third navigation selector item tab labeled "Acoustic Vectors" alongside the existing User Guide and Room Calibration tabs [INDEX].
+Components to Cluster: Mount a secondary logarithmic frequency canvas graph frame inside this tab to display the continuous group-delay phase alignment plot line dynamically.
+
+Height Constraints Enforcement
+Action: Adjust parent layout layout constraints programmatically to tighten spacing, enforcing the strict zero vertical scrolling rule across the main screen dashboard interface [INDEX].
+
+
+
+2. Universal Tooltip Definition Updates
+Action: Update the unified text tooltip box situated above the main screen grid layout to append the descriptive definitions for these advanced LTI extensions [INDEX].
+Exact Text String to Inject:
+"Stereo Widener: Adjusts multi-band spatial fields to expand guitars and ambient sounds while keeping low bass centered. Loudness Match: Automatically smooths out long-term volume offsets between disparate source tracks to a stable target LUFS baseline. De-Esser: Tames harsh high-frequency sibilance ('S' and 'T' vocal sounds). Dynamic EQ Mode: Converts the De-Esser into a localized dynamic cut, saving surrounding high-end air. Multiband Compressor: Separately controls the dynamics of independent low, mid, and high frequency bands. Compressor: Balances the wideband dynamic range to glue the stereo mix together. Expander: Gently attenuates sub-threshold elements to lower background noise or expand flat mixes. De-Harsh: Employs a phase-pure analog see-saw tilt to naturally smooth bright production styles. Loudness Contour: Dynamically balances sub-bass and treble curves during low-volume playback to counteract human hearing deficiencies. DC Filter: Automatically removes hidden direct-current electrical offsets below 0.5 Hz to maximize amplifier efficiency and speaker headroom. Delta Solo: Inverts the processing phase to isolate and audition strictly the acoustic changes introduced by your active EQ map. Latency Mode (Buffer Sync): Toggles the limiter look-ahead footprint and dynamically changes the underlying macOS CoreAudio hardware I/O buffer frame size between 1024 samples for maximum music stability and 64 samples for lag-free movie lip-sync. Symmetry Balance: Applies linear inverse volume scaling factors to correct Left/Right speaker volume imbalances caused by asymmetrical room acoustics, pulling center images in focus. Pause Gate: Automatically applies an ultra-fast 5ms look-ahead fade to absolute silence during track changes or sample-rate handshakes to eliminate loud hardware clicks and speaker pops. Stereo Mode: Controls inter-channel summing topology, offering standard Stereo, True-Mono for historical records, and Wide-Mono to repair disjointed hard-panned 1960s/70s audio mixes cleanly. Sync Buffer: Creates a temporary audio memory cache that holds incoming audio frames during a bit-perfect sample rate clock change, releasing the stream only after the external DAC hardware successfully locks to eliminate truncated track intros. Dither Mode: Manages bit-depth reduction transitions when converting 32-bit internal DSP math down to your external DAC hardware resolution, utilizing Triangular Probability Density Function noise to eliminate harsh digital quantization distortion on fading tracks. Crosstalk Matrix: Implements a recursive cross-feed vector subtraction network that phase-cancels inter-aural acoustic leakage, unlocking a holographic 180-degree 3D soundstage. FIR Phase Link: Deploys a mixed-phase Finite Impulse Response filter matrix to resolve transducer group-delay anomalies, aligning woofer and horn wave arrival times down to the exact microsecond. Reflection Cancel: Employs a look-ahead linear deconvolution matrix to mathematically subtract the room's initial sidewall reflection arrivals from the stream. Clipper: Shaves microsecond transient peaks to maximize clean headroom. Limiter: Acts as an absolute brickwall ceiling to stop digital clipping distortion."
+
+
+
+3. State & Preset Serialization
+Map these new system variables into your global preset architecture structures (models/PresetProfile.swift) to ensure parameters load lock-free across processing threads [INDEX]:
+
+swift
+var crosstalkMatrixSelection: Int = 0       // 0 = Bypass, 1 = Recursive X-Talk Active
+var firPhaseOptimizationEnabled: Bool = false
+var earlyReflectionCancellationEnabled: Bool = false
+var firFilterCoefficientsLeft = [Float](repeating: 0.0, count: 512)  // 512-tap FIR array L
+var firFilterCoefficientsRight = [Float](repeating: 0.0, count: 512) // 512-tap FIR array R
+var reflectionCancelTapsLeft = [Float](repeating: 0.0, count: 256)   // 256-tap early reflect L
+var reflectionCancelTapsRight = [Float](repeating: 0.0, count: 256)  // 256-tap early reflect R
+Use code with caution.
+
+
+
+
+4. Core CoreAudio Processing Pipeline Integration Logic
+Instruct the engine to route the stereo block vectors through these advanced hardware-accelerated linear calculation nodes inside your background rendering callback loop thread [INDEX]:
+
+Step A: Mixed-Phase FIR Transducer Group-Delay Core Link
+Position this block at Stage 01.5, executing immediately after the Parametric EQ biquad matrix but right before the Stereo Widener [INDEX].
+
+
+Logic: If firPhaseOptimizationEnabled reads true, pass the incoming stereo channel buffers through a high-speed partitioned convolution engine accelerated natively via Apple's Accelerate Framework function vDSP_conv [INDEX].
+Math: The engine must convolve the live real-time audio block frames against the 512-tap double-precision impulse vectors stored in firFilterCoefficientsLeft/Right. These coefficients contain a time-reversal mathematical envelope calculated to resolve physical multi-way speaker crossover lag, perfectly aligning the acoustic arrival times of your main woofer cones and horn tweeters to the exact microsecond without altering magnitude values or inventing frequencies [INDEX].
+
+Step B: Recursive Cross-Feed Crosstalk Cancellation Matrix
+Position this processing node directly within Stage 02 (The Spatial Mid/Side Matrix block) [INDEX].
+Logic: If crosstalkMatrixSelection == 1, capture the incoming left and right data paths. Introduce an inter-aural time delay (\(\tau \)) across your lock-free pre-allocated cache lines paired with a linear attenuation scalar (\(g\)).
+Math: Execute a cross-feed recursive vector subtraction loop to eliminate acoustic ear cross-leakage before the wavefront leaves your speaker cabinets:
+\(x_{\text{left\_final}}[n]=x_{\text{left}}[n]-\left(g\cdot x_{\text{right}}[n-\tau ]\right)\)
+\(x_{\text{right\_final}}[n]=x_{\text{right}}[n]-\left(g\cdot x_{\text{left}}[n-\tau ]\right)\)
+(Where \(\tau \) is calculated based on physical speaker angle bounds to approximate acoustic travel paths around the human skull: \(\tau \approx 220\,\mu\text{s}\) at \(44.1\text{ kHz}\) to \(384\text{ kHz}\), and \(g \approx 0.7\)).
+
+Step C: Look-Ahead Early Reflection Cancellation Node
+Position this block at Stage 02.5, executing immediately following the Stereo Widener but preceding the Wideband Compressor [INDEX].
+Logic: If earlyReflectionCancellationEnabled reads true, engage an advanced linear deconvolution filter matrix using vDSP_conv loops [INDEX].
+Math: Convolve the stream against the reflectionCancelTapsLeft/Right vectors [INDEX]. These coefficients represent the phase-inverted mathematical duplicate of your room's initial boundary reflection arrivals (extracted via your Stage 00 Room sweep deconvolution math) [INDEX]. Pre-injecting this inverted phase footprint into the stream mathematically subtracts physical sidewall and desktop boundary bounces out of the environment, simulating an open-air amphitheater soundstage [INDEX].
+
+
+
+5. Codebase Synchronization: User Guide Tab Text Update
+Action: Locate your app level UserGuideSettingsViewController.swift container file. Open the masterManualTextBuffer text container string variable block and inject this new dedicated chapter at the absolute bottom of the manual context to document these premium linear utilities [INDEX].
+
+Text String to Inject into the User Guide Buffer:
+
+text
+---
+
+## Part 8: Advanced Linear, Time-Invariant (LTI) Soundstage Calibration
+
+The Advanced LTI module houses three elite acoustic alignment processors. Because these utilities operate exclusively via linear phase rotation, time-shifting delay coordinates, and vector deconvolution subtraction matrices, they introduce absolute zero harmonic distortion, keeping your audio signal path completely pure and transparent.
+
+### 1. FIR Transducer Group-Delay Realignment
+Multi-way loudspeaker cabinets (such as your bi-amped Klipsch RP-600M II arrays) suffer from an inherent physical bottleneck known as crossover lag or group-delay smear. Because physical horn tweeters and low-frequency woofers are constructed differently, their sound waves do not travel out of the speaker enclosure at the exact same microsecond. This minor timing offset blurs transient snap. 
+
+Enabling the FIR Phase Link solves this: it deploys a 512-tap mixed-phase Finite Impulse Response filter matrix that applies a time-reversal acoustic correction layer to the digital data stream. This perfectly aligns the physical air-pressure arrival times of all frequencies to the exact microsecond. Main drum hits, bass notes, and heavy guitar pick attacks snap into the room with spectacular, lifelike transient speed.
+
+### 2. Recursive Cross-Feed Crosstalk Cancellation
+When listening to a pair of stereo speakers, your left ear hears the left speaker first, but a split-second later, your right ear also hears it. This acoustic leakage is called inter-aural crosstalk. This crosstalk acts as an acoustic warning to your brain, telling it exactly where the physical speaker boxes are located in the room, collapsing your stereo image.
+
+The Crosstalk Matrix applies a recursive cross-feed vector loop to fix this. It feeds a microsecond-delayed, phase-inverted copy of the left channel into the right speaker (and vice versa), mathematically canceling out the acoustic cross-leakage before it can travel around your skull. The physical speaker enclosures completely vanish from the room, stretching a standard 2.0 stereo track into a spectacular, wide-open 180-degree holographic soundstage.
+
+### 3. Early Reflection Boundary Cancellation
+When sound waves travel out of your speakers, they hit your sidewalls, ceiling, and desktop surface first, bouncing off those surfaces before reaching your ears. These early reflections mask subtle low-level musical details. 
+
+Enabling Reflection Cancel deploys a look-ahead linear deconvolution matrix linked directly to your Stage 00 Room Calibration swept measurements. The app reads the exact time delay and amplitude of your room's first boundary bounce, and injects an identical, phase-inverted correction wave into the stream. This mathematically subtracts the first reflections from the physical environment, simulating the pristine acoustic transparency of an open-air listening space.
+
+
+
+
+
+6. Action Steps for the Agent
+Refactor UI Grid Containers: Update your main view controller code files to inject Row 11, 12, and 13 into the bottom layout block configurations of Column 2 [INDEX]. Maintain perfect AutoLayout alignment and verify that the layout fulfills the strict zero vertical scrolling rule [INDEX].
+Mount the Configuration Presets UI tabs: Append the new "Acoustic Vectors" canvas display panel into your app-level settings navigation menu subchains [INDEX].
+Deploy Convolution DSP Routines: Integrate the high-speed partitioned convolution loops utilizing Apple’s Accelerate Framework functions (vDSP_conv) straight into Stage 01.5 and Stage 02.5 of your central real-time background processing pipeline thread manager [INDEX].
+Synchronize Reference Documentation Text: Open UserGuideSettingsViewController.swift. Inset the Part 8 text data block provided in Section 5 directly into your localized string arrays to ensure all user manual reference entries update smoothly [INDEX].
+
+

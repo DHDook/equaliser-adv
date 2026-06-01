@@ -625,6 +625,8 @@ final class RenderPipeline {
         } else if compareMode == .flat {
             mode = 2
         } else {
+            // .eq and .delta both run the full EQ chain; delta solo is handled
+            // at DSP level via the deltaSoloActive flag in AdvancedProcessingConfig.
             mode = 1
         }
         callbackContext?.processingMode = mode
