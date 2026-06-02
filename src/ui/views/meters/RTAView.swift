@@ -45,7 +45,8 @@ struct RTADashboardView: View {
                 diagnosticsRow
             }
         }
-        .padding(.vertical, 2)
+        .padding(.top, 0)
+        .padding(.bottom, 2)
         .onAppear { store.wireRTAAnalyzer() }
     }
 
@@ -95,8 +96,7 @@ struct RTADashboardView: View {
 
             GeometryReader { geo in
                 ZStack(alignment: .topLeading) {
-                    RoundedRectangle(cornerRadius: 4)
-                        .fill(Color(.controlBackgroundColor))
+                    RTAGraphBackground()
 
                     BackgroundGridLines(minDb: minDb, maxDb: 0)
                         .opacity(isBypassed ? 0.12 : 0.45)
@@ -226,7 +226,8 @@ struct RTADashboardView: View {
             .font(.system(size: 8, weight: .medium, design: .monospaced))
             .foregroundStyle(.white)
             .padding(.horizontal, 5)
-            .padding(.vertical, 2)
+            .padding(.top, 0)
+        .padding(.bottom, 2)
             .background(Color.black.opacity(0.72))
             .cornerRadius(3)
             .padding(3)
@@ -301,7 +302,7 @@ struct BackgroundGridLines: View {
     let minDb: Float
     let maxDb: Float
 
-    private let referenceLines: [Float] = [0, -10, -20, -30, -40, -50, -60]
+    private let referenceLines: [Float] = [0, -10, -20, -30, -40, -50, -60, -70, -80]
 
     var body: some View {
         Canvas { ctx, size in
@@ -321,5 +322,18 @@ struct BackgroundGridLines: View {
                 )
             }
         }
+    }
+}
+// MARK: - RTA Graph Background
+
+/// Darker grey plot background that adapts to light and dark appearance.
+private struct RTAGraphBackground: View {
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
+        RoundedRectangle(cornerRadius: 4)
+            .fill(colorScheme == .dark
+                  ? Color(white: 0.11)
+                  : Color(white: 0.72))
     }
 }

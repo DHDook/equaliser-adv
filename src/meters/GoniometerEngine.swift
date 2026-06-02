@@ -18,6 +18,14 @@ struct StereoFrameSample: Equatable {
     var y: Float = 0.0
 }
 
+/// A goniometer plot point with age for phosphor-style trail decay.
+struct GoniometerTrailPoint: Equatable {
+    var x: Float
+    var y: Float
+    /// Elapsed time since capture, in seconds.
+    var age: TimeInterval
+}
+
 // MARK: - Goniometer Buffer Engine
 
 /// Captures stereo audio from the render thread via a lock-free SPSC circular
@@ -34,6 +42,11 @@ final class GoniometerBufferEngine: ObservableObject, @unchecked Sendable {
     /// Number of frames extracted and displayed each refresh cycle.
     let renderWindowSize = 512
 
+    /// Trail persistence — points older than this are discarded.
+    let trailDecayDuration: TimeInterval = 1.0
+
+    private let refreshInterval: TimeInterval = 1.0 / 30.0
+
     // MARK: Circular buffers — written by audio thread
 
     nonisolated(unsafe) private var circularL: [Float]
@@ -43,7 +56,7 @@ final class GoniometerBufferEngine: ObservableObject, @unchecked Sendable {
 
     // MARK: Published state
 
-    @Published var processedPoints: [StereoFrameSample] = []
+    @Published var trailPoints: [GoniometerTrailPoint] = []
 
     // MARK: Timer
 
@@ -106,14 +119,25 @@ final class GoniometerBufferEngine: ObservableObject, @unchecked Sendable {
         vDSP_vsmul(side, 1, &inv_sqrt2, &side, 1, vDSP_Length(n))
         vDSP_vsmul(mid,  1, &inv_sqrt2, &mid,  1, vDSP_Length(n))
 
-        processedPoints = (0..<n).map { StereoFrameSample(x: side[$0], y: mid[$0]) }
+        for i in trailPoints.indices {
+            trailPoints[i].age += refreshInterval
+        }
+        trailPoints.removeAll { $0.age >= trailDecayDuration }
+
+        for i in stride(from: 0, to: n, by: 4) {
+            trailPoints.append(GoniometerTrailPoint(x: side[i], y: mid[i], age: 0))
+        }
+        let maxTrail = 4_096
+        if trailPoints.count > maxTrail {
+            trailPoints.removeFirst(trailPoints.count - maxTrail)
+        }
     }
 
     // MARK: - Lifecycle
 
     func startRefresh() {
         guard cancellable == nil else { return }
-        cancellable = Timer.publish(every: 1.0 / 30.0, on: .main, in: .common)
+        cancellable = Timer.publish(every: refreshInterval, on: .main, in: .common)
             .autoconnect()
             .sink { [weak self] _ in self?.tick() }
     }
@@ -121,6 +145,10 @@ final class GoniometerBufferEngine: ObservableObject, @unchecked Sendable {
     func stopRefresh() {
         cancellable?.cancel()
         cancellable = nil
+    }
+
+    func clearTrail() {
+        trailPoints.removeAll()
     }
 }
 
@@ -149,24 +177,32 @@ struct StereoGoniometerView: View {
                 CrossHairLines()
                     .opacity(0.2)
 
-                // Dot cloud
                 Canvas { ctx, size in
-                    guard !isBypassed else { return }
                     let cx = size.width  / 2
                     let cy = size.height / 2
                     let r  = min(cx, cy) * 0.95
+                    let decay = engine.trailDecayDuration
+                    let bypassAlpha: CGFloat = isBypassed ? 0.25 : 1.0
 
-                    for pt in engine.processedPoints {
-                        // pt.x = Side (horizontal), pt.y = Mid (vertical)
+                    for pt in engine.trailPoints {
                         let px = CGFloat(pt.x) * r + cx
                         let py = cy - CGFloat(pt.y) * r
-                        // Clip to circle
                         let dx = px - cx, dy = py - cy
                         guard dx * dx + dy * dy <= r * r else { continue }
+
+                        let ageFactor = CGFloat(max(0, 1.0 - pt.age / decay))
+                        guard ageFactor > 0.01 else { continue }
+
                         let norm = min(1, sqrt(pt.x * pt.x + pt.y * pt.y))
-                        let col  = goniometerDotColor(amplitude: norm)
+                        let col  = goniometerDotColour(amplitude: norm)
+                            .opacity(0.15 + 0.85 * ageFactor * bypassAlpha)
+
+                        let dotSize = 1.0 + ageFactor
                         ctx.fill(
-                            Path(ellipseIn: CGRect(x: px - 1, y: py - 1, width: 2, height: 2)),
+                            Path(ellipseIn: CGRect(
+                                x: px - dotSize, y: py - dotSize,
+                                width: dotSize * 2, height: dotSize * 2
+                            )),
                             with: .color(col)
                         )
                     }
@@ -183,7 +219,7 @@ struct StereoGoniometerView: View {
         .onDisappear { engine.stopRefresh() }
     }
 
-    private func goniometerDotColor(amplitude: Float) -> Color {
+    private func goniometerDotColour(amplitude: Float) -> Color {
         let a = CGFloat(max(0, min(1, amplitude)))
         if a < 0.5  { return Color(red: 0.2, green: 0.8, blue: 0.4).opacity(0.75) }
         if a < 0.75 { return Color(red: 0.9, green: 0.8, blue: 0.1).opacity(0.75) }

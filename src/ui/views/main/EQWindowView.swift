@@ -54,6 +54,7 @@ struct EQWindowView: View {
 
                 DynamicsInlineView()
                     .padding(.leading, 24)
+                    .padding(.bottom, 2)
 
                 Spacer()
 
@@ -89,6 +90,7 @@ struct EQWindowView: View {
 
             // Dual 31-band real-time spectrum analyser
             RTADashboardView(analyzer: store.rtaAnalyzer, metersEnabled: metersEnabledUI)
+                .padding(.top, 2)
 
             Divider()
 

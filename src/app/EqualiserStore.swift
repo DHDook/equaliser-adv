@@ -318,6 +318,10 @@ final class EqualiserStore: ObservableObject {
     var livePhaseCorrelation: Float {
         routingCoordinator.pipelineManager.renderPipeline?.livePhaseCorrelation ?? 0.0
     }
+    /// Active pipeline sample rate (Hz), or 48 kHz when idle.
+    var streamSampleRate: Double {
+        routingCoordinator.pipelineManager.renderPipeline?.sampleRate ?? 48_000
+    }
     /// Peak-to-RMS crest factor in dB after the compressor stage.
     var liveCrestFactorDB: Float {
         routingCoordinator.pipelineManager.renderPipeline?.liveCrestFactorDB ?? 0.0
@@ -516,6 +520,18 @@ final class EqualiserStore: ObservableObject {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in
                 self?.objectWillChange.send()
+            }
+            .store(in: &cancellables)
+
+        // Re-wire RTA / goniometer taps when routing becomes active (new pipeline context).
+        routingCoordinator.$routingStatus
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] status in
+                guard let self, case .active = status else { return }
+                self.wireRTAAnalyzer()
+                if let sr = self.routingCoordinator.pipelineManager.renderPipeline?.sampleRate {
+                    self.rtaAnalyzer.assumedSampleRate = Float(sr)
+                }
             }
             .store(in: &cancellables)
 

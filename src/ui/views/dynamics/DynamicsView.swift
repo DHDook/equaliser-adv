@@ -1663,7 +1663,7 @@ struct DynamicsInlineView: View {
 
             Divider()
 
-            InlinePhaseCorrelationView(bridge: inlineMeterBridge)
+            InlinePhaseCorrelationView()
             InlineCrestFactorView(bridge: inlineMeterBridge)
             InlineTruePeakView(bridge: inlineMeterBridge)
             InlineIspLatchView(bridge: inlineMeterBridge)
@@ -1918,15 +1918,6 @@ final class InlineMeterBridge: ObservableObject {
         return max(0, min(24, 20 * log10(peak / rms)))
     }
 
-    /// Approximate phase correlation from L/R balance symmetry.
-    /// +1.0 = perfect mono/centre (ideal),  −1.0 = phase-inverted.
-    var phaseCorrelation: Float {
-        let l = max(peakL, 0.001), r = max(peakR, 0.001)
-        let diff = abs(l - r)
-        let sum  = l + r
-        return max(-1, min(1, 1.0 - 2.0 * (diff / sum)))
-    }
-
     var truePeakInputClipped:  Bool { max(peakL, peakR) >= 0.9 }
     var truePeakOutputClipped: Bool { max(peakOutL, peakOutR) >= 0.9 }
 
@@ -1937,13 +1928,12 @@ final class InlineMeterBridge: ObservableObject {
         return (r - l) / (l + r)
     }
 
-    /// 24-bit activity mask derived from input peak amplitude.
+    /// 24-bit activity mask — bits lit when set in the quantised peak sample.
     var inputBitMask: UInt32 {
         let p = max(peakL, peakR)
-        guard p > 0.00001 else { return 0 }
-        let clamped = min(1.0, p)
-        let fixed   = UInt32(clamped * Float(UInt32.max >> 8))
-        return fixed
+        guard p > 1e-6 else { return 0 }
+        let sample24 = UInt32(min(0xFFFFFF, p * 8_388_607.0 + 0.5))
+        return sample24
     }
 
     func resetIspLatches() {
@@ -2026,40 +2016,58 @@ struct InlineCrestFactorView: View {
 
 // MARK: - Phase Correlation View
 
-/// Displays the approximate stereo phase correlation as a horizontal bar and numeric value.
+/// Centre-pivoted phase correlation meter: centre = uncorrelated (0),
+/// right = in-phase (+1), left = anti-phase (−1).
 struct InlinePhaseCorrelationView: View {
-    @ObservedObject var bridge: InlineMeterBridge
+    @EnvironmentObject private var store: EqualiserStore
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 1) {
-            HStack(spacing: 3) {
-                Text("Phase")
-                    .font(.system(size: 8, weight: .medium))
-                    .foregroundStyle(.tertiary)
-                Spacer()
-                Text(String(format: "%+.2f", bridge.phaseCorrelation))
-                    .font(.system(size: 9, weight: .bold, design: .monospaced))
-                    .foregroundStyle(phaseColor)
-            }
-            GeometryReader { geo in
-                let norm = CGFloat((bridge.phaseCorrelation + 1) / 2)  // 0…1
-                ZStack(alignment: .leading) {
-                    RoundedRectangle(cornerRadius: 2)
-                        .fill(Color.secondary.opacity(0.10))
-                    RoundedRectangle(cornerRadius: 2)
-                        .fill(phaseColor.opacity(0.8))
-                        .frame(width: geo.size.width * norm)
+        TimelineView(.periodic(from: .now, by: 1.0 / 30.0)) { _ in
+            let correlation = store.livePhaseCorrelation
+            VStack(alignment: .leading, spacing: 1) {
+                HStack(spacing: 3) {
+                    Text("Phase")
+                        .font(.system(size: 8, weight: .medium))
+                        .foregroundStyle(.tertiary)
+                    Spacer()
+                    Text(String(format: "%+.2f", correlation))
+                        .font(.system(size: 9, weight: .bold, design: .monospaced))
+                        .foregroundStyle(phaseColour(for: correlation))
                 }
+                GeometryReader { geo in
+                    let w = geo.size.width
+                    let h = geo.size.height
+                    let mid = w / 2
+                    let clamped = CGFloat(max(-1, min(1, correlation)))
+                    let tipX = mid + clamped * (mid - 1)
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 2)
+                            .fill(Color.secondary.opacity(0.10))
+                        Rectangle()
+                            .fill(Color.secondary.opacity(0.35))
+                            .frame(width: 1, height: h)
+                            .position(x: mid, y: h / 2)
+                        RoundedRectangle(cornerRadius: 1)
+                            .fill(phaseColour(for: correlation).opacity(0.85))
+                            .frame(
+                                width: max(2, abs(tipX - mid)),
+                                height: h - 1
+                            )
+                            .position(
+                                x: mid + (tipX - mid) / 2,
+                                y: h / 2
+                            )
+                    }
+                }
+                .frame(height: 6)
             }
-            .frame(height: 4)
+            .frame(width: 90)
         }
-        .frame(width: 90)
     }
 
-    private var phaseColor: Color {
-        let c = bridge.phaseCorrelation
-        if c >= 0.5 { return .green }
-        if c >= 0   { return .yellow }
+    private func phaseColour(for correlation: Float) -> Color {
+        if correlation >= 0.5 { return .green }
+        if correlation >= 0   { return .yellow }
         return .red
     }
 }
@@ -2109,7 +2117,7 @@ struct InlineIspLatchView: View {
     private func ispIndicator(label: String, latched: Bool) -> some View {
         HStack(spacing: 3) {
             RoundedRectangle(cornerRadius: 1.5)
-                .fill(latched ? Color.orange : Color.secondary.opacity(0.25))
+                .fill(latched ? Color.orange : Color.green.opacity(0.6))
                 .frame(width: 8, height: 8)
             Text(label)
                 .font(.system(size: 8, weight: .medium))
@@ -2181,22 +2189,25 @@ struct InlineBitStreamView: View {
 
 /// Displays the nominal audio bit rate based on standard CD/HD formats.
 struct InlineBitRateView: View {
-    // Standard values — 48 kHz / 24-bit = 2304 kbps stereo
-    private let bitRateStr = "2304 kbps"
-    private let formatStr  = "48k/24b"
+    @EnvironmentObject private var store: EqualiserStore
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 1) {
-            Text("Bit Rate")
-                .font(.system(size: 8, weight: .medium))
-                .foregroundStyle(.tertiary)
-            HStack(spacing: 4) {
-                Text(bitRateStr)
-                    .font(.system(size: 9, weight: .bold, design: .monospaced))
-                    .foregroundStyle(.secondary)
-                Text(formatStr)
-                    .font(.system(size: 7, weight: .regular))
+        TimelineView(.periodic(from: .now, by: 1.0 / 30.0)) { _ in
+            let sr = store.streamSampleRate
+            let kbps = Int(sr * 24.0 * 2.0 / 1000.0)
+            let srLabel = sr >= 1000 ? String(format: "%.0fk", sr / 1000) : String(format: "%.0f", sr)
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Bit Rate")
+                    .font(.system(size: 8, weight: .medium))
                     .foregroundStyle(.tertiary)
+                HStack(spacing: 4) {
+                    Text("\(kbps) kbps")
+                        .font(.system(size: 9, weight: .bold, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                    Text("\(srLabel)/24b")
+                        .font(.system(size: 7, weight: .regular))
+                        .foregroundStyle(.tertiary)
+                }
             }
         }
     }

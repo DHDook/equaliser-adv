@@ -91,7 +91,7 @@ final class LockFreeAudioRingBuffer: @unchecked Sendable {
 final class AdvancedDualSpectrumAnalyzer: ObservableObject, @unchecked Sendable {
 
     // MARK: Tunable limits
-    let minDb: Float = -60.0
+    let minDb: Float = -80.0
     let maxDb: Float =   0.0   // 0 dBFS = full bar height
 
     // MARK: Ring buffers — written by the audio thread
@@ -273,15 +273,16 @@ final class AdvancedDualSpectrumAnalyzer: ObservableObject, @unchecked Sendable 
                 var mags = [Float](repeating: 0, count: half)
                 vDSP_zvmags(&split, 1, &mags, 1, vDSP_Length(half))
 
-                // Correct normalisation for Hann-windowed one-sided real FFT.
-                // vDSP_vdbcon flag=1 computes: result = 10 * log10(mags * scale)
-                // For 0 dBFS full-scale sine: peak squared magnitude = (fftSize/4)²
-                // We want result = 0 dB, so scale = 1/(fftSize/4)² = 16/fftSize²
-                var scale: Float = 16.0 / Float(fftSize * fftSize)
-                vDSP_vdbcon(&mags, 1, &scale, &resultDb, 1, vDSP_Length(half), 1)
+                // Power → amplitude, Hann coherent-gain + one-sided norm (4/N), 20·log₁₀ → dBFS.
+                var amps = [Float](repeating: 0, count: half)
+                vvsqrtf(&amps, &mags, &[Int32(half)])
 
-                // Clamp to display range.
-                // Copy resultDb to a temporary to avoid exclusivity violation
+                var norm: Float = 4.0 / Float(fftSize)
+                vDSP_vsmul(amps, 1, &norm, &amps, 1, vDSP_Length(half))
+
+                var ref: Float = 1.0
+                vDSP_vdbcon(amps, 1, &ref, &resultDb, 1, vDSP_Length(half), 2)
+
                 var clipped = resultDb
                 var floorVal = self.minDb
                 var ceilVal  = self.maxDb
