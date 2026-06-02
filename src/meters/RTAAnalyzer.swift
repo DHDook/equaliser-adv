@@ -260,53 +260,42 @@ final class AdvancedDualSpectrumAnalyzer: ObservableObject, @unchecked Sendable 
         var imag = [Float](repeating: 0, count: half)
         var resultDb = [Float](repeating: 0, count: half)
         
-        // Extract FFT processing to helper function to work around Swift compiler issues
-        executeFFTProcessing(
-            windowed: windowed,
-            real: &real,
-            imag: &imag,
-            resultDb: &resultDb,
-            half: half
-        )
+        // Perform FFT processing
+        var mags = [Float](repeating: 0, count: half)
+        var amps = [Float](repeating: 0, count: half)
         
-        return resultDb
-    }
-    
-    private func executeFFTProcessing(
-        windowed: [Float],
-        real: inout [Float],
-        imag: inout [Float],
-        resultDb: inout [Float],
-        half: Int
-    ) {
-        real.withUnsafeMutableBufferPointer { rp in
-            imag.withUnsafeMutableBufferPointer { ip in
-                var split = DSPSplitComplex(realp: rp.baseAddress!, imagp: ip.baseAddress!)
-                windowed.withUnsafeBytes { rawBytes in
-                    let complexPtr = rawBytes.bindMemory(to: DSPComplex.self)
+        // Get pointers and perform FFT operations
+        real.withUnsafeMutableBytes { realBytes in
+            imag.withUnsafeMutableBytes { imagBytes in
+                let realPtr = realBytes.bindMemory(to: Float.self).baseAddress!
+                let imagPtr = imagBytes.bindMemory(to: Float.self).baseAddress!
+                var split = DSPSplitComplex(realp: realPtr, imagp: imagPtr)
+                
+                windowed.withUnsafeBytes { windowBytes in
+                    let complexPtr = windowBytes.bindMemory(to: DSPComplex.self)
                     vDSP_ctoz(complexPtr.baseAddress!, 2, &split, 1, vDSP_Length(half))
                 }
+                
                 vDSP_fft_zrip(fftSetup, &split, 1, log2n, FFTDirection(FFT_FORWARD))
-
-                var mags = [Float](repeating: 0, count: half)
                 vDSP_zvmags(&split, 1, &mags, 1, vDSP_Length(half))
-
-                // Power → amplitude, Hann coherent-gain + one-sided norm (4/N), 20·log₁₀ → dBFS.
-                var amps = [Float](repeating: 0, count: half)
-                vvsqrtf(&amps, &mags, &[Int32(half)])
-
-                var norm: Float = 4.0 / Float(fftSize)
-                vDSP_vsmul(amps, 1, &norm, &amps, 1, vDSP_Length(half))
-
-                var ref: Float = 1.0
-                vDSP_vdbcon(amps, 1, &ref, &resultDb, 1, vDSP_Length(half), 2)
-
-                var clipped = resultDb
-                var floorVal = self.minDb
-                var ceilVal  = self.maxDb
-                vDSP_vclip(&clipped, 1, &floorVal, &ceilVal, &resultDb, 1, vDSP_Length(half))
             }
         }
+        
+        // Power → amplitude, Hann coherent-gain + one-sided norm (4/N), 20·log₁₀ → dBFS.
+        vvsqrtf(&amps, &mags, &[Int32(half)])
+        
+        var norm: Float = 4.0 / Float(fftSize)
+        vDSP_vsmul(amps, 1, &norm, &amps, 1, vDSP_Length(half))
+        
+        var ref: Float = 1.0
+        vDSP_vdbcon(amps, 1, &ref, &resultDb, 1, vDSP_Length(half), 2)
+        
+        var clipped = resultDb
+        var floorVal = self.minDb
+        var ceilVal  = self.maxDb
+        vDSP_vclip(&clipped, 1, &floorVal, &ceilVal, &resultDb, 1, vDSP_Length(half))
+        
+        return resultDb
     }
 
     private func mapBinsToBands(dbMagnitudes: [Float], sampleRate: Float) -> [Float] {
