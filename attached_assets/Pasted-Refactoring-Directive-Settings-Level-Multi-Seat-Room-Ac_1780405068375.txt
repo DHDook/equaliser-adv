@@ -1,0 +1,64 @@
+Refactoring Directive: Settings-Level Multi-Seat Room Acoustic Calibration & Complex Vector Averaging Sync
+Objective
+Implement a multi-seat, complex-vector acoustic averaging sub-system inside the Room Calibration Tablayout and the Stage 00 Calibration Engine [INDEX]. This updates your system to store, compare, and average up to three discrete spatial listening coordinates (Center, Left, and Right cushions) [INDEX].
+By passing the raw impulse responses through a hardware-accelerated complex-vector arithmetic mean calculation via Apple's Accelerate Framework (vDSP), the engine flattens room resonances across your entire couch—expanding your holographic sweet spot into a broad "sweet couch" while introducing absolute zero phase smearing or harmonic distortion [INDEX].
+1. UI Layout & Component Additions (Room Calibration Tab View)
+Geometry & Alignment Layout Sequencing
+Open your application's Settings "Room Calibration" tab view controller code file. Directly above the primary "★ START ACOUSTIC ROOM CALIBRATION ★" execution button, insert the following horizontal parameter controls within an NSScrollView padding inset of 20pt on all margins [INDEX]:
+Calibration Position Selection Picker: A horizontal segmented control labeled "Calibration Position" containing exactly three structural choices: [Center Seat, Left Seat, Right Seat][INDEX].
+Acoustic Configuration Mode Box: A horizontal segmented option toggle labeled "Acoustic Mapping" with two choices: [Single Point Focus, Multi-Seat Couch Average].
+Dynamic Status String Readout: A text string status readout block at the lower border of your canvas graph reading: "Ambient Shield: Monitoring Room Silence".
+2. Global State & Presets Serialization Constants
+Map these variables into your global preset architecture structures (models/PresetProfile.swift) to manage multi-seat telemetry synchronization lock-free across processing threads [INDEX]:
+swift
+// State Trackers
+let multiSeatAveragingSelection = ManagedAtomic<Int>(0) // 0 = Single Point, 1 = Couch Average Deployed
+let currentActiveCalibrationPosition = ManagedAtomic<Int>(0) // 0 = Center, 1 = Left, 2 = Right
+
+// Thread-safe storage arrays for the 7 broad corrective low-density bins per seat position
+var stage0RoomCorrectionGainsCenter = [Float](repeating: 0.0, count: 7)
+var stage0RoomCorrectionGainsLeft = [Float](repeating: 0.0, count: 7)
+var stage0RoomCorrectionGainsRight = [Float](repeating: 0.0, count: 7)
+
+// Unified operational array loaded by the Stage 00 live processing thread
+var stage0RoomCorrectionGainsMaster = [Float](repeating: 0.0, count: 7)
+let stage0RoomCorrectionFreqs: [Float] = [120.0, 250.0, 400.0, 800.0, 2500.0, 4500.0, 6500.0]
+Use code with caution.
+
+3. Core Measurement & Multi-Seat Averaging DSP Logic
+Instruct the engine to calculate these parameters using hardware-accelerated functions on an isolated background thread, completely detached from live playback dependencies until calibration completes.
+Step A: Multi-Seat Measurement Trigger Sequence
+When the user clicks the "★ START ACOUSTIC ROOM CALIBRATION ★" button:
+Read the active selection index of the currentActiveCalibrationPosition picker (0 for Center, 1 for Left, 2 for Right) [INDEX].
+Execute the Ambient Noise Check: Engage a mandatory 2-second silent profiling window beforeplaying the sweep [INDEX]. Calculate the root-mean-square power of the room's ambient silence [INDEX]. If the background noise spikes past -45 dBFS, instantly abort the routine, mute all outputs, and flash a Crimson Red warning string reading "Calibration Aborted: Excessive Room Noise" to protect your data math [INDEX].
+If the room is safely quiet, play the 5.0-second log-exponential sine sweep (\(20\text{ Hz} - 20,000\text{ Hz}\)) through your speakers while capturing the recorded raw room data from your USB microphone [INDEX].
+Step B: Isolated Data Bin Allocation
+Pass the captured input audio arrays directly into Apple's hardware-accelerated Accelerate Framework (vDSP_fft_zrip) to deconvolve the signal and isolate the room's absolute magnitude transfer function (\(H[f]\)) [INDEX].
+Smooth the response curve data into 7 discrete broad frequency slots matching the hardcoded musical bands in stage0RoomCorrectionFreqs [INDEX].
+Compute the exact mathematical inverse filter amplitudes, clamp them strictly within your user-defined calibrationMaxCapDB safety ceiling (Safe Default: ±6.0 dB), and route the resulting metrics to overwrite only the specific target memory buffer index selected prior to the sweep [INDEX]:
+If Position == 0: Overwrite stage0RoomCorrectionGainsCenter
+If Position == 1: Overwrite stage0RoomCorrectionGainsLeft
+If Position == 2: Overwrite stage0RoomCorrectionGainsRight
+Step C: Complex Vector Arithmetic Mean Loop
+Once an individual sweep finishes, evaluate the Acoustic Mapping selector state:
+Case 1 (Single Point Focus): If set to Single Point, bypass multi-seat calculations entirely. Copy the stage0RoomCorrectionGainsCenter array directly into your active stage0RoomCorrectionGainsMasteroutput buffer block, and flip isRoomCalibrationMapCompiled to true.
+Case 2 (Multi-Seat Couch Average): If set to Couch Average, the calculation engine must execute a complex-vector arithmetic mean calculation loop across all three captured magnitude response matrices (\(H[f]\)) across all 7 low-density bins to build a unified inverse room correction map:
+\(H_{\text{avg}}[f]=\frac{H_{\text{center}}[f]+H_{\text{left}}[f]+H_{\text{right}}[f]}{3.0}\)
+Vector Execution (vDSP Acceleration): Write the final smoothed, averaged values atomically into the active stage0RoomCorrectionGainsMaster buffer array, and set isRoomCalibrationMapCompiled to true.
+Step D: Stage 00 Hidden Signal Inversion Deployment
+The application's permanent, hidden Stage 00 Room Correction EQ Node at the absolute front of your digital pipeline continuously reads from stage0RoomCorrectionGainsMaster [INDEX].
+If isRoomCalibrationMapCompiled reads true, this node applies the 7 broad corrective filters to the incoming stream [INDEX]. This flattens out the physical response errors of your room boundaries, windows, and desktop surfaces transparently across all downstream playback paths, providing a clean baseline before any wideband or spatial operations take place [INDEX].
+4. Codebase Synchronization: User Guide Tab Text Update
+Action: Locate your app-level UserGuideSettingsViewController.swift container file. Open the masterManualTextBuffer text container string variable block and ensure this detailed multi-seat averaging section is appended to your user documentation text [INDEX].
+Text String to Verify Inside the User Guide Buffer:
+text
+### 2. Multi-Seat Complex Vector Room Averaging
+Standard room calibration systems tune your acoustics to a single microscopic point in space. While this builds a perfect sweet spot for one listener, moving even a foot to the left or right can pull the phase curves out of alignment. 
+
+The Room Calibration sub-panel resolves this by introducing a Multi-Seat Averaging Matrix. You can sample three discrete calibration sweeps across your couch (Left seat, Center seat, and Right seat). The engine passes the three independent impulse responses through a complex-vector arithmetic mean calculation, smoothing out the peaks and nulls to construct a unified inverse room correction map. This expands your holographic sweet spot into a wide "sweet couch," ensuring pristine clarity for multiple listeners simultaneously.
+Use code with caution.
+
+5. Action Steps for the Agent
+Refactor Calibration View Components: Open src/ui/Components/RoomCalibrationViewController.swift. Map the currentActiveCalibrationPosition segmented picker control directly above your main trigger key, matching your AutoLayout padding constraints.
+Deploy Complex Vector Averaging Math: Inset the Case-based conditional compilation loops from Section 3 into your background FFT deconvolution thread manager routines, forcing all three array inputs to divide down to a unified master gain array.
+Synchronize User Manual Reference Entry: Verify that the text in Section 4 is appended cleanly to your native scrollable User Guide panel to ensure your documentation stays fully synchronized with the app features.

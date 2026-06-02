@@ -1,0 +1,127 @@
+A. Refactoring Directive: Double-Precision High-Resolution Coefficient Decoupling Matrix
+
+Objective
+Refactor the coefficient generation and biquad calculation loops inside src/dsp/BiquadFilter.swift to protect against digital coefficient crowding, clamping, and numerical rounding noise when operating at ultra-high-resolution sample rates up to 384 kHz. This specification instructs the agent to decouple the mathematical filter pole calculations into a high-precision Double context, leveraging bilinear transformation mapping before updating the real-time background processing vectors.
+
+
+
+1. The Core Bottleneck: Coefficient Crowding at 384 kHz
+When executing standard biquad Infinite Impulse Response (IIR) filter equations at extreme sample rates like 384,000 Hz, the digital filter's mathematical poles and zeros get compressed aggressively close to the edge of the unit circle boundary (\(z = 1\)).
+If calculated using standard single-precision (Float) variables, the microscopic rounding approximations manifest as a harsh digital noise floor buildup in the high frequencies, subtly "blurring" transient clarity and altering your target \(Q\) boundaries.
+To maintain pristine audio clarity over your bi-amped Klipsch horn tweeters, coefficient calculation must be decoupled from standard float execution, utilizing hardware-accelerated double-precision mapping layers instead.
+
+
+
+2. UI Layout & State Configuration
+Action: No interactive UI component changes are required for the main screen.
+Settings Readout: Inside the "System Utilities" configuration menu tab, update the status tracking block to register when this adaptive calculation layer triggers.
+State Variable Mapping: Map this serialization tracking token into your core state structures:
+
+swift
+var highResDecouplingActive: Bool = false // Automatically flips true if active rate exceeds 96.0 kHz
+
+3. Core DSP Mathematical Framework & DecouPLING LOGIC
+Instruct the engine to process coefficient calculations inside your configuration state handlers using double-precision structures (vDSP_biquad_SetupD), mapping results to the real-time audio thread lock-free.
+
+#### 2. Mathematical Scaling Implementation Rule
+When calculating the raw transfer function variables ($b_0, b_1, b_2, a_1, a_2$) for any active EQ band, if the `activeSystemSampleRate` atomic value reads higher than 96000.0 Hz:
+- Force the coefficient generator to calculate the raw filter trigonometry angles using double-precision floating-point numbers (`Double` or `vDSP_biquad_SetupD`).
+- Implement an automated Bilinear Transformation scaling algorithm to gracefully map the calculated filter poles and zeros from a normalized reference space up to the active 384 kHz hardware execution grid.
+
+```swift
+// REFACTOR ACTION: Double-Precision High-Resolution Coefficient Calculator Hook
+func computeHighResBiquadCoefficients(targetFreq: Double, targetGain: Double, targetQ: Double, sampleRate: Double) {
+    // Utilize double-precision math to entirely prevent digital coefficient crowding noise at 384 kHz
+    let w0 = 2.0 * Double.pi * targetFreq / sampleRate
+    let alpha = sin(w0) / (2.0 * targetQ)
+    
+    // Execute hardware-accelerated double-precision coefficient scaling via Accelerate Framework
+    // This keeps the high-end transients of your music mathematically pure, stable, and transparent
+    let b0 = (1.0 + alpha * A) / a0
+    // [Pass final scaled vector parameters directly to the Stage 01 rendering loop]
+
+B. Refactoring Directive: HPF Phase Linearization, Multi-Seat Complex Averaging, & Sub-Bass Phase Alignment
+Objective
+Integrate three ultra-premium Linear, Time-Invariant (LTI) time-alignment and phase-correction modules into the processing pipeline, user interface, configuration presets, and documentation files of the macOS equalizer application (DHDook/equaliser-adv) [INDEX]. This update implements High-Pass Filter Phase-Linearization, a Multi-Seat Room Acoustic Complex Vector Averaging Engine, and a Sub-Bass Group-Delay Phase Match Filter spanning from \(30\text{ Hz}\) to \(90\text{ Hz}\) [INDEX].
+Because these modules are strictly LTI, they process the audio stream via linear vector algebra, time delays, and phase shifts, introducing absolute zero harmonic distortion, zero artificial synthesis, and zero processing noise to preserve absolute audio clarity and bit-perfect digital fidelity [INDEX].
+1. UI Layout & Dashboard Component Integration
+Column 2 Configuration Grid Updates
+Action: Append a final control row to the absolute bottom of Column 2 (Right Side) to complete the functional grid stack symmetrically without introducing vertical padding [INDEX].
+Layout Sequencing (Row 14):
+Row 14 (Right Side): Render a horizontal dual-component row pairing a master configuration checkbox labeled "HPF Linearize" directly to the left of a second master configuration checkbox labeled "Sub Sync".
+text
+========================================================================
+[COLUMN 1: METERED DYNAMICS (LEFT)]      [COLUMN 2: SPATIAL & UTILITY (RIGHT)]
+========================================================================
+Row 11: [Clipper Meter+Hold]─► [Toggle]   Row 11: [Crosstalk Matrix Picker: Bypass/X-Talk]
+Row 12:                                   Row 12: [FIR Phase Link Toggle] ──► [Recalculate IR]
+Row 13: [Limiter Meter]    ──► [Toggle]   Row 13: [Reflection Cancel Toggle]
+                                          Row 14: [HPF Linearize Check] ──► [Sub Sync Check]
+Use code with caution.
+
+Settings Panel Multi-View Tab Expansion (Room Calibration Tab View)
+Action: Open your application's Settings "Room Calibration" tab view controller code file.
+Acoustic Point Selector: Add a horizontal segmented picker control labeled "Calibration Position"directly above the main execution button with exactly three distinct choices: [Center Seat, Left Seat, Right Seat].
+Layout Constraints: Enforce strict auto-expanding vertical parameters to ensure all elements lock into place cleanly, adhering strictly to the zero vertical scrolling rule across the main screen interface dashboard [INDEX].
+2. Universal Tooltip Definition Updates
+Action: Update the unified text tooltip box situated above the main screen grid layout to append the descriptive definitions for these advanced low-level operational enhancements [INDEX].
+Exact Text String to Inject:
+"Stereo Widener: Adjusts multi-band spatial fields to expand guitars and ambient sounds while keeping low bass centered. Loudness Match: Automatically smooths out long-term volume offsets between disparate source tracks to a stable target LUFS baseline. De-Esser: Tames harsh high-frequency sibilance ('S' and 'T' vocal sounds). Dynamic EQ Mode: Converts the De-Esser into a localized dynamic cut, saving surrounding high-end air. Multiband Compressor: Separately controls the dynamics of independent low, mid, and high frequency bands. Compressor: Balances the wideband dynamic range to glue the stereo mix together. Expander: Gently attenuates sub-threshold elements to lower background noise or expand flat mixes. De-Harsh: Employs a phase-pure analog see-saw tilt to naturally smooth bright production styles. Loudness Contour: Dynamically balances sub-bass and treble curves during low-volume playback to counteract human hearing deficiencies. DC Filter: Automatically removes hidden direct-current electrical offsets below 0.5 Hz to maximize amplifier efficiency and speaker headroom. Delta Solo: Inverts the processing phase to isolate and audition strictly the acoustic changes introduced by your active EQ map. Latency Mode (Buffer Sync): Toggles the limiter look-ahead footprint and dynamically changes the underlying macOS CoreAudio hardware I/O buffer frame size between 1024 samples for maximum music stability and 64 samples for lag-free movie lip-sync. Symmetry Balance: Applies linear inverse volume scaling factors to correct Left/Right speaker volume imbalances caused by asymmetrical room acoustics, pulling center images in focus. Pause Gate: Automatically applies an ultra-fast 5ms look-ahead fade to absolute silence during track changes or sample-rate handshakes to eliminate loud hardware clicks and speaker pops. Stereo Mode: Controls inter-channel summing topology, offering standard Stereo, True-Mono for historical records, and Wide-Mono to repair disjointed hard-panned 1960s/70s audio mixes cleanly. Sync Buffer: Creates a temporary audio memory cache that holds incoming audio frames during a bit-perfect sample rate clock change, releasing the stream only after the external DAC hardware successfully locks to eliminate truncated track intros. Dither Mode: Manages bit-depth reduction transitions when converting 32-bit internal DSP math down to your external DAC hardware resolution, utilizing Triangular Probability Density Function noise to eliminate harsh digital quantization distortion on fading tracks. Crosstalk Matrix: Implements a recursive cross-feed vector subtraction network that phase-cancels inter-aural acoustic leakage, unlocking a holographic 180-degree 3D soundstage. FIR Phase Link: Deploys a mixed-phase Finite Impulse Response filter matrix to resolve transducer group-delay anomalies, aligning woofer and horn wave arrival times down to the exact microsecond. Reflection Cancel: Employs a look-ahead linear deconvolution matrix to mathematically subtract the room's initial sidewall reflection arrivals from the stream. HPF Linearize: Applies an inverse all-pass phase correction network over your active High-Pass Filters to permanently eliminate low-frequency phase delay, ensuring absolute bass transient tightness. Sub Sync: Deploys a targeted linear-phase group-delay equalizer between 30 Hz and 90 Hz to phase-match your tape-out subwoofer track perfectly with your main speakers. Clipper: Shaves microsecond transient peaks to maximize clean headroom. Limiter: Acts as an absolute brickwall ceiling to stop digital clipping distortion."
+3. State & Preset Serialization
+Map these new structural parameters into your global state container models (models/PresetProfile.swift) to track automation configurations across processing layers [INDEX]:
+swift
+var hpfPhaseLinearizeEnabled: Bool = true
+var subBassGroupDelaySyncEnabled: Bool = true
+var multiSeatAveragingSelection: Int = 0 // 0 = Single Seat, 1 = Couched Average Deployed
+var stage0RoomCorrectionGainsCenter = [Float](repeating: 0.0, count: 7)
+var stage0RoomCorrectionGainsLeft = [Float](repeating: 0.0, count: 7)
+var stage0RoomCorrectionGainsRight = [Float](repeating: 0.0, count: 7)
+Use code with caution.
+
+4. Core CoreAudio Pipeline LTI Mathematical Logic
+Instruct the engine to calculate these parameters using hardware-accelerated functions inside your background audio block rendering callback threads.
+Step A: High-Pass Filter (HPF) Phase Linearization Network
+Position this calculation block inside src/dsp/BiquadFilter.swift, executing immediately following your Stage 00b High-Pass filter logic but before the Parametric EQ matrix [INDEX].
+Logic: Standard High-Pass Filters introduce severe phase delays in low frequencies, causing sub-bass signals to lag behind your mid-range. If hpfPhaseLinearizeEnabled evaluates to true, pass the audio stream vectors through an inverse all-pass FIR phase-reversal calculation block.
+Math: Rotate the low-frequency phase angles back into perfect synchronization with your mid-range and high frequencies, ensuring that the full frequency spectrum strikes your ears at the exact same microsecond, maximizing bass transient tightness [INDEX].
+Step B: Multi-Seat Room Acoustic Complex Vector Averaging Engine
+Modify the execution logic inside your Stage 00 Room Calibration Engine compilation sequence.
+Logic: Instead of computing a single workspace point, allow the user to record up to 3 individual seat impulse responses via the segmented picker interface.
+Math: If multiple measurements are stored, the calculation engine must execute a complex-vector arithmetic mean calculation loop across all captured magnitude response matrices (\(H[f]\)) across all 7 low-density bins to build a broad, unified inverse room correction map:
+\(H_{\text{avg}}[f]=\frac{H_{\text{center}}[f]+H_{\text{left}}[f]+H_{\text{right}}[f]}{3.0}\)
+Write these smoothed, averaged values atomically into the active stage0RoomCorrectionGains buffer, expanding your holographic sweet spot into a wide, uniform listening couch.
+Step C: Sub-Bass Group-Delay Phase Equalizer Link
+Position this block at Stage 10.5 of your processing chain, executing directly before your final Output Dither and Balance scaling matrix lines [INDEX].
+Logic: Your tape-out subwoofer track and its internal subwoofer amplifier introduce fixed mechanical latency, causing low bass to lag slightly behind the sound coming from your main speakers. If subBassGroupDelaySyncEnabled reads true, engage a narrow linear-phase group-delay filter window.
+Math: Isolate and target the phase envelope spanning exclusively between \(30\text{ Hz}\) and \(90\text{ Hz}\). Apply a fractional sample delay constraint to advance or delay the sub-bass phase angle to align the travel speed of your subwoofer's low-end wavefront perfectly with your main speakers, permanently eliminating "slow bass" effects and locking them into a single, cohesive wall of sound [INDEX].
+5. Codebase Synchronization: User Guide Tab Text Update
+Action: Locate your app level UserGuideSettingsViewController.swift container file. Open the masterManualTextBuffer text container string variable block and inject this new dedicated chapter at the absolute bottom of the manual context to document these final linear enhancements [INDEX].
+Text String to Inject into the User Guide Buffer:
+text
+---
+
+## Part 9: Advanced Low-Frequency Phase & Multi-Seat Linear Alignment
+
+The final tier of your Linear, Time-Invariant (LTI) restoration suite is engineered to optimize phase cohesion in the low frequencies and expand the physical sweet spot of your listening room without altering tonal balance.
+
+### 1. High-Pass Filter Phase Linearization
+Whenever a High-Pass Filter (HPF) is engaged—such as our critical 35 Hz safety cut to shield your vintage amplifier from infrasonic strain—the biquad math introduces an unavoidable phase delay in the low-end frequencies. This delay causes bass components to lag slightly behind your mid-range, softening the structural tightness and "snap" of your drums. 
+
+Enabling HPF Linearize solves this: it deploys an all-pass phase-reversal FIR calculation block directly adjacent to your safety cuts. It rotates low-frequency phase angles back into perfect, microsecond synchronization with your mids and highs. This ensures the entire audio wavefront strikes your ears at the exact same microsecond, maximizing low-end transient impact.
+
+### 2. Multi-Seat Complex Vector Room Averaging
+Standard room calibration systems tune your acoustics to a single microscopic point in space. While this builds a perfect sweet spot for one listener, moving even a foot to the left or right can pull the phase curves out of alignment. 
+
+The Room Calibration sub-panel resolves this by introducing a Multi-Seat Averaging Matrix. You can sample three discrete calibration sweeps across your couch (Left seat, Center seat, and Right seat). The engine passes the three independent impulse responses through a complex-vector arithmetic mean calculation, smoothing out the peaks and nulls to construct a unified inverse room correction map. This expands your holographic sweet spot into a wide "sweet couch," ensuring pristine clarity for multiple listeners simultaneously.
+
+### 3. Sub-Bass Group-Delay Phase Matching
+Because your Klipsch subwoofer is driven from the Pioneer receiver's fixed Tape-Out line, and the subwoofer's internal power amplifier introduces its own digital processing delay, low bass notes take a fraction of a millisecond longer to emit than the midrange sound passing through your main speaker cabinets. This minor acoustic offset causes low-end frequencies to sound loose, detached, or slow.
+
+Enabling Sub Sync deploys a precise linear-phase group-delay equalizer targeting exclusively the frequencies between 30 Hz and 90 Hz. It micro-adjusts the phase envelope of the sub-bass stream to track in perfect alignment with the speed of your main woofers, seamlessly blending your subwoofer and speaker cabinets into a singular, cohesive wall of sound.
+Use code with caution.
+
+6. Action Steps for the Agent
+Refactor UI Constraints: Update your 2-column main screen layout file to draw Row 14 inside Column 2 [INDEX]. Mount the HPF Linearize and Sub Sync checkboxes side-by-side. Inject the updated master tooltip asset text string block from Section 2 into the dynamic UI text container.
+Deploy Phase & Averaging Logic Filters: Thread the FIR phase-reversal algorithm immediately behind your High-Pass biquad nodes, implement the arithmetic mean computation loop into your Stage 00 Room Calibration analyzer class, and deploy the fractional delay matrix at Stage 10.5 of your processing loop [INDEX].
+Synchronize Reference Documentation Text: Open UserGuideSettingsViewController.swift. Inset the Part 9 text data block provided in Section 5 directly into your localized string arrays to ensure all user manual reference entries update smoothly [INDEX].
+

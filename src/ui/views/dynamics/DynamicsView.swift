@@ -1489,6 +1489,7 @@ struct DynamicsInlineView: View {
 
     @State private var showDynamicsPanel = false
     @State private var showDefinitions   = false
+    @StateObject private var inlineMeterBridge = InlineMeterBridge()
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -1502,8 +1503,11 @@ struct DynamicsInlineView: View {
                 column3
                 Divider()
                 column4
+                Divider()
+                column5
             }
         }
+        .onAppear { inlineMeterBridge.register(with: store.meterStore) }
     }
 
     // MARK: - Header
@@ -1629,6 +1633,33 @@ struct DynamicsInlineView: View {
             col2Toggle(label: "Sub Align",  isOn: inlineSubBassEnabled)
             col2Toggle(label: "ZL Reverb",  isOn: inlineZLReverbEnabled)
         }
+    }
+
+    // MARK: - Column 5: Stereo Mode + Live Meters
+
+    private var column5: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Stereo Mode")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                Picker("", selection: inlineStereoModeBinding) {
+                    Text("Stereo").tag(StereoModeSelection.stereo)
+                    Text("Wide").tag(StereoModeSelection.wideMono)
+                    Text("Mono").tag(StereoModeSelection.trueMono)
+                }
+                .pickerStyle(.segmented)
+                .controlSize(.mini)
+                .fixedSize()
+            }
+
+            Divider()
+
+            InlineCrestFactorView(bridge: inlineMeterBridge)
+            InlineGoniometerView(bridge: inlineMeterBridge)
+        }
+        .frame(minWidth: 90)
     }
 
     // MARK: - Toggle Helper
@@ -1812,6 +1843,148 @@ struct DynamicsInlineView: View {
             get: { store.dynamicsConfig.advanced.zlConvolutionReverbEnabled },
             set: { v in var adv = store.dynamicsConfig.advanced; adv.zlConvolutionReverbEnabled = v; store.updateAdvancedProcessing(adv) }
         )
+    }
+
+    // MARK: - Column 5 Bindings
+
+    private var inlineStereoModeBinding: Binding<StereoModeSelection> {
+        Binding(
+            get: { store.dynamicsConfig.advanced.stereoMode },
+            set: { val in var adv = store.dynamicsConfig.advanced; adv.stereoMode = val; store.updateAdvancedProcessing(adv) }
+        )
+    }
+}
+
+// MARK: - Inline Meter Bridge
+
+/// Bridges MeterStore observer callbacks to SwiftUI @Published properties
+/// for the crest factor and goniometer displays in DynamicsInlineView.
+@MainActor
+final class InlineMeterBridge: ObservableObject {
+    @Published var peakL: Float = 0
+    @Published var peakR: Float = 0
+    @Published var rmsL:  Float = 0
+    @Published var rmsR:  Float = 0
+
+    private let obsPeakL = BridgeChannelObs()
+    private let obsPeakR = BridgeChannelObs()
+    private let obsRmsL  = BridgeChannelObs()
+    private let obsRmsR  = BridgeChannelObs()
+
+    var crestFactorDb: Float {
+        let peak = max(peakL, peakR)
+        let rms  = max(rmsL, rmsR)
+        guard rms > 0.001 else { return 0 }
+        return max(0, 20 * log10(peak / rms))
+    }
+
+    // -1.0 = fully left, 0 = centred, +1.0 = fully right
+    var balance: Float {
+        let l = peakL, r = peakR
+        guard l + r > 0.001 else { return 0 }
+        return (r - l) / (l + r)
+    }
+
+    func register(with store: MeterStore) {
+        obsPeakL.onUpdate = { [weak self] v in Task { @MainActor [weak self] in self?.peakL = v } }
+        obsPeakR.onUpdate = { [weak self] v in Task { @MainActor [weak self] in self?.peakR = v } }
+        obsRmsL.onUpdate  = { [weak self] v in Task { @MainActor [weak self] in self?.rmsL  = v } }
+        obsRmsR.onUpdate  = { [weak self] v in Task { @MainActor [weak self] in self?.rmsR  = v } }
+        store.addObserver(obsPeakL, for: .inputPeakLeft)
+        store.addObserver(obsPeakR, for: .inputPeakRight)
+        store.addObserver(obsRmsL,  for: .inputRMSLeft)
+        store.addObserver(obsRmsR,  for: .inputRMSRight)
+    }
+}
+
+private final class BridgeChannelObs: MeterObserver {
+    nonisolated(unsafe) var onUpdate: ((Float) -> Void)?
+    nonisolated func meterUpdated(value: Float, hold: Float, clipping: Bool) {
+        onUpdate?(value)
+    }
+}
+
+// MARK: - Inline Crest Factor View
+
+/// Displays the instantaneous peak-to-RMS difference (crest factor) in dB.
+struct InlineCrestFactorView: View {
+    @ObservedObject var bridge: InlineMeterBridge
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text("Crest Factor")
+                .font(.system(size: 8, weight: .medium))
+                .foregroundStyle(.tertiary)
+            HStack(spacing: 3) {
+                Image(systemName: "waveform")
+                    .font(.system(size: 8))
+                    .foregroundStyle(.secondary)
+                Text(String(format: "%.1f dB", bridge.crestFactorDb))
+                    .font(.system(size: 10, weight: .bold, design: .monospaced))
+                    .foregroundStyle(crestColor)
+            }
+        }
+    }
+
+    private var crestColor: Color {
+        switch bridge.crestFactorDb {
+        case ..<8:   return .secondary
+        case 8..<16: return .yellow
+        default:     return .orange
+        }
+    }
+}
+
+// MARK: - Inline Goniometer View
+
+/// Compact stereo balance / correlation indicator.
+/// Horizontal bar: left deflection = left-heavy, right = right-heavy, centre = balanced.
+struct InlineGoniometerView: View {
+    @ObservedObject var bridge: InlineMeterBridge
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text("Goniometer")
+                .font(.system(size: 8, weight: .medium))
+                .foregroundStyle(.tertiary)
+
+            Canvas { ctx, size in
+                let midX = size.width / 2
+                let barH: CGFloat = size.height * 0.5
+                let barY = (size.height - barH) / 2
+
+                // Track background
+                ctx.fill(
+                    Path(CGRect(x: 0, y: barY, width: size.width, height: barH)),
+                    with: .color(.secondary.opacity(0.10))
+                )
+
+                // Centre tick
+                let zPath = Path { p in
+                    p.move(to: CGPoint(x: midX, y: 0))
+                    p.addLine(to: CGPoint(x: midX, y: size.height))
+                }
+                ctx.stroke(zPath, with: .color(.secondary.opacity(0.30)), lineWidth: 0.5)
+
+                // Indicator dot
+                let bal    = CGFloat(bridge.balance)   // -1…+1
+                let dotX   = midX + bal * midX * 0.85
+                let dotR:   CGFloat = 4
+                let dotCol: Color   = abs(bridge.balance) < 0.15
+                    ? .green
+                    : (abs(bridge.balance) < 0.5 ? .yellow : .orange)
+
+                ctx.fill(
+                    Path(ellipseIn: CGRect(
+                        x: dotX - dotR, y: size.height / 2 - dotR,
+                        width: dotR * 2, height: dotR * 2
+                    )),
+                    with: .color(dotCol)
+                )
+            }
+            .frame(width: 90, height: 16)
+            .cornerRadius(3)
+        }
     }
 }
 

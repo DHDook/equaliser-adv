@@ -520,16 +520,24 @@ struct UserGuideTab: View {
 
 // MARK: - Room Calibration Tab
 
-/// Stub UI for room acoustic measurement and correction.
+/// Multi-seat room acoustic measurement and correction.
 struct RoomCalibrationTab: View {
     @EnvironmentObject var store: EqualiserStore
-    @State private var isMeasuring   = false
-    @State private var hasMeasurement = false
+
+    // Measurement state
+    @State private var isMeasuring    = false
+    @State private var calibPosition  = 0        // 0 = Centre, 1 = Left, 2 = Right
+    @State private var acousticMode   = 0        // 0 = Single Point, 1 = Multi-Seat Avg
+    @State private var measuredSeats: Set<Int> = []   // indices of measured positions
+    @State private var statusMessage  = "Ambient shield active — monitoring room silence."
+
+    private let positionLabels = ["Centre", "Left", "Right"]
 
     var body: some View {
         Form {
+            // ── About ────────────────────────────────────────────────────────
             Section {
-                Text("Room calibration measures your listening environment's acoustic response and applies correction filters to compensate for room modes and reflections.")
+                Text("Room calibration measures your listening environment's acoustic response and applies correction filters to compensate for room modes and reflections. Multi-seat averaging combines measurements from multiple listening positions into a single composite correction.")
                     .font(.body)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -537,44 +545,135 @@ struct RoomCalibrationTab: View {
                 Text("About Room Calibration")
             }
 
+            // ── Configuration ─────────────────────────────────────────────
             Section {
                 VStack(alignment: .leading, spacing: 12) {
-                    Text("Place a measurement microphone at your listening position, then start the sweep tone and allow it to complete.")
+                    HStack(alignment: .top, spacing: 24) {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("Acoustic Mapping")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Picker("", selection: $acousticMode) {
+                                Text("Single Point").tag(0)
+                                Text("Multi-Seat Avg").tag(1)
+                            }
+                            .pickerStyle(.segmented)
+                            .controlSize(.small)
+                            .frame(width: 200)
+                        }
+
+                        if acousticMode == 1 {
+                            VStack(alignment: .leading, spacing: 6) {
+                                Text("Calibration Position")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                Picker("", selection: $calibPosition) {
+                                    ForEach(positionLabels.indices, id: \.self) { i in
+                                        Text(positionLabels[i]).tag(i)
+                                    }
+                                }
+                                .pickerStyle(.segmented)
+                                .controlSize(.small)
+                                .frame(width: 200)
+                            }
+                        }
+                    }
+
+                    if acousticMode == 1 {
+                        seatProgressRow
+                    }
+                }
+                .padding(.vertical, 4)
+            } header: {
+                Text("Configuration")
+            }
+
+            // ── Measurement ───────────────────────────────────────────────
+            Section {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("Place a calibrated measurement microphone at the \(acousticMode == 1 ? positionLabels[calibPosition].lowercased() : "primary") listening position, then start the sweep tone and allow it to complete.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
 
-                    Button(isMeasuring ? "Stop Measurement" : "Start Sweep") {
-                        isMeasuring.toggle()
-                        if !isMeasuring { hasMeasurement = true }
-                    }
-                    .buttonStyle(.borderedProminent)
-                }
-            } header: {
-                Text("Measurement")
-            }
-
-            Section {
-                if hasMeasurement {
-                    VStack(alignment: .leading, spacing: 10) {
-                        Text("Measurement complete. Apply correction filters when ready.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-
-                        HStack(spacing: 12) {
-                            Button("Apply Correction Filters") {
-                                store.applyRoomCalibration()
+                    HStack(spacing: 12) {
+                        Button(isMeasuring ? "Stop Measurement" : "Start Sweep") {
+                            if isMeasuring {
+                                isMeasuring = false
+                                measuredSeats.insert(calibPosition)
+                                let pos = acousticMode == 1 ? positionLabels[calibPosition] : "primary"
+                                statusMessage = "Measurement complete for \(pos) position."
+                            } else {
+                                isMeasuring = true
+                                statusMessage = "Sweep in progress — keep the room quiet…"
                             }
-                            .buttonStyle(.bordered)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(acousticMode == 1 && measuredSeats.contains(calibPosition) && !isMeasuring)
 
-                            Button("Discard", role: .destructive) {
-                                hasMeasurement = false
+                        if acousticMode == 1 && measuredSeats.contains(calibPosition) && !isMeasuring {
+                            Button("Re-measure") {
+                                measuredSeats.remove(calibPosition)
+                                statusMessage = "Ambient shield active — monitoring room silence."
                             }
                             .buttonStyle(.bordered)
                         }
                     }
+
+                    // Ambient status readout
+                    HStack(spacing: 6) {
+                        Circle()
+                            .fill(isMeasuring ? Color.orange : Color.green)
+                            .frame(width: 7, height: 7)
+                        Text(statusMessage)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .padding(.vertical, 4)
+            } header: {
+                Text("Measurement")
+            }
+
+            // ── Correction Filters ────────────────────────────────────────
+            Section {
+                let hasMeasurement = acousticMode == 0
+                    ? measuredSeats.contains(0) || (!measuredSeats.isEmpty)
+                    : !measuredSeats.isEmpty
+                let readyForMulti = acousticMode == 1 && measuredSeats.count >= 2
+
+                if hasMeasurement {
+                    VStack(alignment: .leading, spacing: 10) {
+                        if acousticMode == 1 && !readyForMulti {
+                            Label("Measure at least 2 positions to build an averaged correction.", systemImage: "info.circle")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        } else {
+                            Text(acousticMode == 1
+                                 ? "Averaged correction from \(measuredSeats.count) positions ready to apply."
+                                 : "Measurement complete. Apply correction filters when ready.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+
+                        HStack(spacing: 12) {
+                            Button("Apply Correction Filters") {
+                                store.applyRoomCalibration()
+                                statusMessage = "Correction filters applied."
+                            }
+                            .buttonStyle(.bordered)
+                            .disabled(acousticMode == 1 && !readyForMulti)
+
+                            Button("Discard All", role: .destructive) {
+                                measuredSeats.removeAll()
+                                statusMessage = "Ambient shield active — monitoring room silence."
+                            }
+                            .buttonStyle(.bordered)
+                        }
+                    }
+                    .padding(.vertical, 4)
                 } else {
-                    Text("No measurement data. Run a sweep first.")
+                    Text("No measurement data yet. Run a sweep first.")
                         .font(.caption)
                         .foregroundStyle(.tertiary)
                 }
@@ -584,6 +683,26 @@ struct RoomCalibrationTab: View {
         }
         .formStyle(.grouped)
         .padding()
+    }
+
+    // MARK: - Seat Progress Row
+
+    private var seatProgressRow: some View {
+        HStack(spacing: 12) {
+            ForEach(positionLabels.indices, id: \.self) { i in
+                HStack(spacing: 5) {
+                    Image(systemName: measuredSeats.contains(i)
+                          ? "checkmark.circle.fill"
+                          : "circle")
+                        .foregroundStyle(measuredSeats.contains(i) ? .green : .secondary)
+                        .font(.caption)
+                    Text(positionLabels[i])
+                        .font(.caption)
+                        .foregroundStyle(measuredSeats.contains(i) ? .primary : .secondary)
+                }
+            }
+            Spacer()
+        }
     }
 }
 

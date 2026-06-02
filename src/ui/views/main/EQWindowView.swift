@@ -7,7 +7,7 @@ struct EQWindowView: View {
     @EnvironmentObject var store: EqualiserStore
     @StateObject private var driverManager = DriverManager.shared
     @State private var showCompareHelp = false
-    @State private var metersEnabledUI = false
+    @State private var metersEnabledUI = true
     @State private var showDriverSheet = true
     @State private var showSaveSheet = false
 
@@ -36,8 +36,11 @@ struct EQWindowView: View {
             // Level meters + control panel
             HStack(alignment: .top, spacing: 0) {
                 LevelMetersView(meterStore: store.meterStore)
+                    .fixedSize(horizontal: true, vertical: false)
                     .layoutPriority(1)
                     .offset(x: -8)
+                    .opacity(metersEnabledUI ? 1.0 : 0.0)
+                    .animation(.easeInOut(duration: 0.2), value: metersEnabledUI)
 
                 Spacer(minLength: 64)
 
@@ -83,7 +86,7 @@ struct EQWindowView: View {
             }
 
             // Dual 31-band real-time spectrum analyser
-            RTADashboardView(analyzer: store.rtaAnalyzer)
+            RTADashboardView(analyzer: store.rtaAnalyzer, metersEnabled: metersEnabledUI)
 
             Divider()
 
@@ -207,29 +210,35 @@ struct EQWindowView: View {
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
+                .frame(minWidth: 58, alignment: .center)
 
                 VStack(spacing: 2) {
                     Toggle("", isOn: $metersEnabledUI)
                         .labelsHidden()
                         .toggleStyle(.switch)
                         .controlSize(.small)
-                        .help("Level meters add slight CPU overhead. Disable here to reduce CPU while the window is open.")
+                        .help("Master switch for level meters and RTA graphs. Disabling reduces CPU overhead.")
                     Text("Meters")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
+                .frame(minWidth: 58, alignment: .center)
 
                 VStack(spacing: 2) {
                     Button {
                         openSettings()
                     } label: {
                         Image(systemName: "gearshape")
+                            .font(.system(size: 16))
+                            .frame(height: 22)
                     }
+                    .buttonStyle(.plain)
                     .help("Settings (⌘,)")
                     Text("Settings")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
+                .frame(minWidth: 58, alignment: .center)
             }
         }
         .background(
