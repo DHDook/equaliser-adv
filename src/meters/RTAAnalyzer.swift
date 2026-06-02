@@ -287,7 +287,8 @@ final class AdvancedDualSpectrumAnalyzer: ObservableObject, @unchecked Sendable 
         }
         
         // Post-processing: magnitude to dB
-        vvsqrtf(&amps, &mags, &[Int32(half)])
+        var n = Int32(half)
+        vvsqrtf(&amps, &mags, &n)
         
         var norm: Float = 4.0 / Float(fftSize)
         vDSP_vsmul(amps, 1, &norm, &amps, 1, vDSP_Length(half))
