@@ -13,6 +13,21 @@ import Foundation
 ///
 /// Reference: https://webaudio.github.io/Audio-EQ-Cookbook/Audio-EQ-Cookbook.txt
 enum BiquadMath {
+
+    /// Sample rates above this threshold use reference-rate coefficient decoupling when enabled.
+    static let highResDecouplingThresholdHz: Double = 96_000
+
+    /// Reference design rate for high-resolution decoupling (prevents pole crowding > 96 kHz).
+    static let highResReferenceSampleRateHz: Double = 48_000
+
+    /// Returns the sample rate used for biquad coefficient design.
+    static func designSampleRate(actualRate: Double, coefficientDecouplingEnabled: Bool) -> Double {
+        if coefficientDecouplingEnabled && actualRate > highResDecouplingThresholdHz {
+            return highResReferenceSampleRateHz
+        }
+        return actualRate
+    }
+
     // MARK: - Main Entry Point (single section)
 
     /// Calculates biquad coefficients for the given filter parameters.

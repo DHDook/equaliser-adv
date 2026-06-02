@@ -307,9 +307,13 @@ final class EqualiserStore: ObservableObject {
 
     /// Updates advanced processing parameters (sections A–J) and propagates to the audio pipeline.
     func updateAdvancedProcessing(_ advanced: AdvancedProcessingConfig) {
+        let prevDecoupling = dynamicsConfig.advanced.coefficientDecouplingEnabled
         var config = eqConfiguration.dynamicsConfig
         config.advanced = advanced
         dynamicsConfig = config
+        if prevDecoupling != advanced.coefficientDecouplingEnabled {
+            refreshHighResDecouplingStatus(forceReapply: true)
+        }
     }
 
     // MARK: - Advanced Live Metrics (audio thread → main thread)
@@ -532,6 +536,7 @@ final class EqualiserStore: ObservableObject {
                 if let sr = self.routingCoordinator.pipelineManager.renderPipeline?.sampleRate {
                     self.rtaAnalyzer.assumedSampleRate = Float(sr)
                 }
+                self.refreshHighResDecouplingStatus()
             }
             .store(in: &cancellables)
 
@@ -807,6 +812,23 @@ final class EqualiserStore: ObservableObject {
 
     /// Connects the RTA analyser's ring buffers to the audio render pipeline's tap points.
     /// Safe to call multiple times; no-op when no pipeline is active.
+    /// Updates runtime high-res decoupling status and re-stages EQ if needed.
+    func refreshHighResDecouplingStatus(forceReapply: Bool = false) {
+        let sr = routingCoordinator.pipelineManager.renderPipeline?.sampleRate ?? 48_000
+        let engaged = dynamicsConfig.advanced.coefficientDecouplingEnabled && sr > 96_000
+        let statusChanged = dynamicsConfig.advanced.highResDecouplingActive != engaged
+        if statusChanged {
+            var adv = dynamicsConfig.advanced
+            adv.highResDecouplingActive = engaged
+            var config = dynamicsConfig
+            config.advanced = adv
+            dynamicsConfig = config
+        }
+        if forceReapply || statusChanged {
+            routingCoordinator.eqStager.reapplyConfiguration()
+        }
+    }
+
     func wireRTAAnalyzer() {
         routingCoordinator.pipelineManager.renderPipeline?.setRTABuffers(
             input:  rtaAnalyzer.inputRingBuffer,

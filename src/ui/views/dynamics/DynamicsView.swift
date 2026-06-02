@@ -727,6 +727,22 @@ struct DynamicsView: View {
 
     private var systemUtilitiesSection: some View {
         Section {
+            Toggle("Hi-Res Coef. Decoupling", isOn: coefficientDecouplingBinding)
+                .toggleStyle(.switch)
+                .controlSize(.regular)
+                .font(.system(size: 13))
+
+            HStack(spacing: 8) {
+                Text("Decoupling Active")
+                    .font(.system(size: 13))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 100, alignment: .leading)
+                Text(store.dynamicsConfig.advanced.highResDecouplingActive ? "Yes (>96 kHz)" : "No")
+                    .font(.system(size: 13, weight: .medium, design: .monospaced))
+                    .foregroundStyle(store.dynamicsConfig.advanced.highResDecouplingActive ? .green : .secondary)
+                Spacer()
+            }
+
             Toggle("DC Offset Filter", isOn: dcOffsetEnabledBinding)
                 .toggleStyle(.switch)
                 .controlSize(.regular)
@@ -1194,6 +1210,12 @@ struct DynamicsView: View {
             set: { val in var adv = store.dynamicsConfig.advanced; adv.stereoMode = val; store.updateAdvancedProcessing(adv) }
         )
     }
+    private var coefficientDecouplingBinding: Binding<Bool> {
+        Binding(
+            get: { store.dynamicsConfig.advanced.coefficientDecouplingEnabled },
+            set: { val in var adv = store.dynamicsConfig.advanced; adv.coefficientDecouplingEnabled = val; store.updateAdvancedProcessing(adv) }
+        )
+    }
     private var dcOffsetEnabledBinding: Binding<Bool> {
         Binding(
             get: { store.dynamicsConfig.advanced.dcOffsetFilterEnabled },
@@ -1482,8 +1504,10 @@ private struct DynamicsSliderRow: View {
 /// Four-column layout (max 6 toggles per column):
 ///   Col 1 — core dynamics chain stages
 ///   Col 2 — spectral/spatial utilities
-///   Col 3 — LTI spatial processing
-///   Col 4 — LTI linear processing
+///   Col 3 — LTI processing (late chain)
+///   Col 4 — Segmented pickers (stereo / latency / dither)
+///   Col 5 — Analytics meters
+///   Col 6 — Goniometer
 struct DynamicsInlineView: View {
     @EnvironmentObject var store: EqualiserStore
 
@@ -1588,86 +1612,81 @@ struct DynamicsInlineView: View {
         }
     }
 
-    // MARK: - Column 1: Core Dynamics (6 toggles)
+    // MARK: - Column 1: Signal chain (early stages, 8 toggles)
 
     private var column1: some View {
         VStack(alignment: .leading, spacing: 4) {
-            col2Toggle(label: "De-Esser",  isOn: deEsserEnabledBinding)
-            col2Toggle(label: "M-Band",    isOn: mbEnabledBinding)
+            col2Toggle(label: "Hi-Res Coef", isOn: inlineCoefficientDecouplingEnabled)
+            col2Toggle(label: "DC Filter",   isOn: inlineDcOffsetEnabled)
+            col2Toggle(label: "Widener",     isOn: inlineWideEnabled)
+            col2Toggle(label: "LUFS",        isOn: inlineLufsEnabled)
+            col2Toggle(label: "Contour",     isOn: inlineLoudnessContourEnabled)
+            col2Toggle(label: "De-Esser",    isOn: deEsserEnabledBinding)
+            col2Toggle(label: "M-Band",      isOn: mbEnabledBinding)
+        }
+    }
+
+    // MARK: - Column 2: Dynamics + spatial (7 toggles)
+
+    private var column2: some View {
+        VStack(alignment: .leading, spacing: 4) {
             col2Toggle(label: "Comp.",     isOn: compressorEnabledBinding)
             col2Toggle(label: "Expander",  isOn: expanderEnabledBinding)
             col2Toggle(label: "Clipper",   isOn: clipperEnabledBinding)
             col2Toggle(label: "Limiter",   isOn: limiterEnabledBinding)
-        }
-    }
-
-    // MARK: - Column 2: Spectral / Spatial Utilities (6 toggles)
-
-    private var column2: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            col2Toggle(label: "Widener",   isOn: inlineWideEnabled)
-            col2Toggle(label: "LUFS",      isOn: inlineLufsEnabled)
             col2Toggle(label: "De-Harsh",  isOn: inlineDeharshEnabled)
-            col2Toggle(label: "Contour",   isOn: inlineLoudnessContourEnabled)
-            col2Toggle(label: "DC Filter", isOn: inlineDcOffsetEnabled)
             col2Toggle(label: "Sym. Bal.", isOn: inlineSymmetryBalanceEnabled)
+            col2Toggle(label: "Pan Matrix", isOn: inlinePanningEnabled)
+            col2Toggle(label: "Denoiser",   isOn: inlineDenoisingEnabled)
         }
     }
 
-    // MARK: - Column 3: LTI Spatial (6 toggles)
+    // MARK: - Column 3: LTI suite (7 toggles)
 
     private var column3: some View {
         VStack(alignment: .leading, spacing: 4) {
-            col2Toggle(label: "Pan Matrix", isOn: inlinePanningEnabled)
-            col2Toggle(label: "Denoiser",   isOn: inlineDenoisingEnabled)
             col2Toggle(label: "IR Align",   isOn: inlineIRAlignmentEnabled)
             col2Toggle(label: "Crosstalk",  isOn: inlineCrosstalkEnabled)
             col2Toggle(label: "Early Refl", isOn: inlineEarlyReflectionEnabled)
             col2Toggle(label: "HPF Lin.",   isOn: inlineHPFLinearizationEnabled)
-        }
-    }
-
-    // MARK: - Column 4: LTI Linear (3 toggles)
-
-    private var column4: some View {
-        VStack(alignment: .leading, spacing: 4) {
             col2Toggle(label: "Multi-Seat", isOn: inlineMultiSeatEnabled)
             col2Toggle(label: "Sub Align",  isOn: inlineSubBassEnabled)
             col2Toggle(label: "ZL Reverb",  isOn: inlineZLReverbEnabled)
-
-            Divider().padding(.vertical, 2)
-
-            InlineBitStreamView(bridge: inlineMeterBridge)
-            InlineBitRateView()
         }
     }
 
-    // MARK: - Column 5: Stereo Mode + Analytics Metrics
+    // MARK: - Column 4: Pickers only (signal-chain order)
+
+    private var column4: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            inlineSegmentedPicker(label: "Stereo", selection: inlineStereoModeBinding) {
+                Text("Stereo").tag(StereoModeSelection.stereo)
+                Text("Wide").tag(StereoModeSelection.wideMono)
+                Text("Mono").tag(StereoModeSelection.trueMono)
+            }
+            inlineSegmentedPicker(label: "Latency", selection: inlineLatencyModeBinding) {
+                Text("Music").tag(LatencyMode.music)
+                Text("Movie").tag(LatencyMode.movie)
+            }
+            inlineSegmentedPicker(label: "Dither", selection: inlineDitherModeBinding) {
+                Text("Off").tag(DitherMode.bypass)
+                Text("TPDF").tag(DitherMode.tpdf)
+                Text("Shape").tag(DitherMode.shaped)
+            }
+        }
+    }
+
+    // MARK: - Column 5: Meters only
 
     private var column5: some View {
         VStack(alignment: .leading, spacing: 4) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Stereo Mode")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                Picker("", selection: inlineStereoModeBinding) {
-                    Text("Stereo").tag(StereoModeSelection.stereo)
-                    Text("Wide").tag(StereoModeSelection.wideMono)
-                    Text("Mono").tag(StereoModeSelection.trueMono)
-                }
-                .pickerStyle(.segmented)
-                .controlSize(.mini)
-                .fixedSize()
-            }
-
-            Divider()
-
             InlinePhaseCorrelationView()
             InlineCrestFactorView(bridge: inlineMeterBridge)
             InlineTruePeakView(bridge: inlineMeterBridge)
             InlineIspLatchView(bridge: inlineMeterBridge)
             InlineDRFactorView(bridge: inlineMeterBridge)
+            InlineBitStreamView(bridge: inlineMeterBridge)
+            InlineBitRateView()
         }
         .frame(minWidth: 100)
     }
@@ -1676,6 +1695,27 @@ struct DynamicsInlineView: View {
 
     private var column6: some View {
         StereoGoniometerView(engine: store.goniometerEngine, isBypassed: store.isBypassed)
+    }
+
+
+    // MARK: - Inline Picker Helper
+
+    @ViewBuilder
+    private func inlineSegmentedPicker<S: Hashable, Content: View>(
+        label: String,
+        selection: Binding<S>,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(label)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+            Picker("", selection: selection, content: content)
+                .pickerStyle(.segmented)
+                .controlSize(.mini)
+                .labelsHidden()
+        }
     }
 
     // MARK: - Toggle Helper
@@ -2090,7 +2130,7 @@ struct InlineTruePeakView: View {
         HStack(spacing: 3) {
             Circle()
                 .fill(clipped ? Color.red : Color.green.opacity(0.6))
-                .frame(width: 6, height: 6)
+                .frame(width: 12, height: 12)
             Text(label)
                 .font(.system(size: 8, weight: .medium))
                 .foregroundStyle(.secondary)
@@ -2116,9 +2156,9 @@ struct InlineIspLatchView: View {
     @ViewBuilder
     private func ispIndicator(label: String, latched: Bool) -> some View {
         HStack(spacing: 3) {
-            RoundedRectangle(cornerRadius: 1.5)
+            Circle()
                 .fill(latched ? Color.orange : Color.green.opacity(0.6))
-                .frame(width: 8, height: 8)
+                .frame(width: 12, height: 12)
             Text(label)
                 .font(.system(size: 8, weight: .medium))
                 .foregroundStyle(latched ? .orange : .secondary)
@@ -2191,23 +2231,25 @@ struct InlineBitStreamView: View {
 struct InlineBitRateView: View {
     @EnvironmentObject private var store: EqualiserStore
 
+    private let bitsPerSample = 32
+
     var body: some View {
         TimelineView(.periodic(from: .now, by: 1.0 / 30.0)) { _ in
             let sr = store.streamSampleRate
-            let kbps = Int(sr * 24.0 * 2.0 / 1000.0)
-            let srLabel = sr >= 1000 ? String(format: "%.0fk", sr / 1000) : String(format: "%.0f", sr)
+            let kbps = Int(sr * Double(bitsPerSample) * 2.0 / 1000.0)
+            let srText = sr >= 1000
+                ? String(format: "%.0f kHz", sr / 1000)
+                : String(format: "%.0f Hz", sr)
             VStack(alignment: .leading, spacing: 1) {
-                Text("Bit Rate")
+                Text("Sample Rate")
                     .font(.system(size: 8, weight: .medium))
                     .foregroundStyle(.tertiary)
-                HStack(spacing: 4) {
-                    Text("\(kbps) kbps")
-                        .font(.system(size: 9, weight: .bold, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                    Text("\(srLabel)/24b")
-                        .font(.system(size: 7, weight: .regular))
-                        .foregroundStyle(.tertiary)
-                }
+                Text(srText)
+                    .font(.system(size: 9, weight: .bold, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                Text("\(kbps) kbps")
+                    .font(.system(size: 7, weight: .regular, design: .monospaced))
+                    .foregroundStyle(.tertiary)
             }
         }
     }

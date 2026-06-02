@@ -341,9 +341,11 @@ enum DitherMode: Int, Codable, Equatable, Sendable {
 /// Live metrics (`highResDecouplingActive`) are computed at runtime and not persisted.
 struct AdvancedProcessingConfig: Codable, Equatable, Sendable {
 
-    // ── A. High-Resolution Coefficient Decoupling (display only) ──────
-    /// Automatically true when the session sample rate exceeds 96 kHz.
-    /// Shown in System Utilities; never written to disk.
+    // ── A. High-Resolution Coefficient Decoupling ───────────────────────
+    /// When enabled and sample rate exceeds 96 kHz, EQ coefficients are designed
+    /// at a reference rate to avoid pole crowding. `highResDecouplingActive` reflects
+    /// whether that path is currently engaged (runtime only).
+    var coefficientDecouplingEnabled: Bool = true
     var highResDecouplingActive: Bool = false
 
     // ── B. Loudness Dialogue Gate ─────────────────────────────────────
@@ -459,6 +461,7 @@ struct AdvancedProcessingConfig: Codable, Equatable, Sendable {
         case loudnessDialogueGateEnabled
         case clipperAsymmetryTrimDB
         case deesserDynamicModeEnabled
+        case coefficientDecouplingEnabled
         case deharshFilterEnabled, deharshTiltAmountDB
         case stereoBalancePosition
         case loudnessContourEnabled
@@ -490,6 +493,7 @@ struct AdvancedProcessingConfig: Codable, Equatable, Sendable {
         loudnessDialogueGateEnabled: Bool = false,
         clipperAsymmetryTrimDB: Float = 0.0,
         deesserDynamicModeEnabled: Bool = false,
+        coefficientDecouplingEnabled: Bool = true,
         deharshFilterEnabled: Bool = false,
         deharshTiltAmountDB: Float = -1.5,
         stereoBalancePosition: Float = 0.0,
@@ -527,6 +531,7 @@ struct AdvancedProcessingConfig: Codable, Equatable, Sendable {
         self.loudnessDialogueGateEnabled      = loudnessDialogueGateEnabled
         self.clipperAsymmetryTrimDB           = clipperAsymmetryTrimDB
         self.deesserDynamicModeEnabled        = deesserDynamicModeEnabled
+        self.coefficientDecouplingEnabled     = coefficientDecouplingEnabled
         self.deharshFilterEnabled             = deharshFilterEnabled
         self.deharshTiltAmountDB              = deharshTiltAmountDB
         self.stereoBalancePosition            = stereoBalancePosition
@@ -566,6 +571,7 @@ struct AdvancedProcessingConfig: Codable, Equatable, Sendable {
         loudnessDialogueGateEnabled      = try c.decodeIfPresent(Bool.self,                  forKey: .loudnessDialogueGateEnabled)      ?? false
         clipperAsymmetryTrimDB           = try c.decodeIfPresent(Float.self,                 forKey: .clipperAsymmetryTrimDB)           ?? 0.0
         deesserDynamicModeEnabled        = try c.decodeIfPresent(Bool.self,                  forKey: .deesserDynamicModeEnabled)        ?? false
+        coefficientDecouplingEnabled     = try c.decodeIfPresent(Bool.self,                  forKey: .coefficientDecouplingEnabled)     ?? true
         deharshFilterEnabled             = try c.decodeIfPresent(Bool.self,                  forKey: .deharshFilterEnabled)             ?? false
         deharshTiltAmountDB              = try c.decodeIfPresent(Float.self,                 forKey: .deharshTiltAmountDB)              ?? -1.5
         stereoBalancePosition            = try c.decodeIfPresent(Float.self,                 forKey: .stereoBalancePosition)            ?? 0.0
@@ -606,6 +612,7 @@ struct AdvancedProcessingConfig: Codable, Equatable, Sendable {
         try c.encode(loudnessDialogueGateEnabled,        forKey: .loudnessDialogueGateEnabled)
         try c.encode(clipperAsymmetryTrimDB,             forKey: .clipperAsymmetryTrimDB)
         try c.encode(deesserDynamicModeEnabled,          forKey: .deesserDynamicModeEnabled)
+        try c.encode(coefficientDecouplingEnabled,       forKey: .coefficientDecouplingEnabled)
         try c.encode(deharshFilterEnabled,               forKey: .deharshFilterEnabled)
         try c.encode(deharshTiltAmountDB,                forKey: .deharshTiltAmountDB)
         try c.encode(stereoBalancePosition,              forKey: .stereoBalancePosition)

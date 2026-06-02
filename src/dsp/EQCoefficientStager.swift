@@ -95,9 +95,13 @@ final class EQCoefficientStager {
 
     /// Stages coefficients for a single band (incremental update path).
     private func stageBandCoefficients(index: Int, config: EQBandConfiguration) {
+        let designRate = BiquadMath.designSampleRate(
+            actualRate: currentSampleRate,
+            coefficientDecouplingEnabled: eqConfiguration.dynamicsConfig.advanced.coefficientDecouplingEnabled
+        )
         let sections = BiquadMath.calculateSections(
             type: config.filterType,
-            sampleRate: currentSampleRate,
+            sampleRate: designRate,
             frequency: Double(config.frequency),
             q: Double(config.q),
             gain: Double(config.gain),
@@ -127,12 +131,17 @@ final class EQCoefficientStager {
         var leftSections: [[BiquadCoefficients]] = []
         var leftBypassFlags: [Bool] = []
 
+        let designRate = BiquadMath.designSampleRate(
+            actualRate: currentSampleRate,
+            coefficientDecouplingEnabled: eqConfiguration.dynamicsConfig.advanced.coefficientDecouplingEnabled
+        )
+
         for index in 0..<activeCount {
             guard index < leftBands.count else { break }
             let config = leftBands[index]
             let sections = BiquadMath.calculateSections(
                 type: config.filterType,
-                sampleRate: currentSampleRate,
+                sampleRate: designRate,
                 frequency: Double(config.frequency),
                 q: Double(config.q),
                 gain: Double(config.gain),
@@ -163,7 +172,7 @@ final class EQCoefficientStager {
                 let config = rightBands[index]
                 let sections = BiquadMath.calculateSections(
                     type: config.filterType,
-                    sampleRate: currentSampleRate,
+                    sampleRate: designRate,
                     frequency: Double(config.frequency),
                     q: Double(config.q),
                     gain: Double(config.gain),
