@@ -74,6 +74,9 @@ final class PresetManager: ObservableObject {
     private let logger = Logger(subsystem: "net.knage.equaliser", category: "PresetManager")
     private let storage: UserDefaults
 
+    /// Error from directory creation, surfaced on subsequent write operations.
+    private var directoryError: PresetError?
+
     private enum Keys {
         static let selectedPreset = "equalizer.selectedPreset"
     }
@@ -123,6 +126,7 @@ final class PresetManager: ObservableObject {
             logger.debug("Presets directory ready: \(self.presetsDirectory.path)")
         } catch {
             logger.error("Failed to create presets directory: \(error.localizedDescription)")
+            directoryError = PresetError.directoryCreationFailed(error)
         }
     }
 
@@ -197,6 +201,10 @@ final class PresetManager: ObservableObject {
     
     /// Saves a preset without reloading the list (for batch operations).
     internal func savePresetWithoutReload(_ preset: Preset) throws {
+        if let directoryError {
+            throw directoryError
+        }
+
         guard !preset.metadata.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw PresetError.invalidPresetName
         }

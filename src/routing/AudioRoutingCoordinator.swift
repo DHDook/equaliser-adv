@@ -227,7 +227,9 @@ final class AudioRoutingCoordinator: ObservableObject {
             }
 
             // Rename driver to match output device
-            _ = updateDriverName()
+            if !updateDriverName() {
+                logger.warning("Failed to rename driver to match output device")
+            }
 
             // Set driver as macOS default IMMEDIATELY (before pipeline starts)
             systemDefaultObserver.setDriverAsDefault(
@@ -574,22 +576,36 @@ final class AudioRoutingCoordinator: ObservableObject {
                 if !restored {
                     logger.warning("Failed to restore output device, using fallback")
                     if let fallback = findFallbackOutputDevice() {
-                        systemDefaultObserver.restoreSystemDefaultOutput(to: fallback.uid)
+                        let fallbackRestored = systemDefaultObserver.restoreSystemDefaultOutput(to: fallback.uid)
+                        if !fallbackRestored {
+                            logger.error("Failed to restore fallback output device '\(fallback.name)'")
+                        }
                     } else {
-                        driverAccess.restoreToBuiltInSpeakers()
+                        let speakersRestored = driverAccess.restoreToBuiltInSpeakers()
+                        if !speakersRestored {
+                            logger.error("Failed to restore built-in speakers as output device")
+                        }
                     }
                 }
             } else {
                 // No valid output, use fallback
                 if let fallback = findFallbackOutputDevice() {
-                    systemDefaultObserver.restoreSystemDefaultOutput(to: fallback.uid)
+                    let fallbackRestored = systemDefaultObserver.restoreSystemDefaultOutput(to: fallback.uid)
+                    if !fallbackRestored {
+                        logger.error("Failed to restore fallback output device '\(fallback.name)'")
+                    }
                 } else {
-                    driverAccess.restoreToBuiltInSpeakers()
+                    let speakersRestored = driverAccess.restoreToBuiltInSpeakers()
+                    if !speakersRestored {
+                        logger.error("Failed to restore built-in speakers as output device")
+                    }
                 }
             }
 
             // Rename driver back to "Equaliser"
-            _ = updateDriverName()
+            if !updateDriverName() {
+                logger.warning("Failed to reset driver name during stop")
+            }
         }
         // In manual mode, don't modify macOS default
 
@@ -650,11 +666,16 @@ final class AudioRoutingCoordinator: ObservableObject {
         deviceChangeCoordinator.clearHistory()
 
         // Rename driver back to default since it's no longer used in manual mode
-        _ = updateDriverName()
+        if !updateDriverName() {
+            logger.warning("Failed to reset driver name when switching to manual mode")
+        }
 
         // Reset driver volume to 100% for clean state when returning to automatic mode
         if let driverID = driverAccess.deviceID {
-            volumeService.setDeviceVolumeScalar(deviceID: driverID, volume: 1.0)
+            let volumeReset = volumeService.setDeviceVolumeScalar(deviceID: driverID, volume: 1.0)
+            if !volumeReset {
+                logger.warning("Failed to reset driver volume when switching to manual mode")
+            }
         }
 
         logger.info("Switched to manual mode")

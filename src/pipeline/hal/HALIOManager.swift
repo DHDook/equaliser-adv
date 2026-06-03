@@ -544,7 +544,9 @@ final class HALIOManager {
         guard let unit = audioUnit else { return }
 
         if isRunning {
-            _ = stop()
+            if case .failure(let error) = stop() {
+                logger.warning("Failed to stop audio unit during uninitialize: \(error.localizedDescription)")
+            }
         }
 
         if isInitialized {

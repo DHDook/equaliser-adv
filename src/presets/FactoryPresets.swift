@@ -1,5 +1,6 @@
 import AVFoundation
 import Foundation
+import os.log
 
 /// Factory presets that ship with the app.
 enum FactoryPresets {
@@ -317,6 +318,7 @@ enum FactoryPresets {
 extension PresetManager {
     private static let factoryPresetVersion = 10  // Bump when factory presets change (v2 format)
     private static let factoryVersionKey = "equalizer.factoryPresetVersion"
+    private static let factoryLogger = Logger(subsystem: "net.knage.equaliser", category: "FactoryPresets")
 
     /// Installs factory presets if they don't exist or version changed.
     func installFactoryPresetsIfNeeded() {
@@ -330,13 +332,19 @@ extension PresetManager {
                 if let index = existingIndex {
                     let existingPreset = presets[index]
                     if existingPreset.metadata.isFactoryPreset {
-                        // Pristine factory preset - safe to replace with updated version
-                        try? savePresetWithoutReload(factoryPreset)
+                        do {
+                            try savePresetWithoutReload(factoryPreset)
+                        } catch {
+                            Self.factoryLogger.error("Failed to update factory preset '\(factoryPreset.metadata.name)': \(error.localizedDescription)")
+                        }
                     }
                     // else: user-modified preset, skip to preserve changes
                 } else {
-                    // New factory preset (added in this version), install it
-                    try? savePresetWithoutReload(factoryPreset)
+                    do {
+                        try savePresetWithoutReload(factoryPreset)
+                    } catch {
+                        Self.factoryLogger.error("Failed to install factory preset '\(factoryPreset.metadata.name)': \(error.localizedDescription)")
+                    }
                 }
             }
             // When !needsReinstall: do nothing - preserve user's presets

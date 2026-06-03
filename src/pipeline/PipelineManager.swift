@@ -113,7 +113,9 @@ final class PipelineManager {
         if let pipeline = renderPipeline {
             meterStore.stopMeterUpdates()
             meterStore.setRenderPipeline(nil)
-            _ = pipeline.stop()
+            if case .failure(let error) = pipeline.stop() {
+                logger.warning("Pipeline stop reported error: \(error.localizedDescription)")
+            }
             renderPipeline = nil
         }
 
