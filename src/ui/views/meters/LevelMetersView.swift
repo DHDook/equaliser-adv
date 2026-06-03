@@ -77,40 +77,39 @@ struct ChannelBalanceSlider: View {
     @Binding var balance: Float
 
     var body: some View {
-        VStack(spacing: 2) {
+        VStack(spacing: 4) {
+            CustomBalanceSlider(
+                balance: Binding(
+                    get: { Double(balance) },
+                    set: { newValue in
+                        // Sticky center behavior
+                        let centerThreshold = 0.05
+                        if abs(newValue) < centerThreshold {
+                            balance = 0.0
+                        } else {
+                            balance = Float(newValue)
+                        }
+                    }
+                ),
+                range: -1.0...1.0
+            )
             HStack(spacing: 4) {
-                VStack(spacing: 0) {
+                VStack(alignment: .leading, spacing: 0) {
                     Text("L")
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                    Text(balancePercentage(for: balance, channel: .left))
+                    Text(leftPercentage)
                         .font(.system(size: 8))
                         .foregroundStyle(.tertiary)
-                        .frame(width: 30, alignment: .leading)
                 }
-                CustomBalanceSlider(
-                    balance: Binding(
-                        get: { Double(balance) },
-                        set: { newValue in
-                            // Sticky center behavior
-                            let centerThreshold = 0.05
-                            if abs(newValue) < centerThreshold {
-                                balance = 0.0
-                            } else {
-                                balance = Float(newValue)
-                            }
-                        }
-                    ),
-                    range: -1.0...1.0
-                )
-                VStack(spacing: 0) {
+                Spacer()
+                VStack(alignment: .trailing, spacing: 0) {
                     Text("R")
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                    Text(balancePercentage(for: balance, channel: .right))
+                    Text(rightPercentage)
                         .font(.system(size: 8))
                         .foregroundStyle(.tertiary)
-                        .frame(width: 30, alignment: .trailing)
                 }
             }
             Text("Balance")
@@ -119,17 +118,26 @@ struct ChannelBalanceSlider: View {
         }
     }
 
-    private enum Channel {
-        case left, right
+    private var leftPercentage: String {
+        let b = Double(balance)
+        let pct: Double
+        if b <= 0 {
+            pct = 100.0
+        } else {
+            pct = 100.0 * (1.0 - b)
+        }
+        return "\(Int(pct))%"
     }
 
-    private func balancePercentage(for value: Float, channel: Channel) -> String {
-        let absValue = abs(value)
-        if absValue < 0.01 {
-            return "0%"
+    private var rightPercentage: String {
+        let b = Double(balance)
+        let pct: Double
+        if b >= 0 {
+            pct = 100.0
+        } else {
+            pct = 100.0 * (1.0 + b)
         }
-        let percentage = Int(absValue * 100)
-        return "\(percentage)%"
+        return "\(Int(pct))%"
     }
 }
 
@@ -140,12 +148,12 @@ struct CustomBalanceSlider: View {
     var body: some View {
         GeometryReader { geometry in
             ZStack(alignment: .leading) {
-                // Background track (gray when centered, blue when off-center)
+                // Background track (always gray)
                 RoundedRectangle(cornerRadius: 2)
-                    .fill(trackColor)
+                    .fill(Color.secondary.opacity(0.3))
                     .frame(height: 4)
 
-                // Fill track
+                // Fill track (blue when off-center, gray when centered)
                 GeometryReader { fillGeometry in
                     RoundedRectangle(cornerRadius: 2)
                         .fill(fillColor)
@@ -167,10 +175,7 @@ struct CustomBalanceSlider: View {
             )
         }
         .frame(height: 20)
-    }
-
-    private var trackColor: Color {
-        Color.secondary.opacity(0.3)
+        .frame(minWidth: 120)
     }
 
     private var fillColor: Color {

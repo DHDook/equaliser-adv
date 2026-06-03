@@ -63,7 +63,7 @@ struct EQWindowView: View {
 
                 DynamicsInlineView()
                     .padding(.leading, 24)
-                    .padding(.bottom, 2)
+                    .padding(.bottom, 0)
 
                 Spacer()
 

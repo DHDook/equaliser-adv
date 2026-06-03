@@ -1637,10 +1637,7 @@ struct DynamicsInlineView: View {
     // MARK: - Column 6: Stereo Goniometer
 
     private var column6: some View {
-        VStack(spacing: 0) {
-            StereoGoniometerView(engine: store.goniometerEngine, isBypassed: store.isBypassed)
-            Spacer(minLength: 0)
-        }
+        StereoGoniometerView(engine: store.goniometerEngine, isBypassed: store.isBypassed)
     }
 
 
@@ -1657,6 +1654,7 @@ struct DynamicsInlineView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
             Picker("", selection: selection, content: content)
                 .pickerStyle(.segmented)
                 .controlSize(.mini)
