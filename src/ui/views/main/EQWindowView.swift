@@ -167,7 +167,7 @@ struct EQWindowView: View {
                             }
                             .buttonStyle(.plain)
                             .popover(isPresented: $showCompareHelp, arrowEdge: .trailing) {
-                                Text("A/B/Delta comparison: EQ = full processing active. Flat = bypass EQ at matched volume to hear unprocessed audio. Delta = solo the difference signal to hear e[...]
+                                Text("A/B/Delta comparison: EQ = full processing active. Flat = bypass EQ at matched volume to hear unprocessed audio. Delta = solo the difference signal to hear the processed effect.")
                                     .font(.caption)
                                     .padding(12)
                                     .frame(width: 250)
