@@ -2154,12 +2154,12 @@ struct InlineDRFactorView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 1) {
             HStack(spacing: 3) {
-                Text("DR")
+                Text("DR Factor")
                     .font(.caption)
                     .foregroundStyle(.tertiary)
                 Spacer()
                 Text(String(format: "%.1f dB", bridge.drFactor))
-                    .font(.system(size: 9, weight: .bold, design: .monospaced))
+                    .font(.system(size: 10, weight: .bold, design: .monospaced))
                     .foregroundStyle(drColor)
             }
         }
@@ -2221,7 +2221,7 @@ struct InlineBitRateView: View {
                 : String(format: "%.0f Hz", sr)
             VStack(alignment: .leading, spacing: 1) {
                 Text("Sample Rate")
-                    .font(.system(size: 8, weight: .medium))
+                    .font(.caption)
                     .foregroundStyle(.tertiary)
                 Text(srText)
                     .font(.system(size: 9, weight: .bold, design: .monospaced))

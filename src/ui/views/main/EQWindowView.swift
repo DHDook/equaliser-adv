@@ -64,7 +64,7 @@ struct EQWindowView: View {
                 DynamicsInlineView()
                     .padding(.leading, 24)
                     .padding(.bottom, 0)
-                    .padding(.trailing, 8)
+                    .padding(.trailing, 4)
 
                 // Manual-mode controls (device pickers + routing toggle)
                 // Only reserve horizontal space when manual mode is active.
@@ -220,11 +220,11 @@ struct EQWindowView: View {
                     .toggleStyle(.switch)
                     .controlSize(.mini)
                     .help("Enable or disable EQ processing. When disabled, audio passes through without EQ applied.")
-                    Text("System EQ")
+                    Text("Master")
                         .font(.system(size: 9))
                         .foregroundStyle(.secondary)
                 }
-                .frame(minWidth: 44, alignment: .center)
+                .frame(minWidth: 40, alignment: .center)
                 .padding(.vertical, 4)
                 .padding(.horizontal, 2)
 
@@ -238,7 +238,7 @@ struct EQWindowView: View {
                         .font(.system(size: 9))
                         .foregroundStyle(.secondary)
                 }
-                .frame(minWidth: 44, alignment: .center)
+                .frame(minWidth: 40, alignment: .center)
                 .padding(.vertical, 4)
                 .padding(.horizontal, 2)
 
@@ -251,7 +251,7 @@ struct EQWindowView: View {
                 }
                 .buttonStyle(.plain)
                 .help("Settings (⌘,)")
-                .frame(minWidth: 44, alignment: .center)
+                .frame(minWidth: 40, alignment: .center)
                 .padding(.vertical, 4)
                 .padding(.horizontal, 2)
             }
