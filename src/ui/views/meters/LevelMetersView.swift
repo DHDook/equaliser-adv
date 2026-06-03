@@ -78,51 +78,39 @@ struct ChannelBalanceSlider: View {
 
     var body: some View {
         VStack(spacing: 4) {
-            HStack(spacing: 0) {
-                // Left fill (blue when balance < 0)
-                GeometryReader { geometry in
-                    ZStack(alignment: .trailing) {
-                        Rectangle()
-                            .fill(balance < 0 ? Color.accentColor.opacity(0.6) : Color.secondary.opacity(0.3))
-                    }
+            GeometryReader { geometry in
+                ZStack(alignment: .leading) {
+                    // Background track (always gray)
+                    RoundedRectangle(cornerRadius: 2)
+                        .fill(Color.secondary.opacity(0.3))
+                        .frame(height: 4)
+
+                    // Fill track (blue when off-center, gray when centered)
+                    RoundedRectangle(cornerRadius: 2)
+                        .fill(fillColor)
+                        .frame(width: fillWidth(in: geometry.size), height: 4)
+
+                    // Thumb
+                    Circle()
+                        .fill(Color.accentColor)
+                        .frame(width: 12, height: 12)
+                        .offset(x: thumbOffset(in: geometry.size))
                 }
-                .frame(width: leftFillWidth)
-
-                // Center area (always gray)
-                Rectangle()
-                    .fill(Color.secondary.opacity(0.3))
-                    .frame(width: centerWidth)
-
-                // Right fill (blue when balance > 0)
-                GeometryReader { geometry in
-                    ZStack(alignment: .leading) {
-                        Rectangle()
-                            .fill(balance > 0 ? Color.accentColor.opacity(0.6) : Color.secondary.opacity(0.3))
-                    }
-                }
-                .frame(width: rightFillWidth)
-
-                // Thumb
-                Circle()
-                    .fill(Color.accentColor)
-                    .frame(width: 12, height: 12)
-                    .offset(x: thumbOffset)
-            }
-            .frame(height: 4)
-            .frame(minWidth: 120)
-            .gesture(
-                DragGesture(minimumDistance: 0)
-                    .onChanged { value in
-                        let newValue = valueAt(position: value.location)
-                        // Sticky center behavior
-                        let centerThreshold = 0.05
-                        if abs(newValue) < centerThreshold {
-                            balance = 0.0
-                        } else {
-                            balance = Float(newValue)
+                .gesture(
+                    DragGesture(minimumDistance: 0)
+                        .onChanged { value in
+                            let newValue = valueAt(position: value.location, in: geometry.size)
+                            // Sticky center behavior
+                            let centerThreshold = 0.05
+                            if abs(newValue) < centerThreshold {
+                                balance = 0.0
+                            } else {
+                                balance = Float(newValue)
+                            }
                         }
-                    }
-            )
+                )
+            }
+            .frame(height: 20)
 
             HStack(spacing: 4) {
                 VStack(alignment: .leading, spacing: 0) {
@@ -171,33 +159,25 @@ struct ChannelBalanceSlider: View {
         return "\(Int(pct))%"
     }
 
-    private var leftFillWidth: CGFloat {
-        let normalizedBalance = (Double(balance) + 1.0) / 2.0
-        if balance < 0 {
-            return CGFloat(normalizedBalance * 120)
+    private var fillColor: Color {
+        if abs(balance) < 0.05 {
+            return Color.secondary.opacity(0.3)
         }
-        return 60
+        return Color.accentColor.opacity(0.6)
     }
 
-    private var centerWidth: CGFloat {
-        return 0
+    private func fillWidth(in size: CGSize) -> CGFloat {
+        let normalizedValue = (Double(balance) + 1.0) / 2.0
+        return size.width * CGFloat(normalizedValue)
     }
 
-    private var rightFillWidth: CGFloat {
-        let normalizedBalance = (Double(balance) + 1.0) / 2.0
-        if balance > 0 {
-            return CGFloat((1.0 - normalizedBalance) * 120)
-        }
-        return 60
+    private func thumbOffset(in size: CGSize) -> CGFloat {
+        let normalizedValue = (Double(balance) + 1.0) / 2.0
+        return size.width * CGFloat(normalizedValue) - 6
     }
 
-    private var thumbOffset: CGFloat {
-        let normalizedBalance = (Double(balance) + 1.0) / 2.0
-        return CGFloat(normalizedBalance * 120) - 6
-    }
-
-    private func valueAt(position: CGPoint) -> Double {
-        let normalizedPosition = max(0, min(1, position.x / 120))
+    private func valueAt(position: CGPoint, in size: CGSize) -> Double {
+        let normalizedPosition = max(0, min(1, position.x / size.width))
         return (normalizedPosition * 2.0) - 1.0
     }
 }

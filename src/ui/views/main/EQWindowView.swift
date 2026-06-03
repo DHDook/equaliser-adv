@@ -65,7 +65,7 @@ struct EQWindowView: View {
                     .padding(.leading, 24)
                     .padding(.bottom, 0)
 
-                Spacer()
+                Spacer(minLength: 0, maxLength: 20)
 
                 // Manual-mode controls (device pickers + routing toggle)
                 // Only reserve horizontal space when manual mode is active.
@@ -219,28 +219,28 @@ struct EQWindowView: View {
                     ))
                     .labelsHidden()
                     .toggleStyle(.switch)
-                    .controlSize(.small)
+                    .controlSize(.mini)
                     .help("Enable or disable EQ processing. When disabled, audio passes through without EQ applied.")
                     Text("System EQ")
                         .font(.system(size: 9))
                         .foregroundStyle(.secondary)
                 }
-                .frame(minWidth: 50, alignment: .center)
-                .padding(.vertical, 5)
+                .frame(minWidth: 44, alignment: .center)
+                .padding(.vertical, 4)
                 .padding(.horizontal, 2)
 
                 VStack(spacing: 2) {
                     Toggle("", isOn: $metersEnabledUI)
                         .labelsHidden()
                         .toggleStyle(.switch)
-                        .controlSize(.small)
+                        .controlSize(.mini)
                         .help("Master switch for level meters and RTA graphs. Disabling reduces CPU overhead.")
                     Text("Meters")
                         .font(.system(size: 9))
                         .foregroundStyle(.secondary)
                 }
-                .frame(minWidth: 50, alignment: .center)
-                .padding(.vertical, 5)
+                .frame(minWidth: 44, alignment: .center)
+                .padding(.vertical, 4)
                 .padding(.horizontal, 2)
 
                 VStack(spacing: 2) {
@@ -248,8 +248,8 @@ struct EQWindowView: View {
                         openSettings()
                     } label: {
                         Image(systemName: "gearshape")
-                            .font(.system(size: 15))
-                            .frame(height: 22)
+                            .font(.system(size: 14))
+                            .frame(height: 20)
                     }
                     .buttonStyle(.plain)
                     .help("Settings (⌘,)")
@@ -257,8 +257,8 @@ struct EQWindowView: View {
                         .font(.system(size: 9))
                         .foregroundStyle(.secondary)
                 }
-                .frame(minWidth: 50, alignment: .center)
-                .padding(.vertical, 5)
+                .frame(minWidth: 44, alignment: .center)
+                .padding(.vertical, 4)
                 .padding(.horizontal, 2)
             }
         }
