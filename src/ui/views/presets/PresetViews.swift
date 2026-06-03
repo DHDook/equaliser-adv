@@ -481,6 +481,8 @@ struct PresetToolbar: View {
     @EnvironmentObject var store: EqualiserStore
     @State private var showingSaveSheet = false
     @State private var showingDeleteConfirmation = false
+    @State private var showingDeleteError = false
+    @State private var deleteErrorMessage = ""
     @State private var showingImportWarning = false
     @State private var showingEasyEffectsImportWarning = false
     @State private var showingREWImport = false
@@ -612,11 +614,21 @@ struct PresetToolbar: View {
             Button("Cancel", role: .cancel) {}
             Button("Delete", role: .destructive) {
                 if let name = store.presetManager.selectedPresetName {
-                    try? store.presetManager.deletePreset(named: name)
+                    do {
+                        try store.presetManager.deletePreset(named: name)
+                    } catch {
+                        deleteErrorMessage = error.localizedDescription
+                        showingDeleteError = true
+                    }
                 }
             }
         } message: {
             Text("Are you sure you want to delete '\(store.presetManager.selectedPresetName ?? "")'? This cannot be undone.")
+        }
+        .alert("Delete Failed", isPresented: $showingDeleteError) {
+            Button("OK") {}
+        } message: {
+            Text(deleteErrorMessage)
         }
         .alert("Import Warnings", isPresented: $showingImportWarning) {
             Button("OK") {}

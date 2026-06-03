@@ -166,19 +166,26 @@ final class AppStatePersistence {
         }
     }
 
-    func save(_ snapshot: AppStateSnapshot) {
+    @discardableResult
+    func save(_ snapshot: AppStateSnapshot) -> Bool {
         do {
             let data = try encoder.encode(snapshot)
             storage.set(data, forKey: Keys.appState)
             logger.debug("Saved app state successfully")
+            return true
         } catch {
             logger.error("Failed to encode app state: \(error.localizedDescription)")
+            return false
         }
     }
 
     @objc private func handleAppWillTerminate(_ notification: Notification) {
         guard let store = store else { return }
-        save(store.currentSnapshot)
-        logger.info("Saved app state on quit")
+        let saved = save(store.currentSnapshot)
+        if saved {
+            logger.info("Saved app state on quit")
+        } else {
+            logger.error("Failed to save app state on quit")
+        }
     }
 }
