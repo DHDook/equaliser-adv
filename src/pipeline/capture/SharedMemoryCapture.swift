@@ -111,26 +111,37 @@ final class SharedMemoryCapture: @unchecked Sendable {
     /// - Throws: SharedMemoryCaptureError if creation fails
     @discardableResult
     func create() throws -> String {
-        // Create unique file in /tmp with PID
-        let path = "/tmp/equaliser-audio-\(getpid()).shm"
+        // Create unique file in /tmp with PID and random suffix to reduce predictability
+        let randomSuffix = UInt32.random(in: 0...UInt32.max)
+        let path = "/tmp/equaliser-audio-\(getpid())-\(randomSuffix).shm"
 
         Self.logger.debug("Creating shared memory file: \(path)")
 
         // Remove existing file if present
         unlink(path)
 
-        // Create new file with read/write permissions
-        // Note: Swift uses 0o prefix for octal, not 0 prefix like C
-        let fd = open(path, O_CREAT | O_RDWR, 0o666)
+        // Create new file with O_EXCL to fail if the path was re-created between
+        // unlink and open (mitigates symlink race conditions).
+        let fd = open(path, O_CREAT | O_EXCL | O_RDWR, 0o600)
         guard fd >= 0 else {
             let err = errno
             Self.logger.error("Failed to create shared memory file: \(err)")
             throw SharedMemoryCaptureError.createFailed(err)
         }
 
-        // Set world-writable permissions explicitly (bypass umask)
-        // This allows the driver (running as coreaudiod) to write to the file
-        fchmod(fd, 0o666)
+        // Verify the opened file is a regular file (not a symlink or device)
+        var stat_buf = stat()
+        guard fstat(fd, &stat_buf) == 0, (stat_buf.st_mode & S_IFMT) == S_IFREG else {
+            close(fd)
+            unlink(path)
+            throw SharedMemoryCaptureError.createFailed(errno)
+        }
+
+        // Set permissions so the driver (running as coreaudiod) can read/write.
+        // 0o622: owner read/write, others write-only — prevents other local
+        // processes from eavesdropping on the audio stream while still allowing
+        // the coreaudiod process to write captured audio data.
+        fchmod(fd, 0o622)
 
         // Set file size
         let size = SharedMemoryLayout.totalSize(channelCount: channelCount)
