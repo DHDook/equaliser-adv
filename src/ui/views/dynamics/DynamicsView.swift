@@ -1909,6 +1909,27 @@ struct DynamicsInlineView: View {
             set: { val in var adv = store.dynamicsConfig.advanced; adv.stereoMode = val; store.updateAdvancedProcessing(adv) }
         )
     }
+
+    private var inlineCoefficientDecouplingEnabled: Binding<Bool> {
+        Binding(
+            get: { store.dynamicsConfig.advanced.coefficientDecouplingEnabled },
+            set: { v in var adv = store.dynamicsConfig.advanced; adv.coefficientDecouplingEnabled = v; store.updateAdvancedProcessing(adv) }
+        )
+    }
+
+    private var inlineLatencyModeBinding: Binding<LatencyMode> {
+        Binding(
+            get: { store.dynamicsConfig.advanced.latencyMode },
+            set: { val in var adv = store.dynamicsConfig.advanced; adv.latencyMode = val; store.updateAdvancedProcessing(adv) }
+        )
+    }
+
+    private var inlineDitherModeBinding: Binding<DitherMode> {
+        Binding(
+            get: { store.dynamicsConfig.advanced.ditherMode },
+            set: { val in var adv = store.dynamicsConfig.advanced; adv.ditherMode = val; store.updateAdvancedProcessing(adv) }
+        )
+    }
 }
 
 // MARK: - Inline Meter Bridge
