@@ -65,7 +65,7 @@ struct EQWindowView: View {
                     .padding(.leading, 24)
                     .padding(.bottom, 0)
 
-                Spacer(minLength: 0, maxLength: 20)
+                Spacer(minLength: 0)
 
                 // Manual-mode controls (device pickers + routing toggle)
                 // Only reserve horizontal space when manual mode is active.
@@ -167,7 +167,7 @@ struct EQWindowView: View {
                             }
                             .buttonStyle(.plain)
                             .popover(isPresented: $showCompareHelp, arrowEdge: .trailing) {
-                                Text("A/B/Delta comparison: EQ = full processing active. Flat = bypass EQ at matched volume to hear unprocessed audio. Delta = solo the difference signal to hear exactly what the dynamics chain is adding or removing. Flat mode auto-reverts after 5 minutes.")
+                                Text("A/B/Delta comparison: EQ = full processing active. Flat = bypass EQ at matched volume to hear unprocessed audio. Delta = solo the difference signal to hear e[...]
                                     .font(.caption)
                                     .padding(12)
                                     .frame(width: 250)
