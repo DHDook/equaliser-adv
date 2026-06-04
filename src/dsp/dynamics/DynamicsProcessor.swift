@@ -29,10 +29,23 @@ final class DynamicsProcessor: @unchecked Sendable {
     private let _truePeakClipperTrippedBits: ManagedAtomic<Int32>
     private let _truePeakLimiterTrippedBits: ManagedAtomic<Int32>
 
+    // Sub-bass phase alignment atomics
+    private let _subBassPhaseEnabled: ManagedAtomic<Bool>
+    private let _subBassPhaseFreqBits: ManagedAtomic<Float>
+
+    // Dither atomics
+    private let _ditherModeBits: ManagedAtomic<Int32>
+
     // MARK: - Audio-Thread State (nonisolated(unsafe))
 
     nonisolated(unsafe) private var sampleRate: Double
     nonisolated(unsafe) private var channelCount: UInt32
+
+    // Sub-bass phase alignment state (all-pass filters)
+    nonisolated(unsafe) private var subBassPhaseState: [[Float]]
+
+    // Dither state (5th-order noise shaping filter)
+    nonisolated(unsafe) private var ditherState: [[Float]]
 
     // MARK: - Initialisation
 
@@ -55,13 +68,48 @@ final class DynamicsProcessor: @unchecked Sendable {
         _balanceMeterBits = ManagedAtomic(0)
         _truePeakClipperTrippedBits = ManagedAtomic(0)
         _truePeakLimiterTrippedBits = ManagedAtomic(0)
+
+        // Initialize sub-bass phase alignment atomics
+        _subBassPhaseEnabled = ManagedAtomic(false)
+        _subBassPhaseFreqBits = ManagedAtomic(Float(bitPattern: 0))
+
+        // Initialize dither atomics
+        _ditherModeBits = ManagedAtomic(0)
+
+        // Initialize sub-bass phase state (2nd-order all-pass, 4 coefficients per channel)
+        subBassPhaseState = (0..<Int(channelCount)).map { _ in Array(repeating: 0.0, count: 4) }
+
+        // Initialize dither state (5th-order noise shaping, 5 coefficients per channel)
+        ditherState = (0..<Int(channelCount)).map { _ in Array(repeating: 0.0, count: 5) }
     }
 
     // MARK: - Configuration (Main Thread)
 
     func applyConfig(_ config: DynamicsConfig, sampleRate: Double) {
         self.sampleRate = sampleRate
-        // Configuration will be applied in audio thread processing
+
+        // Apply sub-bass phase alignment config
+        setSubBassPhaseEnabled(config.advanced.subBassPhaseEnabled)
+        setSubBassPhaseFrequency(config.advanced.subBassPhaseFrequency)
+
+        // Apply dither config
+        setDitherMode(config.ditherMode)
+    }
+
+    // MARK: - Dither Setters
+
+    func setDitherMode(_ mode: DitherMode) {
+        _ditherModeBits.store(Int32(mode.rawValue), ordering: .relaxed)
+    }
+
+    // MARK: - Sub-Bass Phase Alignment Setters
+
+    func setSubBassPhaseEnabled(_ enabled: Bool) {
+        _subBassPhaseEnabled.store(enabled, ordering: .relaxed)
+    }
+
+    func setSubBassPhaseFrequency(_ frequency: Float) {
+        _subBassPhaseFreqBits.store(Float(bitPattern: frequency.bitPattern), ordering: .relaxed)
     }
 
     // MARK: - Audio-Thread Render
@@ -69,6 +117,128 @@ final class DynamicsProcessor: @unchecked Sendable {
     /// Process frames through the entire dynamics chain.
     func process(bufferList: UnsafeMutablePointer<AudioBufferList>, frameCount: UInt32) {
         // Main processing loop - sub-processors will handle their stages
+        processSubBassPhaseAlignment(bufferList: bufferList, frameCount: frameCount)
+        processDither(bufferList: bufferList, frameCount: frameCount)
+    }
+
+    // MARK: - Sub-Bass Phase Alignment Processing
+
+    /// Applies 2nd-order all-pass filter for sub-bass phase alignment.
+    /// Aligns phase of sub-bass frequencies with main speaker bandwidth.
+    @inline(__always)
+    private func processSubBassPhaseAlignment(bufferList: UnsafeMutablePointer<AudioBufferList>, frameCount: UInt32) {
+        let enabled = _subBassPhaseEnabled.load(ordering: .relaxed)
+        guard enabled else { return }
+
+        let frequency = Float(bitPattern: UInt32(bitPattern: _subBassPhaseFreqBits.load(ordering: .relaxed)))
+        guard frequency > 0 else { return }
+
+        let buffers = UnsafeMutableAudioBufferListPointer(bufferList)
+        let sr = Float(sampleRate)
+
+        // Calculate all-pass coefficients for 2nd-order filter
+        // Using biquad all-pass topology for phase correction
+        let omega = 2.0 * .pi * frequency / sr
+        let alpha = sin(omega) / 2.0
+        let a0 = 1.0 + alpha
+        let a1 = -2.0 * cos(omega)
+        let a2 = 1.0 - alpha
+        let b0 = 1.0 - alpha
+        let b1 = -2.0 * cos(omega)
+        let b2 = 1.0 + alpha
+
+        // Normalize coefficients
+        let a0_norm = 1.0 / a0
+        let b0_norm = b0 * a0_norm
+        let b1_norm = b1 * a0_norm
+        let b2_norm = b2 * a0_norm
+        let a1_norm = a1 * a0_norm
+        let a2_norm = a2 * a0_norm
+
+        for ch in 0..<Int(channelCount) {
+            guard ch < buffers.count else { continue }
+            let buffer = buffers[ch]
+            guard let data = buffer.mData else { continue }
+            let samples = data.bindMemory(to: Float.self, capacity: Int(frameCount))
+            var state = subBassPhaseState[ch]
+
+            for i in 0..<Int(frameCount) {
+                let input = samples[i]
+
+                // Direct form II transposed all-pass filter
+                let output = b0_norm * input + b1_norm * state[0] + b2_norm * state[1] -
+                             a1_norm * state[2] - a2_norm * state[3]
+
+                // Update state
+                state[3] = state[2]
+                state[2] = state[1]
+                state[1] = state[0]
+                state[0] = output
+
+                samples[i] = output
+            }
+
+            subBassPhaseState[ch] = state
+        }
+    }
+
+    // MARK: - Dither Processing
+
+    /// Applies noise-shaped dither to reduce quantization noise.
+    /// Supports TPDF, shaped, and 5th-order noise-shaped dither.
+    @inline(__always)
+    private func processDither(bufferList: UnsafeMutablePointer<AudioBufferList>, frameCount: UInt32) {
+        let ditherMode = DitherMode(rawValue: Int(_ditherModeBits.load(ordering: .relaxed))) ?? .bypass
+        guard ditherMode != .bypass else { return }
+
+        let buffers = UnsafeMutableAudioBufferListPointer(bufferList)
+
+        for ch in 0..<Int(channelCount) {
+            guard ch < buffers.count else { continue }
+            let buffer = buffers[ch]
+            guard let data = buffer.mData else { continue }
+            let samples = data.bindMemory(to: Float.self, capacity: Int(frameCount))
+            var state = ditherState[ch]
+
+            for i in 0..<Int(frameCount) {
+                var sample = samples[i]
+
+                switch ditherMode {
+                case .tpdf:
+                    // Triangular PDF dither: sum of two uniform random numbers
+                    let r1 = Float.random(in: -0.5...0.5)
+                    let r2 = Float.random(in: -0.5...0.5)
+                    sample += r1 + r2
+
+                case .shaped:
+                    // 2nd-order noise shaping (simple high-pass)
+                    let shaped = state[0] * 2.0 - state[1]
+                    let noise = Float.random(in: -0.5...0.5)
+                    sample += noise - shaped
+                    state[1] = state[0]
+                    state[0] = shaped
+
+                case .highOrder:
+                    // 5th-order noise shaping (pushes noise to high frequencies)
+                    // Coefficients for 5th-order high-pass noise shaping filter
+                    let shaped = state[0] * 2.8474 - state[1] * 3.8352 + state[2] * 2.6284 - state[3] * 0.8909 + state[4] * 0.1203
+                    let noise = Float.random(in: -0.5...0.5)
+                    sample += noise - shaped
+                    state[4] = state[3]
+                    state[3] = state[2]
+                    state[2] = state[1]
+                    state[1] = state[0]
+                    state[0] = shaped
+
+                case .bypass:
+                    break
+                }
+
+                samples[i] = sample
+            }
+
+            ditherState[ch] = state
+        }
     }
 
     // MARK: - Public Metrics (Main Thread Read)

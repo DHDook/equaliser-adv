@@ -5,14 +5,13 @@ import Foundation
 
 /// 4x oversampling processor using polyphase FIR filters.
 /// Upsamples by 4x before EQ, downsamples by 4x after EQ.
-/// Uses 8-tap FIR filters per phase for efficient implementation.
-@MainActor
+/// Uses 64-tap FIR filters per phase for high-quality anti-aliasing.
 final class OversamplingProcessor {
 
     // MARK: - Constants
 
     private static let upsampleFactor: Int = 4
-    private static let filterTaps: Int = 8
+    private static let filterTaps: Int = 64
     private static let phases: Int = 4
 
     // MARK: - State
