@@ -78,7 +78,8 @@ final class FFTEngine {
         // Copy input to real part
         realInput.withUnsafeMutableBufferPointer { realPtr in
             input.withUnsafeBufferPointer { inputPtr in
-                vDSP_vcpy(inputPtr.baseAddress!, 1, realPtr.baseAddress!, 1, vDSP_Length(fftSize))
+                guard let realBase = realPtr.baseAddress, let inputBase = inputPtr.baseAddress else { return }
+                memcpy(realBase, inputBase, fftSize * MemoryLayout<Float>.stride)
             }
         }
 
@@ -119,10 +120,25 @@ final class FFTEngine {
         precondition(real.count == halfSize, "Real part must be halfSize")
         precondition(imag.count == halfSize, "Imag part must be halfSize")
 
-        // Copy to split complex
+        // Copy to mutable buffers
+        realOutput.withUnsafeMutableBufferPointer { realPtr in
+            real.withUnsafeBufferPointer { inPtr in
+                guard let realBase = realPtr.baseAddress, let inBase = inPtr.baseAddress else { return }
+                memcpy(realBase, inBase, halfSize * MemoryLayout<Float>.stride)
+            }
+        }
+
+        imagOutput.withUnsafeMutableBufferPointer { imagPtr in
+            imag.withUnsafeBufferPointer { inPtr in
+                guard let imagBase = imagPtr.baseAddress, let inBase = inPtr.baseAddress else { return }
+                memcpy(imagBase, inBase, halfSize * MemoryLayout<Float>.stride)
+            }
+        }
+
+        // Create split complex from updated buffers
         var splitComplex = DSPSplitComplex(
-            realp: UnsafeMutablePointer<Float>(mutating: real),
-            imagp: UnsafeMutablePointer<Float>(mutating: imag)
+            realp: &realOutput,
+            imagp: &imagOutput
         )
 
         var log2n = vDSP_Length(0)
@@ -140,13 +156,8 @@ final class FFTEngine {
         vDSP_vsmul(splitComplex.realp, 1, &scale, splitComplex.realp, 1, vDSP_Length(halfSize))
         vDSP_vsmul(splitComplex.imagp, 1, &scale, splitComplex.imagp, 1, vDSP_Length(halfSize))
 
-        // Copy real part to output
-        var output = Array(repeating: 0.0, count: fftSize)
-        output.withUnsafeMutableBufferPointer { outPtr in
-            vDSP_vcpy(splitComplex.realp, 1, outPtr.baseAddress!, 1, vDSP_Length(fftSize))
-        }
-
-        return output
+        // Return real part
+        return Array(realOutput.prefix(fftSize))
     }
 
     /// Performs convolution in frequency domain using overlap-add method.
@@ -162,8 +173,8 @@ final class FFTEngine {
         // Zero-pad both to next power of 2
         let paddedSize = nextPowerOfTwo(outputLen)
 
-        var paddedSignal = Array(repeating: 0.0, count: paddedSize)
-        var paddedImpulse = Array(repeating: 0.0, count: paddedSize)
+        var paddedSignal = Array(repeating: Float(0.0), count: paddedSize)
+        var paddedImpulse = Array(repeating: Float(0.0), count: paddedSize)
 
         for i in 0..<signalLen {
             paddedSignal[i] = signal[i]
@@ -177,8 +188,8 @@ final class FFTEngine {
         let impulseFFT = forwardFFT(input: paddedImpulse)
 
         // Complex multiplication
-        var realResult = Array(repeating: 0.0, count: paddedSize / 2)
-        var imagResult = Array(repeating: 0.0, count: paddedSize / 2)
+        var realResult = Array(repeating: Float(0.0), count: paddedSize / 2)
+        var imagResult = Array(repeating: Float(0.0), count: paddedSize / 2)
 
         for i in 0..<(paddedSize / 2) {
             let ar = signalFFT.real[i]
@@ -194,7 +205,7 @@ final class FFTEngine {
         let result = inverseFFT(real: realResult, imag: imagResult)
 
         // Trim to output length
-        return Array(result[0..<outputLen])
+        return Array(result.prefix(outputLen))
     }
 
     // MARK: - Helpers
