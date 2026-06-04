@@ -40,7 +40,7 @@ final class LinearPhaseEQProcessor {
         self.fftSize = nextPowerOfTwo(2 * filterLength)
 
         self.fftEngine = FFTEngine(fftSize: fftSize)
-        self.filterCoefficients = Array(repeating: 0.0, count: filterLength)
+        self.filterCoefficients = Array(repeating: Float(0.0), count: filterLength)
     }
 
     // MARK: - Configuration
@@ -58,7 +58,7 @@ final class LinearPhaseEQProcessor {
     /// - Parameter coefficients: FIR filter coefficients (impulse response)
     func setFilterCoefficients(_ coefficients: [Float]) {
         precondition(coefficients.count <= filterLength, "Coefficients must not exceed filter length")
-        filterCoefficients = Array(repeating: 0.0, count: filterLength)
+        filterCoefficients = Array(repeating: Float(0.0), count: filterLength)
         for i in 0..<coefficients.count {
             filterCoefficients[i] = coefficients[i]
         }
@@ -90,7 +90,7 @@ final class LinearPhaseEQProcessor {
             let outPtr = output[ch]
 
             // Convert input to array for convolution
-            var inputArray = Array(repeating: 0.0, count: frameCount)
+            var inputArray = Array(repeating: Float(0.0), count: frameCount)
             for i in 0..<frameCount {
                 inputArray[i] = inPtr[i]
             }
