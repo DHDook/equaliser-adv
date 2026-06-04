@@ -181,7 +181,7 @@ struct EQWindowView: View {
                         }
                         .pickerStyle(.segmented)
                         .controlSize(.small)
-                        .frame(width: 120)
+                        .frame(width: 160)
                     }
 
                     VStack(spacing: 4) {
@@ -213,6 +213,9 @@ struct EQWindowView: View {
         .toolbar {
             ToolbarItemGroup(placement: .primaryAction) {
                 VStack(spacing: 2) {
+                    Text("Master")
+                        .font(.system(size: 9))
+                        .foregroundStyle(.secondary)
                     Toggle("", isOn: Binding(
                         get: { !store.isBypassed },
                         set: { store.isBypassed = !$0 }
@@ -221,29 +224,26 @@ struct EQWindowView: View {
                     .toggleStyle(.switch)
                     .controlSize(.mini)
                     .help("Enable or disable EQ processing. When disabled, audio passes through without EQ applied.")
-                    Text("Master")
-                        .font(.system(size: 9))
-                        .foregroundStyle(.secondary)
                 }
                 .frame(minWidth: 40, alignment: .center)
-                .padding(.top, 8)
+                .padding(.top, 12)
                 .padding(.bottom, 4)
-                .padding(.horizontal, 0)
+                .padding(.leading, 4)
 
                 VStack(spacing: 2) {
+                    Text("Meters")
+                        .font(.system(size: 9))
+                        .foregroundStyle(.secondary)
                     Toggle("", isOn: $metersEnabledUI)
                         .labelsHidden()
                         .toggleStyle(.switch)
                         .controlSize(.mini)
                         .help("Master switch for level meters and RTA graphs. Disabling reduces CPU overhead.")
-                    Text("Meters")
-                        .font(.system(size: 9))
-                        .foregroundStyle(.secondary)
                 }
                 .frame(minWidth: 40, alignment: .center)
-                .padding(.top, 8)
+                .padding(.top, 12)
                 .padding(.bottom, 4)
-                .padding(.horizontal, 0)
+                .padding(.leading, 4)
 
                 Button {
                     openSettings()
