@@ -53,7 +53,7 @@ enum DSPSafety {
         let abl = UnsafeMutableAudioBufferListPointer(bufferList)
         for bufferIndex in 0..<abl.count {
             guard let mData = abl[bufferIndex].mData else { continue }
-            let frameCount = Int(abl[bufferIndex].mDataByteSize / MemoryLayout<Float>.size)
+            let frameCount = Int(abl[bufferIndex].mDataByteSize / UInt32(MemoryLayout<Float>.size))
             let buffer = mData.bindMemory(to: Float.self, capacity: frameCount)
             sanitizeBuffer(buffer, count: frameCount)
         }
