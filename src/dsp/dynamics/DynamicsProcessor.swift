@@ -2,7 +2,6 @@ import Atomics
 import AudioToolbox
 import CoreAudio
 import Foundation
-import os
 
 /// Real-time dynamics processor.
 ///
@@ -80,9 +79,6 @@ final class DynamicsProcessor: @unchecked Sendable {
 
     // ── Lightweight PRNG for dither ─────────────────────────────────────────
     private let ditherRNG: DSPRNG
-
-    // ── CPU Profiling ───────────────────────────────────────────────────────
-    private static let processSignpost = OSSignpostID(log: OSLog(subsystem: "net.knage.equaliser", category: "DynamicsProcessor"), name: "Process")
 
     // MARK: - Advanced DSP State (audio thread only)
 
@@ -695,10 +691,6 @@ final class DynamicsProcessor: @unchecked Sendable {
 
     @inline(__always)
     func process(bufferList: UnsafeMutablePointer<AudioBufferList>, frameCount: UInt32) {
-        let signpostInterval = OSSignpostIntervalState(log: OSLog(subsystem: "net.knage.equaliser", category: "DynamicsProcessor"), name: "Process")
-        signpostInterval.begin()
-        defer { signpostInterval.end() }
-
         let count = Int(frameCount)
         guard count > 0 else { return }
         let abl   = UnsafeMutableAudioBufferListPointer(bufferList)

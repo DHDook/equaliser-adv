@@ -47,7 +47,7 @@ struct GainStructureMeterView: View {
             Text(String(format: "%.1f", value))
                 .font(.system(size: 8, weight: .regular, design: .monospaced))
                 .foregroundStyle(.secondary)
-                .frame(width: 24, alignment: .trailing)
+                .frame(width: 32, alignment: .trailing)
         }
     }
 }
