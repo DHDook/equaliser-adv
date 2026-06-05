@@ -37,7 +37,7 @@ final class LinearPhaseEQProcessor {
         self.filterLength = filterLength
 
         // FFT size must be >= 2 * filterLength for convolution
-        self.fftSize = nextPowerOfTwo(2 * filterLength)
+        self.fftSize = Self.nextPowerOfTwo(2 * filterLength)
 
         self.fftEngine = FFTEngine(fftSize: fftSize)
         self.filterCoefficients = Array(repeating: Float(0.0), count: filterLength)
@@ -113,7 +113,7 @@ final class LinearPhaseEQProcessor {
 
     // MARK: - Helpers
 
-    private func nextPowerOfTwo(_ n: Int) -> Int {
+    private static func nextPowerOfTwo(_ n: Int) -> Int {
         var v = n
         v -= 1
         v |= v >> 1
