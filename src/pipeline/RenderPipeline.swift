@@ -74,7 +74,7 @@ final class RenderPipeline {
 
     /// The callback context, retained while running.
     /// Marked nonisolated(unsafe) for access from the audio thread.
-    private nonisolated(unsafe) var callbackContext: RenderCallbackContext?
+    private(set) nonisolated(unsafe) var callbackContext: RenderCallbackContext?
 
     /// Most recent meter snapshot from the audio thread.
     private nonisolated(unsafe) var latestMeters: LevelMeterSnapshot = .silent
@@ -630,6 +630,7 @@ final class RenderPipeline {
             mode = 1
         }
         callbackContext?.processingMode = mode
+        callbackContext?.setLinearPhaseEnabled(compareMode == .linearEQ && !systemEQOff)
     }
 
     /// Updates whether meters are enabled on the audio thread.
@@ -766,6 +767,13 @@ final class RenderPipeline {
     /// Returns the current sample rate (for coefficient recalculation).
     var sampleRate: Double {
         currentSampleRate
+    }
+
+    var preEQPeakDB:  Float { callbackContext?.preEQPeak  ?? -90.0 }
+    var postEQPeakDB: Float { callbackContext?.postEQPeak ?? -90.0 }
+
+    func decayEQPeakMeters() {
+        callbackContext?.decayEQPeakMeters()
     }
 
     /// Returns the most recent meter snapshot from the audio thread.
@@ -925,7 +933,9 @@ final class RenderPipeline {
         // 2. Process EQ on the output buffers in-place
         // Processing mode: 0 = full bypass, 1 = normal (EQ + gains), 2 = gains only (compare flat)
         if context.processingMode == 1 {
+            context.updatePreEQPeak(frameCount: frameCount)
             context.processEQ(frameCount: frameCount)
+            context.updatePostEQPeak(frameCount: frameCount)
         }
 
         // 3. Copy processed audio to output buffer list

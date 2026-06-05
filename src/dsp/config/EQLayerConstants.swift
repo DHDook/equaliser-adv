@@ -8,7 +8,10 @@ enum EQLayerConstants {
     /// Layer 0 is always the user EQ.
     static let userEQLayerIndex = 0
 
+    /// Room correction parametric bands (layer 1).
+    static let roomCorrectionLayerIndex = 1
+
     // Future layer indices (reserved for future use):
-    // static let headphoneCorrectionLayerIndex = 1
+    // static let headphoneCorrectionLayerIndex = 2
     // static let genreLayerIndex = 2
 }

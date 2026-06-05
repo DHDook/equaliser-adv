@@ -78,6 +78,9 @@ final class EqualiserStore: ObservableObject {
             var adv = dynamicsConfig.advanced
             adv.deltaSoloActive = (compareMode == .delta)
             updateAdvancedProcessing(adv)
+            if compareMode == .linearEQ {
+                routingCoordinator.eqStager.refreshLinearPhaseIRIfNeeded()
+            }
         }
     }
     
@@ -322,6 +325,10 @@ final class EqualiserStore: ObservableObject {
         }
     }
 
+    @Published var pendingMeasuredCurve: [(frequency: Double, gainDB: Double)]? = nil
+    @Published var roomCorrectionBandCount: Int = 0
+    @Published var customREWTargetCurve: [(frequency: Double, gainDB: Double)]? = nil
+
     // MARK: - Advanced Live Metrics (audio thread → main thread)
 
     /// Smoothed Pearson L/R phase correlation (−1.0 anti-phase … +1.0 in-phase).
@@ -382,6 +389,9 @@ final class EqualiserStore: ObservableObject {
     var expanderGainReductionDB: Float {
         routingCoordinator.pipelineManager.renderPipeline?.expanderGainReductionDB ?? 0.0
     }
+    var preEQPeakDB:  Float { routingCoordinator.pipelineManager.renderPipeline?.preEQPeakDB  ?? -90.0 }
+    var postEQPeakDB: Float { routingCoordinator.pipelineManager.renderPipeline?.postEQPeakDB ?? -90.0 }
+
     var clipperGainReductionDB: Float {
         routingCoordinator.pipelineManager.renderPipeline?.clipperGainReductionDB ?? 0.0
     }
@@ -843,6 +853,35 @@ final class EqualiserStore: ObservableObject {
         routingCoordinator.pipelineManager.renderPipeline?.setGoniometerEngine(goniometerEngine)
     }
 
-    /// Placeholder for future room-calibration filter application.
-    func applyRoomCalibration() {}
+    func applyRoomCalibration() {
+        guard let measured = pendingMeasuredCurve else { return }
+        let target = buildTargetCurve()
+        let sr = routingCoordinator.pipelineManager.renderPipeline?.sampleRate ?? 48_000
+        let bands = RoomCorrectionEngine.fitBands(measured: measured, target: target, sampleRate: sr)
+        routingCoordinator.eqStager.applyRoomCorrectionBands(bands)
+        var adv = dynamicsConfig.advanced
+        adv.roomCorrectionEnabled = true
+        updateAdvancedProcessing(adv)
+        roomCorrectionBandCount = bands.count
+        pendingMeasuredCurve = nil
+    }
+
+    func clearRoomCalibration() {
+        routingCoordinator.eqStager.clearRoomCorrectionBands()
+        var adv = dynamicsConfig.advanced
+        adv.roomCorrectionEnabled = false
+        updateAdvancedProcessing(adv)
+        roomCorrectionBandCount = 0
+    }
+
+    private func buildTargetCurve() -> [(frequency: Double, gainDB: Double)] {
+        switch dynamicsConfig.advanced.targetCurveType {
+        case .flat:
+            return [(20, 0), (20000, 0)]
+        case .houseCurve:
+            return [(20, 2.0), (80, 2.0), (500, 0.0), (2000, 0.0), (10000, -1.0), (20000, -2.5)]
+        case .customREW:
+            return customREWTargetCurve ?? [(20, 0), (20000, 0)]
+        }
+    }
 }

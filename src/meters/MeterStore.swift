@@ -186,6 +186,8 @@ final class MeterStore: ObservableObject {
 
         guard let pipeline = renderPipeline else { return }
 
+        pipeline.decayEQPeakMeters()
+
         let snapshot = pipeline.currentMeters()
 
         // Check if at rest (all meters silent)

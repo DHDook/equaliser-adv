@@ -103,16 +103,23 @@ final class RenderCallbackContext: @unchecked Sendable {
 
     /// Pre-EQ peak level in dB (stored as Int32 bit pattern of Float).
     /// Written by audio thread, read by main thread for meter display.
-    private let preEQPeakAtomic: ManagedAtomic<Int32> = ManagedAtomic(0)
+    private let preEQPeakAtomic: ManagedAtomic<Int32> = ManagedAtomic(Int32(bitPattern: Float(-90.0).bitPattern))
 
     /// Post-EQ peak level in dB (stored as Int32 bit pattern of Float).
     /// Written by audio thread, read by main thread for meter display.
-    private let postEQPeakAtomic: ManagedAtomic<Int32> = ManagedAtomic(0)
+    private let postEQPeakAtomic: ManagedAtomic<Int32> = ManagedAtomic(Int32(bitPattern: Float(-90.0).bitPattern))
 
     // MARK: - Oversampling Processor
 
-    /// 4x oversampling processor for improved high-frequency response.
-    private nonisolated(unsafe) var oversamplingProcessor: OversamplingProcessor?
+    private nonisolated(unsafe) var oversampler: OversamplingProcessor
+    private let _oversamplingEnabled: ManagedAtomic<Int32>
+    private let oversampledBufferListPtr: UnsafeMutablePointer<AudioBufferList>
+    private let oversampledBufferListSize: Int
+
+    // MARK: - Linear Phase EQ
+
+    private nonisolated(unsafe) var linearPhaseEngine: LinearPhaseEQEngine
+    private let _linearPhaseEnabled: ManagedAtomic<Int32>
 
     private let targetVolumeGainAtomic: ManagedAtomic<Int32> = ManagedAtomic(0) // Float 0.0 — silent until VolumeManager sets correct value
 
@@ -199,26 +206,50 @@ final class RenderCallbackContext: @unchecked Sendable {
 
     // MARK: - Pre/Post EQ Peak Meter API
 
-    /// Updates the pre-EQ peak level (called from audio thread).
-    /// - Parameter peakDB: Peak level in dB.
-    func setPreEQPeak(_ peakDB: Float) {
-        let bits = Int32(bitPattern: peakDB.bitPattern)
-        preEQPeakAtomic.store(bits, ordering: .relaxed)
+    @inline(__always)
+    func updatePreEQPeak(frameCount: UInt32) {
+        var peak: Float = 0
+        for ch in 0..<Int(channelCount) {
+            let buf = processingBuffers[ch]
+            for i in 0..<Int(frameCount) {
+                let a = abs(buf[i]); if a > peak { peak = a }
+            }
+        }
+        let db: Float = peak > 1e-9 ? 20.0 * log10(peak) : -90.0
+        let prev = Float(bitPattern: UInt32(bitPattern: preEQPeakAtomic.load(ordering: .relaxed)))
+        if db > prev {
+            preEQPeakAtomic.store(Int32(bitPattern: db.bitPattern), ordering: .relaxed)
+        }
     }
 
-    /// Updates the post-EQ peak level (called from audio thread).
-    /// - Parameter peakDB: Peak level in dB.
-    func setPostEQPeak(_ peakDB: Float) {
-        let bits = Int32(bitPattern: peakDB.bitPattern)
-        postEQPeakAtomic.store(bits, ordering: .relaxed)
+    @inline(__always)
+    func updatePostEQPeak(frameCount: UInt32) {
+        var peak: Float = 0
+        for ch in 0..<Int(channelCount) {
+            let buf = processingBuffers[ch]
+            for i in 0..<Int(frameCount) {
+                let a = abs(buf[i]); if a > peak { peak = a }
+            }
+        }
+        let db: Float = peak > 1e-9 ? 20.0 * log10(peak) : -90.0
+        let prev = Float(bitPattern: UInt32(bitPattern: postEQPeakAtomic.load(ordering: .relaxed)))
+        if db > prev {
+            postEQPeakAtomic.store(Int32(bitPattern: db.bitPattern), ordering: .relaxed)
+        }
     }
 
-    /// Returns the current pre-EQ peak level (called from main thread).
+    func decayEQPeakMeters() {
+        let decayDB: Float = 20.0 / 30.0
+        let newPre  = max(-90.0, preEQPeak  - decayDB)
+        let newPost = max(-90.0, postEQPeak - decayDB)
+        preEQPeakAtomic.store( Int32(bitPattern: newPre.bitPattern),  ordering: .relaxed)
+        postEQPeakAtomic.store(Int32(bitPattern: newPost.bitPattern), ordering: .relaxed)
+    }
+
     var preEQPeak: Float {
         Float(bitPattern: UInt32(bitPattern: preEQPeakAtomic.load(ordering: .relaxed)))
     }
 
-    /// Returns the current post-EQ peak level (called from main thread).
     var postEQPeak: Float {
         Float(bitPattern: UInt32(bitPattern: postEQPeakAtomic.load(ordering: .relaxed)))
     }
@@ -227,7 +258,25 @@ final class RenderCallbackContext: @unchecked Sendable {
 
     /// Sets oversampling enabled state (called from main thread).
     func setOversamplingEnabled(_ enabled: Bool) {
-        oversamplingProcessor?.setEnabled(enabled)
+        _oversamplingEnabled.store(enabled ? 1 : 0, ordering: .relaxed)
+        if !enabled { oversampler.reset() }
+    }
+
+    var isLinearPhaseEnabled: Bool {
+        _linearPhaseEnabled.load(ordering: .relaxed) != 0
+    }
+
+    func setLinearPhaseEnabled(_ enabled: Bool) {
+        _linearPhaseEnabled.store(enabled ? 1 : 0, ordering: .relaxed)
+        if !enabled { linearPhaseEngine.reset() }
+    }
+
+    func updateLinearPhaseIR(leftBands: [EQBandConfiguration],
+                              rightBands: [EQBandConfiguration],
+                              sampleRate: Double) {
+        linearPhaseEngine.updateIR(leftBands: leftBands,
+                                    rightBands: rightBands,
+                                    sampleRate: sampleRate)
     }
 
     // MARK: - Gain Read API (Audio Thread or Diagnostics)
@@ -357,8 +406,18 @@ final class RenderCallbackContext: @unchecked Sendable {
         // The pole is computed once here and stored; no allocation occurs in the render loop.
         self.dcBlockers = (0 ..< Int(channelCount)).map { _ in DCBlocker(sampleRate: sampleRate) }
 
-        // Oversampling processor is created lazily when first enabled to avoid initialization issues
-        self.oversamplingProcessor = nil
+        self.oversampler = OversamplingProcessor(maxFrameCount: Int(maxFrameCount))
+        self._oversamplingEnabled = ManagedAtomic(0)
+        self.linearPhaseEngine = LinearPhaseEQEngine(maxFrameCount: Int(maxFrameCount))
+        self._linearPhaseEnabled = ManagedAtomic(0)
+
+        let osAdditional = max(0, Int(channelCount) - 1)
+        self.oversampledBufferListSize = MemoryLayout<AudioBufferList>.size
+            + osAdditional * MemoryLayout<AudioBuffer>.size
+        self.oversampledBufferListPtr = UnsafeMutableRawPointer
+            .allocate(byteCount: oversampledBufferListSize, alignment: MemoryLayout<AudioBufferList>.alignment)
+            .assumingMemoryBound(to: AudioBufferList.self)
+        oversampledBufferListPtr.pointee.mNumberBuffers = channelCount
 
         // Create EQ chains (one per layer per channel)
         let layerCount = EQLayerConstants.maxLayerCount
@@ -465,6 +524,7 @@ final class RenderCallbackContext: @unchecked Sendable {
 
         // Deallocate the AudioBufferList
         inputBufferListPtr.deallocate()
+        oversampledBufferListPtr.deallocate()
     }
 
     // MARK: - Input Callback Support
@@ -728,6 +788,39 @@ final class RenderCallbackContext: @unchecked Sendable {
     @inline(__always)
     func processDynamics(bufferList: UnsafeMutablePointer<AudioBufferList>, frameCount: UInt32) {
         dynamicsProcessor.process(bufferList: bufferList, frameCount: frameCount)
+        if _oversamplingEnabled.load(ordering: .relaxed) != 0 {
+            processWithOversampling(bufferList: bufferList, frameCount: frameCount)
+        }
+    }
+
+    @inline(__always)
+    private func processWithOversampling(bufferList: UnsafeMutablePointer<AudioBufferList>,
+                                          frameCount: UInt32) {
+        let count = Int(frameCount)
+        let upCount = count * OversamplingProcessor.factor
+        let abl = UnsafeMutableAudioBufferListPointer(bufferList)
+        guard let bufL = abl[0].mData?.assumingMemoryBound(to: Float.self) else { return }
+        let bufR = channelCount > 1
+            ? abl[1].mData?.assumingMemoryBound(to: Float.self)
+            : nil
+
+        oversampler.upsample(ablL: bufL, ablR: bufR, frameCount: count)
+
+        let upByteSize = UInt32(upCount * MemoryLayout<Float>.size)
+        let osBuffers = UnsafeMutableAudioBufferListPointer(oversampledBufferListPtr)
+        osBuffers[0].mNumberChannels = 1
+        osBuffers[0].mDataByteSize = upByteSize
+        osBuffers[0].mData = UnsafeMutableRawPointer(oversampler.workBufferL())
+        if channelCount > 1 {
+            osBuffers[1].mNumberChannels = 1
+            osBuffers[1].mDataByteSize = upByteSize
+            osBuffers[1].mData = UnsafeMutableRawPointer(oversampler.workBufferR(frameCount: count))
+        }
+
+        dynamicsProcessor.processClipperAndLimiterOnly(
+            abl: osBuffers, numCh: Int(channelCount), count: upCount)
+
+        oversampler.downsample(ablL: bufL, ablR: bufR, frameCount: count)
     }
 
     /// Updates dynamics parameters from the main thread.
@@ -736,6 +829,7 @@ final class RenderCallbackContext: @unchecked Sendable {
     ///   - sampleRate: Current pipeline sample rate (needed for time-constant recalculation).
     func updateDynamicsConfig(_ config: DynamicsConfig, sampleRate: Double) {
         dynamicsProcessor.applyConfig(config, sampleRate: sampleRate)
+        setOversamplingEnabled(config.advanced.oversamplingEnabled)
     }
 
     /// Processes all EQ layers on processing buffers in-place.
@@ -743,55 +837,15 @@ final class RenderCallbackContext: @unchecked Sendable {
     /// - Parameter frameCount: Number of frames to process.
     @inline(__always)
     func processEQ(frameCount: UInt32) {
-        // Apply 4x oversampling before EQ if enabled
-        if let oversampler = oversamplingProcessor {
-            let upsampledFrameCount = frameCount * 4
-            var upsampledBuffer = Array(repeating: Float(0.0), count: Int(upsampledFrameCount) * Int(channelCount))
-
-            // Upsample each channel
-            for ch in 0..<Int(channelCount) {
-                let inputPtr = processingBuffers[ch]
-                let channelOffset = ch * Int(upsampledFrameCount)
-                let outputPtr = UnsafeMutablePointer<Float>(mutating: &upsampledBuffer[channelOffset])
-                oversampler.upsample(input: [inputPtr], frameCount: Int(frameCount), output: outputPtr)
-            }
-
-            // Process EQ on upsampled data
-            for ch in 0..<Int(channelCount) {
-                let channelOffset = ch * Int(upsampledFrameCount)
-                let bufferPtr = UnsafeMutablePointer<Float>(mutating: &upsampledBuffer[channelOffset])
-
-                if ch == 0 {
-                    // Process L channel through all layers in series
-                    for chain in leftEQChains {
-                        chain.applyPendingUpdates()
-                        chain.process(buffer: bufferPtr, frameCount: upsampledFrameCount)
-                    }
-                } else if ch == 1 {
-                    // Process R channel through all layers in series (if stereo)
-                    for chain in rightEQChains {
-                        chain.applyPendingUpdates()
-                        chain.process(buffer: bufferPtr, frameCount: upsampledFrameCount)
-                    }
-                }
-            }
-
-            // Downsample back to original rate
-            for ch in 0..<Int(channelCount) {
-                let channelOffset = ch * Int(upsampledFrameCount)
-                let inputPtr = UnsafePointer<Float>(&upsampledBuffer[channelOffset])
-                let outputPtr = processingBuffers[ch]
-                oversampler.downsample(input: inputPtr, frameCount: Int(frameCount), output: [outputPtr])
-            }
+        if _linearPhaseEnabled.load(ordering: .relaxed) != 0 {
+            let bufL = processingBuffers[0]
+            let bufR = channelCount > 1 ? processingBuffers[1] : nil
+            linearPhaseEngine.process(bufL: bufL, bufR: bufR, frameCount: Int(frameCount))
         } else {
-            // Process EQ without oversampling
-            // Process L channel through all layers in series
             for chain in leftEQChains {
                 chain.applyPendingUpdates()
                 chain.process(buffer: processingBuffers[0], frameCount: frameCount)
             }
-
-            // Process R channel through all layers in series (if stereo)
             if channelCount > 1 {
                 for chain in rightEQChains {
                     chain.applyPendingUpdates()

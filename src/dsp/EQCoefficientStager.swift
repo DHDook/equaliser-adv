@@ -91,6 +91,65 @@ final class EQCoefficientStager {
         reapplyAllCoefficients()
     }
 
+    func applyRoomCorrectionBands(_ bands: [EQBandConfiguration]) {
+        let layerIdx = EQLayerConstants.roomCorrectionLayerIndex
+        guard let pipeline = renderPipeline else { return }
+        var sections: [[BiquadCoefficients]] = []
+        var bypassFlags: [Bool] = []
+        let decoupling = eqConfiguration.dynamicsConfig.advanced.coefficientDecouplingEnabled
+        for band in bands {
+            let designRate = BiquadMath.designSampleRate(
+                actualRate: currentSampleRate,
+                coefficientDecouplingEnabled: decoupling)
+            let freq = designRate != currentSampleRate
+                ? BiquadMath.prewarpFrequency(frequency: Double(band.frequency),
+                                              actualRate: currentSampleRate,
+                                              designRate: designRate)
+                : Double(band.frequency)
+            let secs = BiquadMath.calculateSections(
+                type: band.filterType, sampleRate: designRate,
+                frequency: freq, q: Double(band.q),
+                gain: Double(band.gain), slope: band.slope)
+            sections.append(secs)
+            bypassFlags.append(band.bypass)
+        }
+        pipeline.stageFullEQUpdate(
+            channel: .both,
+            layerIndex: layerIdx,
+            sections: sections,
+            bypassFlags: bypassFlags,
+            activeBandCount: bands.count,
+            layerBypass: false
+        )
+        refreshLinearPhaseIRIfNeeded()
+    }
+
+    func clearRoomCorrectionBands() {
+        let layerIdx = EQLayerConstants.roomCorrectionLayerIndex
+        renderPipeline?.stageFullEQUpdate(
+            channel: .both,
+            layerIndex: layerIdx,
+            sections: [],
+            bypassFlags: [],
+            activeBandCount: 0,
+            layerBypass: true
+        )
+        refreshLinearPhaseIRIfNeeded()
+    }
+
+    func refreshLinearPhaseIRIfNeeded() {
+        guard let pipeline = renderPipeline,
+              let ctx = pipeline.callbackContext,
+              ctx.isLinearPhaseEnabled else { return }
+        let leftBands = Array(eqConfiguration.leftState.userEQ.bands.prefix(
+            eqConfiguration.leftState.userEQ.activeBandCount))
+        let rightBands = Array(eqConfiguration.rightState.userEQ.bands.prefix(
+            eqConfiguration.rightState.userEQ.activeBandCount))
+        ctx.updateLinearPhaseIR(leftBands: leftBands,
+                                 rightBands: rightBands,
+                                 sampleRate: currentSampleRate)
+    }
+
     // MARK: - Private Coefficient Helpers
 
     /// Stages coefficients for a single band (incremental update path).
@@ -221,5 +280,6 @@ final class EQCoefficientStager {
                 layerBypass: eqConfiguration.globalBypass
             )
         }
+        refreshLinearPhaseIRIfNeeded()
     }
 }

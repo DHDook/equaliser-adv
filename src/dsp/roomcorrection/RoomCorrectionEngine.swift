@@ -1,209 +1,92 @@
-// RoomCorrectionEngine.swift
-// Room correction using inverse filters and target curves
-
+// RoomCorrectionEngine.swift — static greedy parametric band fitting.
+// Main thread only. Pure function — no state, no allocation constraints.
 import Foundation
 
-/// Room correction engine using inverse filtering to match target response curves.
-final class RoomCorrectionEngine {
+enum RoomCorrectionEngine {
 
-    // MARK: - Constants
+    static let maxCorrectionBands:  Int   = 20
+    static let maxCorrectionGainDB: Float = 12.0
+    static let stopResidualDB:      Float = 0.5
 
-    private let fftSize: Int
-    private let filterLength: Int
+    /// Fits parametric EQ bands to the inverse of (measured − target).
+    static func fitBands(
+        measured: [(frequency: Double, gainDB: Double)],
+        target:   [(frequency: Double, gainDB: Double)],
+        sampleRate: Double,
+        maxBands: Int = maxCorrectionBands
+    ) -> [EQBandConfiguration] {
 
-    // MARK: - State
+        guard !measured.isEmpty else { return [] }
+        let N = 1000
+        let fGrid = (0..<N).map { 20.0 * pow(1000.0, Double($0) / Double(N - 1)) }
 
-    /// FFT engine for convolution.
-    private let fftEngine: FFTEngine
+        var residual = fGrid.map { f in
+            interpolateLog(curve: target, atHz: f) - interpolateLog(curve: measured, atHz: f)
+        }
 
-    /// Inverse filter coefficients (room correction filter).
-    private var inverseFilter: [Float]
+        var bands = [EQBandConfiguration]()
 
-    /// Whether room correction is enabled.
-    private var enabled: Bool = false
+        for _ in 0..<maxBands {
+            guard let peakIdx = residual.indices.max(by: { abs(residual[$0]) < abs(residual[$1]) })
+            else { break }
+            let peakMag = abs(residual[peakIdx])
+            guard peakMag >= Double(stopResidualDB) else { break }
 
-    /// Current sample rate.
-    private var sampleRate: Double = 48000.0
+            let peakHz  = fGrid[peakIdx]
+            let gainDB  = Float(max(-Double(maxCorrectionGainDB),
+                                    min(Double(maxCorrectionGainDB), residual[peakIdx])))
 
-    /// Target curve type.
-    private var targetCurveType: TargetCurveType = .flat
+            let halfPwr = peakMag * 0.7071
+            var lo = peakIdx; while lo > 0     && abs(residual[lo]) > halfPwr { lo -= 1 }
+            var hi = peakIdx; while hi < N - 1 && abs(residual[hi]) > halfPwr { hi += 1 }
+            let bwHz = fGrid[hi] - fGrid[lo]
+            let q    = Float(max(0.4, min(8.0, peakHz / max(bwHz, 1.0))))
 
-    /// Channel count.
-    private let channelCount: Int
+            let band = EQBandConfiguration(
+                frequency: Float(peakHz),
+                q: q,
+                gain: gainDB,
+                filterType: .parametric,
+                bypass: false,
+                slope: .db12
+            )
+            bands.append(band)
 
-    // MARK: - Initialization
-
-    init(channelCount: Int, sampleRate: Double, filterLength: Int = 1024) {
-        self.channelCount = channelCount
-        self.sampleRate = sampleRate
-        self.filterLength = filterLength
-
-        // FFT size must be >= 2 * filterLength for convolution
-        self.fftSize = Self.nextPowerOfTwo(2 * filterLength)
-
-        self.fftEngine = FFTEngine(fftSize: fftSize)
-        self.inverseFilter = Array(repeating: 0.0, count: filterLength)
-    }
-
-    // MARK: - Configuration
-
-    func setEnabled(_ enabled: Bool) {
-        self.enabled = enabled
-    }
-
-    func setSampleRate(_ rate: Double) {
-        self.sampleRate = rate
-        generateInverseFilter()
-    }
-
-    func setTargetCurveType(_ type: TargetCurveType) {
-        self.targetCurveType = type
-        generateInverseFilter()
-    }
-
-    /// Sets room measurement data for generating inverse filter.
-    /// - Parameter measurement: Measured frequency response data (frequency in Hz, magnitude in dB)
-    func setMeasurement(_ measurement: [(frequency: Double, magnitude: Double)]) {
-        // Generate inverse filter from measurement
-        generateInverseFilterFromMeasurement(measurement)
-    }
-
-    // MARK: - Processing
-
-    /// Applies room correction filter to audio.
-    /// - Parameters:
-    ///   - input: Input audio buffer (deinterleaved, one buffer per channel)
-    ///   - frameCount: Number of frames in input
-    ///   - output: Output buffer (same layout as input)
-    func process(input: [UnsafePointer<Float>], frameCount: Int, output: [UnsafeMutablePointer<Float>]) {
-        guard enabled else {
-            // Passthrough
-            for ch in 0..<channelCount {
-                let inPtr = input[ch]
-                let outPtr = output[ch]
-                for i in 0..<frameCount {
-                    outPtr[i] = inPtr[i]
+            let designRate = BiquadMath.designSampleRate(actualRate: sampleRate,
+                                                          coefficientDecouplingEnabled: true)
+            let coeffs = BiquadMath.calculateCoefficients(
+                type: .parametric, sampleRate: designRate,
+                frequency: peakHz, q: Double(q), gain: Double(gainDB))
+            for k in 0..<N {
+                let f = fGrid[k]; let w = 2.0 * Double.pi * f / sampleRate
+                let cr = cos(w); let sr = sin(w)
+                let cr2 = cos(2*w); let sr2 = sin(2*w)
+                let nR = coeffs.b0 + coeffs.b1*cr + coeffs.b2*cr2
+                let nI = coeffs.b1*sr + coeffs.b2*sr2
+                let dR = 1.0 + coeffs.a1*cr + coeffs.a2*cr2
+                let dI = coeffs.a1*sr + coeffs.a2*sr2
+                let denom = dR*dR + dI*dI
+                if denom > 1e-30 {
+                    residual[k] -= 20.0 * log10(max(1e-9, sqrt((nR*nR+nI*nI)/denom)))
                 }
             }
-            return
         }
+        return bands
+    }
 
-        // For each channel, apply inverse filter via convolution
-        for ch in 0..<channelCount {
-            let inPtr = input[ch]
-            let outPtr = output[ch]
-
-            // Convert input to array for convolution
-            var inputArray = Array(repeating: Float(0.0), count: frameCount)
-            for i in 0..<frameCount {
-                inputArray[i] = inPtr[i]
-            }
-
-            // Perform convolution
-            let result = fftEngine.convolve(signal: inputArray, impulse: inverseFilter)
-
-            // Copy result to output (trim to frameCount)
-            let copyCount = min(frameCount, result.count)
-            for i in 0..<copyCount {
-                outPtr[i] = result[i]
-            }
-
-            // Zero remaining samples if result is shorter
-            for i in copyCount..<frameCount {
-                outPtr[i] = 0.0
+    private static func interpolateLog(
+        curve: [(frequency: Double, gainDB: Double)], atHz f: Double
+    ) -> Double {
+        guard curve.count > 1 else { return curve.first?.gainDB ?? 0 }
+        if f <= curve.first!.frequency { return curve.first!.gainDB }
+        if f >= curve.last!.frequency  { return curve.last!.gainDB  }
+        for i in 0..<(curve.count - 1) {
+            let lo = curve[i], hi = curve[i+1]
+            if f >= lo.frequency && f <= hi.frequency {
+                let t = log(f / lo.frequency) / log(hi.frequency / lo.frequency)
+                return lo.gainDB + t * (hi.gainDB - lo.gainDB)
             }
         }
-    }
-
-    // MARK: - Filter Generation
-
-    private func generateInverseFilter() {
-        // Generate inverse filter based on target curve type
-        switch targetCurveType {
-        case .flat:
-            // Flat target - no correction needed
-            inverseFilter = Array(repeating: 0.0, count: filterLength)
-            inverseFilter[0] = 1.0 // Unity gain
-
-        case .houseCurve:
-            // House curve - gentle bass and treble lift
-            generateHouseCurveFilter()
-
-        case .customREW:
-            // Custom curve - would be loaded from measurement data
-            inverseFilter = Array(repeating: 0.0, count: filterLength)
-            inverseFilter[0] = 1.0
-        }
-    }
-
-    private func generateHouseCurveFilter() {
-        // Generate FIR filter for house curve (gentle bass/treble boost)
-        // This is a simplified implementation - real implementation would use
-        // frequency sampling or windowed sinc method
-        inverseFilter = Array(repeating: 0.0, count: filterLength)
-
-        let nyquist = sampleRate / 2.0
-        let mid = filterLength / 2
-
-        for i in 0..<filterLength {
-            let n = Double(i - mid)
-            // Sinc function
-            let sinc = n == 0 ? 1.0 : sin(.pi * n / Double(mid)) / (.pi * n / Double(mid))
-
-            // Apply house curve weighting (boost bass and treble)
-            let freq = abs(n) / Double(filterLength) * nyquist
-            let bassBoost = freq < 200.0 ? 1.2 : 1.0
-            let trebleBoost = freq > 8000.0 ? 1.15 : 1.0
-            let curve = bassBoost * trebleBoost
-
-            // Apply window
-            let window = 0.54 + 0.46 * cos(.pi * Double(i) / Double(filterLength))
-
-            inverseFilter[i] = Float(sinc * curve * window)
-        }
-
-        // Normalize
-        let sum = inverseFilter.reduce(0, +)
-        if sum > 0 {
-            for i in 0..<filterLength {
-                inverseFilter[i] /= sum
-            }
-        }
-    }
-
-    private func generateInverseFilterFromMeasurement(_ measurement: [(frequency: Double, magnitude: Double)]) {
-        // Generate inverse filter from measured frequency response
-        // This is a simplified implementation - real implementation would use
-        // frequency sampling method with proper interpolation
-
-        inverseFilter = Array(repeating: 0.0, count: filterLength)
-
-        // For now, use a simple approximation
-        // Real implementation would:
-        // 1. Interpolate measurement data to FFT frequency bins
-        // 2. Compute inverse response (1/measured magnitude)
-        // 3. Convert to time domain via inverse FFT
-        // 4. Apply window and truncate to filter length
-
-        // Placeholder: unity gain
-        inverseFilter[0] = 1.0
-    }
-
-    // MARK: - Helpers
-
-    private static func nextPowerOfTwo(_ n: Int) -> Int {
-        var v = n
-        v -= 1
-        v |= v >> 1
-        v |= v >> 2
-        v |= v >> 4
-        v |= v >> 8
-        v |= v >> 16
-        v += 1
-        return v
-    }
-
-    func resetState() {
-        // No state to reset for FIR filter
+        return 0
     }
 }
