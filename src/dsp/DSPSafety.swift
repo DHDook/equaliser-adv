@@ -2,14 +2,16 @@
 // Global DSP safety layer for NaN/Inf detection and recovery
 
 import Foundation
+import AudioToolbox
+import CoreAudio
 import os.log
 
 /// Global DSP safety utilities for detecting and recovering from invalid floating-point values.
 enum DSPSafety {
 
     private static let logger = Logger(subsystem: "net.knage.equaliser", category: "DSPSafety")
-    private static var nanLogged = false
-    private static var infLogged = false
+    nonisolated(unsafe) private static var nanLogged = false
+    nonisolated(unsafe) private static var infLogged = false
 
     /// Sanitizes a floating-point sample, replacing NaN/Inf with zero.
     /// - Parameter value: The sample value to sanitize
