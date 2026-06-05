@@ -77,6 +77,9 @@ final class DynamicsProcessor: @unchecked Sendable {
     let stereoWidener:  StereoWidener
     let lufsProcessor:  LoudnessMatchProcessor
 
+    // ── Lightweight PRNG for dither ─────────────────────────────────────────
+    private let ditherRNG: DSPRNG
+
     // MARK: - Advanced DSP State (audio thread only)
 
     /// DC offset blocker: x_prev and y_prev per channel (1-pole HP at ≈ 0.5 Hz).
@@ -311,6 +314,9 @@ final class DynamicsProcessor: @unchecked Sendable {
         // Stereo widener + LUFS processor
         self.stereoWidener = StereoWidener()
         self.lufsProcessor = LoudnessMatchProcessor()
+
+        // Lightweight PRNG for dither (seeded with sample rate for determinism)
+        self.ditherRNG = DSPRNG(seed: UInt64(sampleRate * 1000))
 
         // Atomics — de-esser
         _deEsserEnabled    = ManagedAtomic(0)
@@ -958,12 +964,20 @@ final class DynamicsProcessor: @unchecked Sendable {
     }
 
     /// Dynamic pause gate: silences output smoothly when RMS falls below −60 dBFS for 500 ms.
+    /// Uses gain envelope with attack, hold, and release to avoid audible chatter.
     @inline(__always)
     private func processPauseGate(
         abl: UnsafeMutableAudioBufferListPointer, numCh: Int, count: Int
     ) {
         let holdAlpha: Float = Float(exp(-1.0 / (storedSampleRate * 0.5)))
         let threshold: Float = 1e-6  // −60 dBFS power
+        let attackAlpha: Float = Float(exp(-1.0 / (storedSampleRate * 0.010)))  // 10 ms attack
+        let releaseAlpha: Float = Float(exp(-1.0 / (storedSampleRate * 0.200))) // 200 ms release
+        let hysteresisDB: Float = 3.0  // Hysteresis to prevent chatter
+        let hysteresisFactor: Float = pow(10.0, hysteresisDB / 20.0)
+
+        var gateGain: Float = pauseGateIsOpen ? 1.0 : 0.0
+
         for i in 0..<count {
             var rmsSum: Float = 0.0
             for ch in 0..<numCh {
@@ -971,14 +985,32 @@ final class DynamicsProcessor: @unchecked Sendable {
                     rmsSum += buf[i] * buf[i]
                 }
             }
-            pauseGateLevel  = holdAlpha * pauseGateLevel + (1.0 - holdAlpha) * (rmsSum / Float(max(numCh, 1)))
-            pauseGateIsOpen = pauseGateLevel >= threshold
+            pauseGateLevel = holdAlpha * pauseGateLevel + (1.0 - holdAlpha) * (rmsSum / Float(max(numCh, 1)))
 
-            if !pauseGateIsOpen {
-                for ch in 0..<numCh {
-                    if let buf = abl[ch].mData?.assumingMemoryBound(to: Float.self) {
-                        buf[i] = 0.0
-                    }
+            // Hysteresis: different thresholds for opening and closing
+            let openThreshold = threshold
+            let closeThreshold = threshold / hysteresisFactor
+
+            let shouldBeOpen = pauseGateLevel >= openThreshold
+            let shouldBeClosed = pauseGateLevel < closeThreshold
+
+            // Update gate state with hysteresis
+            if shouldBeOpen && !pauseGateIsOpen {
+                pauseGateIsOpen = true
+            } else if shouldBeClosed && pauseGateIsOpen {
+                pauseGateIsOpen = false
+            }
+
+            // Smooth gain envelope
+            let targetGain: Float = pauseGateIsOpen ? 1.0 : 0.0
+            gateGain = targetGain > gateGain
+                ? attackAlpha * gateGain + (1.0 - attackAlpha) * targetGain
+                : releaseAlpha * gateGain + (1.0 - releaseAlpha) * targetGain
+
+            // Apply gain to all channels
+            for ch in 0..<numCh {
+                if let buf = abl[ch].mData?.assumingMemoryBound(to: Float.self) {
+                    buf[i] *= gateGain
                 }
             }
         }
@@ -998,8 +1030,8 @@ final class DynamicsProcessor: @unchecked Sendable {
                 for ch in 0..<numCh {
                     guard let buf = abl[ch].mData?.assumingMemoryBound(to: Float.self) else { continue }
                     for i in 0..<count {
-                        let r1 = Float.random(in: -lsb...lsb)
-                        let r2 = Float.random(in: -lsb...lsb)
+                        let r1 = ditherRNG.nextFloat(in: -lsb...lsb)
+                        let r2 = ditherRNG.nextFloat(in: -lsb...lsb)
                         buf[i] = (buf[i] * invLSB + r1 + r2).rounded() * lsb
                     }
                 }
@@ -1015,7 +1047,7 @@ final class DynamicsProcessor: @unchecked Sendable {
                 var s3 = noiseShapeState[base + 3]
                 var s4 = noiseShapeState[base + 4]
                 for i in 0..<count {
-                    let r = Float.random(in: -lsb...lsb)
+                    let r = ditherRNG.nextFloat(in: -lsb...lsb)
                     let shaped = r - (h.0*s0 + h.1*s1 + h.2*s2 + h.3*s3 + h.4*s4)
                     let input = buf[i] + shaped
                     let quant = (input * invLSB).rounded() * lsb
@@ -1037,8 +1069,8 @@ final class DynamicsProcessor: @unchecked Sendable {
             for ch in 0..<numCh {
                 guard let buf = abl[ch].mData?.assumingMemoryBound(to: Float.self) else { continue }
                 for i in 0..<count {
-                    let r1 = Float.random(in: -lsb...lsb)
-                    let r2 = Float.random(in: -lsb...lsb)
+                    let r1 = ditherRNG.nextFloat(in: -lsb...lsb)
+                    let r2 = ditherRNG.nextFloat(in: -lsb...lsb)
                     buf[i] = (buf[i] * invLSB + r1 + r2).rounded() * lsb
                 }
             }
@@ -1047,8 +1079,8 @@ final class DynamicsProcessor: @unchecked Sendable {
 
         if mode == 2 {
             for i in 0..<count {
-                let r1 = Float.random(in: -lsb...lsb)
-                let r2 = Float.random(in: -lsb...lsb)
+                let r1 = ditherRNG.nextFloat(in: -lsb...lsb)
+                let r2 = ditherRNG.nextFloat(in: -lsb...lsb)
                 let noise = r1 - ditherPrevRand
                 ditherPrevRand = r2
                 for ch in 0..<numCh {
@@ -1414,6 +1446,11 @@ final class DynamicsProcessor: @unchecked Sendable {
         let alphaRel = expanderAlphaRelease
         var env = expEnvDB
 
+        // Safeguards: clamp envelope to prevent excessive attenuation
+        let minEnvDB: Float = -60.0 // Minimum gain reduction
+        let maxEnvDB: Float = 0.0   // Maximum gain reduction
+        env = max(minEnvDB, min(maxEnvDB, env))
+
         for frame in 0..<count {
             var peak: Float = 0.0
             for ch in 0..<numCh {
@@ -1426,10 +1463,18 @@ final class DynamicsProcessor: @unchecked Sendable {
             env = deltaDB < env
                 ? alphaAtt * env + (1.0 - alphaAtt) * deltaDB
                 : alphaRel * env + (1.0 - alphaRel) * deltaDB
+
+            // Clamp envelope to prevent runaway attenuation
+            env = max(minEnvDB, min(maxEnvDB, env))
+
             let gain = pow(10.0, env * 0.05)
+
+            // Detect NaN/Inf and replace with unity gain
+            let safeGain = gain.isFinite ? max(1e-6, gain) : 1.0
+
             for ch in 0..<numCh {
                 guard let buf = abl[ch].mData?.assumingMemoryBound(to: Float.self) else { continue }
-                buf[frame] *= gain
+                buf[frame] *= safeGain
             }
         }
         expEnvDB = env

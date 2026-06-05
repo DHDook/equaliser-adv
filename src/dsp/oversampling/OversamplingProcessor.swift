@@ -15,10 +15,15 @@ final class OversamplingProcessor {
 
     private let coeffs: [[Float]]
 
-    private var delayL: [Float]
-    private var delayR: [Float]
-    private var delayIdxL: Int = 0
-    private var delayIdxR: Int = 0
+    private var upDelayL: [Float]
+    private var upDelayR: [Float]
+    private var upDelayIdxL: Int = 0
+    private var upDelayIdxR: Int = 0
+
+    private var downDelayL: [Float]
+    private var downDelayR: [Float]
+    private var downDelayIdxL: Int = 0
+    private var downDelayIdxR: Int = 0
 
     private let workBuf: UnsafeMutablePointer<Float>
     private let workBufCapacity: Int
@@ -46,8 +51,10 @@ final class OversamplingProcessor {
         }
         coeffs = c
 
-        delayL = [Float](repeating: 0, count: Self.tapsPerPhase)
-        delayR = [Float](repeating: 0, count: Self.tapsPerPhase)
+        upDelayL = [Float](repeating: 0, count: Self.tapsPerPhase)
+        upDelayR = [Float](repeating: 0, count: Self.tapsPerPhase)
+        downDelayL = [Float](repeating: 0, count: Self.tapsPerPhase)
+        downDelayR = [Float](repeating: 0, count: Self.tapsPerPhase)
 
         workBufCapacity = maxFrameCount * Self.factor * 2
         workBuf = UnsafeMutablePointer<Float>.allocate(capacity: workBufCapacity)
@@ -68,10 +75,10 @@ final class OversamplingProcessor {
     func upsample(ablL: UnsafeMutablePointer<Float>,
                            ablR: UnsafeMutablePointer<Float>?,
                            frameCount: Int) {
-        processChannel(src: ablL, delay: &delayL, delayIdx: &delayIdxL,
+        processChannel(src: ablL, delay: &upDelayL, delayIdx: &upDelayIdxL,
                        dst: workBuf, frameCount: frameCount, channelOffset: 0)
         if let r = ablR {
-            processChannel(src: r, delay: &delayR, delayIdx: &delayIdxR,
+            processChannel(src: r, delay: &upDelayR, delayIdx: &upDelayIdxR,
                            dst: workBuf, frameCount: frameCount,
                            channelOffset: frameCount * Self.factor)
         }
@@ -80,18 +87,23 @@ final class OversamplingProcessor {
     func downsample(ablL: UnsafeMutablePointer<Float>,
                     ablR: UnsafeMutablePointer<Float>?,
                     frameCount: Int) {
-        let srcL = workBuf
-        for i in 0..<frameCount { ablL[i] = srcL[i * Self.factor] }
+        // Apply polyphase FIR filtering during decimation for anti-aliasing
+        processChannelDownsample(src: workBuf, delay: &downDelayL, delayIdx: &downDelayIdxL,
+                                 dst: ablL, frameCount: frameCount)
         if let r = ablR {
             let srcR = workBuf.advanced(by: frameCount * Self.factor)
-            for i in 0..<frameCount { r[i] = srcR[i * Self.factor] }
+            processChannelDownsample(src: srcR, delay: &downDelayR, delayIdx: &downDelayIdxR,
+                                     dst: r, frameCount: frameCount)
         }
     }
 
     func reset() {
-        for i in 0..<delayL.count { delayL[i] = 0 }
-        for i in 0..<delayR.count { delayR[i] = 0 }
-        delayIdxL = 0; delayIdxR = 0
+        for i in 0..<upDelayL.count { upDelayL[i] = 0 }
+        for i in 0..<upDelayR.count { upDelayR[i] = 0 }
+        for i in 0..<downDelayL.count { downDelayL[i] = 0 }
+        for i in 0..<downDelayR.count { downDelayR[i] = 0 }
+        upDelayIdxL = 0; upDelayIdxR = 0
+        downDelayIdxL = 0; downDelayIdxR = 0
         workBuf.initialize(repeating: 0, count: workBufCapacity)
     }
 
@@ -118,6 +130,34 @@ final class OversamplingProcessor {
                 outIdx += 1
             }
             delayIdx = (delayIdx + 1) % T
+        }
+    }
+
+    @inline(__always)
+    private func processChannelDownsample(
+        src: UnsafePointer<Float>,
+        delay: inout [Float],
+        delayIdx: inout Int,
+        dst: UnsafeMutablePointer<Float>,
+        frameCount: Int
+    ) {
+        let T = Self.tapsPerPhase
+        for i in 0..<frameCount {
+            // Load 4 samples from upsampled buffer into delay line
+            for p in 0..<Self.factor {
+                let srcIdx = i * Self.factor + p
+                delay[(delayIdx + p) % T] = src[srcIdx]
+            }
+
+            // Apply polyphase FIR filter (phase 0 only for decimation)
+            var acc: Float = 0
+            let phaseCoeffs = coeffs[0]
+            for k in 0..<T {
+                acc += phaseCoeffs[k] * delay[(delayIdx - k + T) % T]
+            }
+            dst[i] = acc
+
+            delayIdx = (delayIdx + Self.factor) % T
         }
     }
 

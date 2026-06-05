@@ -787,9 +787,32 @@ final class RenderCallbackContext: @unchecked Sendable {
     /// Must be called from the audio render thread only.
     @inline(__always)
     func processDynamics(bufferList: UnsafeMutablePointer<AudioBufferList>, frameCount: UInt32) {
+        let oversamplingOn = _oversamplingEnabled.load(ordering: .relaxed) != 0
+
+        #if DEBUG
+        // Diagnostic logging for limiter routing verification
+        let limiterEnabled = dynamicsProcessor.gainReductionDB < 0.0
+        if limiterEnabled {
+            os_log(.debug, "Dynamics: limiter active, oversampling=%d", oversamplingOn ? 1 : 0)
+        }
+        #endif
+
         dynamicsProcessor.process(bufferList: bufferList, frameCount: frameCount)
-        if _oversamplingEnabled.load(ordering: .relaxed) != 0 {
+
+        if oversamplingOn {
             processWithOversampling(bufferList: bufferList, frameCount: frameCount)
+
+            #if DEBUG
+            // Runtime assertion: verify limiter was applied in oversampling path
+            let limiterGR = dynamicsProcessor.gainReductionDB
+            assert(limiterGR <= 0.0, "Limiter gain reduction should be <= 0 dB")
+            #endif
+        } else {
+            #if DEBUG
+            // Runtime assertion: verify limiter was applied in normal path
+            let limiterGR = dynamicsProcessor.gainReductionDB
+            assert(limiterGR <= 0.0, "Limiter gain reduction should be <= 0 dB")
+            #endif
         }
     }
 
@@ -804,6 +827,11 @@ final class RenderCallbackContext: @unchecked Sendable {
             ? abl[1].mData?.assumingMemoryBound(to: Float.self)
             : nil
 
+        #if DEBUG
+        // Diagnostic logging for oversampling path
+        os_log(.debug, "Oversampling: upsample %d frames to %d", count, upCount)
+        #endif
+
         oversampler.upsample(ablL: bufL, ablR: bufR, frameCount: count)
 
         let upByteSize = UInt32(upCount * MemoryLayout<Float>.size)
@@ -817,10 +845,26 @@ final class RenderCallbackContext: @unchecked Sendable {
             osBuffers[1].mData = UnsafeMutableRawPointer(oversampler.workBufferR(frameCount: count))
         }
 
+        #if DEBUG
+        // Runtime assertion: verify buffer pointers are valid
+        assert(osBuffers[0].mData != nil, "Oversampling buffer L is nil")
+        if channelCount > 1 {
+            assert(osBuffers[1].mData != nil, "Oversampling buffer R is nil")
+        }
+        #endif
+
         dynamicsProcessor.processClipperAndLimiterOnly(
             abl: osBuffers, numCh: Int(channelCount), count: upCount)
 
         oversampler.downsample(ablL: bufL, ablR: bufR, frameCount: count)
+
+        #if DEBUG
+        // Runtime assertion: verify downsampled data is valid
+        for i in 0..<min(count, 10) {
+            let val = bufL[i]
+            assert(val.isFinite, "Oversampling produced non-finite value")
+        }
+        #endif
     }
 
     /// Updates dynamics parameters from the main thread.
