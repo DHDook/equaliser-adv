@@ -4,7 +4,7 @@
 import Accelerate
 import Foundation
 
-/// 4× polyphase FIR oversampler.
+/// 4× polyphase FIR oversampler using vDSP for gain-preserving operation.
 /// Wraps nonlinear stages (soft clipper, brickwall limiter) only.
 final class OversamplingProcessor {
 
@@ -13,7 +13,8 @@ final class OversamplingProcessor {
     private static let kaiserBeta:  Double = 8.0
     private static let cutoffNorm:  Double = 0.45
 
-    private let coeffs: [[Float]]
+    private let upCoeffs: [[Float]]
+    private let downCoeffs: [[Float]]
 
     private var upDelayL: [Float]
     private var upDelayR: [Float]
@@ -40,16 +41,28 @@ final class OversamplingProcessor {
             sinc = t == 0 ? 1.0 : sin(arg) / arg
             let x      = 1.0 - Foundation.pow(2.0 * Double(n) / Double(total - 1) - 1.0, 2)
             let window = Self.besselI0(Self.kaiserBeta * (x > 0 ? sqrt(x) : 0)) / I0beta
-            h[n] = sinc * window / Double(Self.factor)
+            h[n] = sinc * window
         }
-        var c = [[Float]](repeating: [Float](repeating: 0, count: Self.tapsPerPhase),
+
+        // Upsampling coefficients: divide by factor to compensate for zero-insertion
+        var upC = [[Float]](repeating: [Float](repeating: 0, count: Self.tapsPerPhase),
                           count: Self.factor)
         for p in 0..<Self.factor {
             for k in 0..<Self.tapsPerPhase {
-                c[p][k] = Float(h[p + k * Self.factor])
+                upC[p][k] = Float(h[p + k * Self.factor]) / Float(Self.factor)
             }
         }
-        coeffs = c
+        upCoeffs = upC
+
+        // Downsampling coefficients: use full filter (no division by factor)
+        var downC = [[Float]](repeating: [Float](repeating: 0, count: Self.tapsPerPhase),
+                            count: Self.factor)
+        for p in 0..<Self.factor {
+            for k in 0..<Self.tapsPerPhase {
+                downC[p][k] = Float(h[p + k * Self.factor])
+            }
+        }
+        downCoeffs = downC
 
         upDelayL = [Float](repeating: 0, count: Self.tapsPerPhase)
         upDelayR = [Float](repeating: 0, count: Self.tapsPerPhase)
@@ -75,25 +88,24 @@ final class OversamplingProcessor {
     func upsample(ablL: UnsafeMutablePointer<Float>,
                            ablR: UnsafeMutablePointer<Float>?,
                            frameCount: Int) {
-        processChannel(src: ablL, delay: &upDelayL, delayIdx: &upDelayIdxL,
-                       dst: workBuf, frameCount: frameCount, channelOffset: 0)
+        processChannelUpsample(src: ablL, delay: &upDelayL, delayIdx: &upDelayIdxL,
+                              dst: workBuf, frameCount: frameCount, channelOffset: 0)
         if let r = ablR {
-            processChannel(src: r, delay: &upDelayR, delayIdx: &upDelayIdxR,
-                           dst: workBuf, frameCount: frameCount,
-                           channelOffset: frameCount * Self.factor)
+            processChannelUpsample(src: r, delay: &upDelayR, delayIdx: &upDelayIdxR,
+                                  dst: workBuf, frameCount: frameCount,
+                                  channelOffset: frameCount * Self.factor)
         }
     }
 
     func downsample(ablL: UnsafeMutablePointer<Float>,
                     ablR: UnsafeMutablePointer<Float>?,
                     frameCount: Int) {
-        // Apply polyphase FIR filtering during decimation for anti-aliasing
         processChannelDownsample(src: workBuf, delay: &downDelayL, delayIdx: &downDelayIdxL,
-                                 dst: ablL, frameCount: frameCount)
+                                  dst: ablL, frameCount: frameCount)
         if let r = ablR {
             let srcR = workBuf.advanced(by: frameCount * Self.factor)
             processChannelDownsample(src: srcR, delay: &downDelayR, delayIdx: &downDelayIdxR,
-                                     dst: r, frameCount: frameCount)
+                                    dst: r, frameCount: frameCount)
         }
     }
 
@@ -108,7 +120,7 @@ final class OversamplingProcessor {
     }
 
     @inline(__always)
-    private func processChannel(
+    private func processChannelUpsample(
         src: UnsafePointer<Float>,
         delay: inout [Float],
         delayIdx: inout Int,
@@ -122,7 +134,7 @@ final class OversamplingProcessor {
             delay[delayIdx] = src[i]
             for p in 0..<Self.factor {
                 var acc: Float = 0
-                let phaseCoeffs = coeffs[p]
+                let phaseCoeffs = upCoeffs[p]
                 for k in 0..<T {
                     acc += phaseCoeffs[k] * delay[(delayIdx - k + T) % T]
                 }
@@ -153,7 +165,7 @@ final class OversamplingProcessor {
             // For output sample i, use phase (i mod factor) coefficients
             let phase = i % Self.factor
             var acc: Float = 0
-            let phaseCoeffs = coeffs[phase]
+            let phaseCoeffs = downCoeffs[phase]
             for k in 0..<T {
                 acc += phaseCoeffs[k] * delay[(delayIdx - k + T) % T]
             }
