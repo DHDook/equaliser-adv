@@ -357,8 +357,8 @@ final class RenderCallbackContext: @unchecked Sendable {
         // The pole is computed once here and stored; no allocation occurs in the render loop.
         self.dcBlockers = (0 ..< Int(channelCount)).map { _ in DCBlocker(sampleRate: sampleRate) }
 
-        // Create oversampling processor for 4x upsampling before EQ
-        self.oversamplingProcessor = OversamplingProcessor(channelCount: Int(channelCount), sampleRate: sampleRate)
+        // Oversampling processor is created lazily when first enabled to avoid initialization issues
+        self.oversamplingProcessor = nil
 
         // Create EQ chains (one per layer per channel)
         let layerCount = EQLayerConstants.maxLayerCount

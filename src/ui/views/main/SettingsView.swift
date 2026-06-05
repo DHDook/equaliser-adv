@@ -142,6 +142,14 @@ struct DisplaySettingsTab: View {
                 Text("Routing Status")
             }
 
+            if store.manualModeEnabled {
+                Section {
+                    DevicePickerView(layout: .vertical)
+                } header: {
+                    Text("Device Selection")
+                }
+            }
+
             Section {
                 VStack(alignment: .leading, spacing: 12) {
                     HStack {
