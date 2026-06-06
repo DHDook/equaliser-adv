@@ -96,6 +96,10 @@ struct EQWindowView: View {
                 }
             }
 
+            DSPGraphView(metersEnabled: metersEnabledUI)
+                .padding(.top, 4)
+                .padding(.horizontal, 4)
+
             // Dual 31-band real-time spectrum analyser
             RTADashboardView(analyzer: store.rtaAnalyzer, metersEnabled: metersEnabledUI)
                 .padding(.top, -8)
