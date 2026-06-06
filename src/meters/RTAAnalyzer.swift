@@ -367,7 +367,7 @@ final class AdvancedDualSpectrumAnalyzer: ObservableObject, @unchecked Sendable 
             } else if bands[i].peakHoldFrames > 0 {
                 bands[i].peakHoldFrames -= 1
             } else {
-                bands[i].peakValue = max(minDb, bands[i].peakValue * peakDecay)
+                bands[i].peakValue = max(minDb, bands[i].peakValue * peakDecay + minDb * (1 - peakDecay))
             }
         }
     }
