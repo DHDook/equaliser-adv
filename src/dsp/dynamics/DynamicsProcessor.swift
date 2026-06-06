@@ -569,6 +569,10 @@ final class DynamicsProcessor: @unchecked Sendable {
         _ditherModeBits.store(Int32(mode.rawValue), ordering: .relaxed)
     }
     func setSubBassPhaseAlignmentEnabled(_ v: Bool) {
+        // Clear filter state whenever the feature is turned on so that any NaN/Inf
+        // residue from a previous divergence (before the coefficient-sign fix) cannot
+        // survive a disable→re-enable cycle and immediately blow up the pipeline again.
+        if v { for i in 0..<subBassPhaseState.count { subBassPhaseState[i] = 0 } }
         _subBassPhaseEnabled.store(v ? 1 : 0, ordering: .relaxed)
     }
     func setSubBassAlignmentFrequencyHz(_ hz: Float) {
@@ -732,7 +736,14 @@ final class DynamicsProcessor: @unchecked Sendable {
         if dcOn { processDCOffset(abl: abl, numCh: numCh, count: count) }
 
         // Sub-bass phase alignment.
-        if subPhaseOn { processSubBassPhaseAlignment(abl: abl, numCh: numCh, count: count) }
+        if subPhaseOn {
+            processSubBassPhaseAlignment(abl: abl, numCh: numCh, count: count)
+            // Defensive: if the allpass ever diverges (e.g. invalid sample rate at init),
+            // zero NaN/Inf samples before they can propagate into the widener's M/S
+            // accumulators or the RTA FFT — either of which will peg meters to full-scale
+            // and kill the HAL I/O proc with an overload error.
+            DSPSafety.sanitizeAudioBufferList(abl.unsafeMutablePointer)
+        }
 
         // Stage 0a: Stereo Widener.
         if wideOn { stereoWidener.process(abl: abl, numCh: numCh, count: count, sampleRate: storedSampleRate) }
@@ -1119,8 +1130,14 @@ final class DynamicsProcessor: @unchecked Sendable {
         let b0  = Float(coeffs.b0)
         let b1  = Float(coeffs.b1)
         let b2  = Float(coeffs.b2)
-        let na1 = Float(coeffs.a1)
-        let na2 = Float(coeffs.a2)
+        // BiquadMath.normalise() stores raw a1/a0 and a2/a0 (not pre-negated).
+        // processBiquad() expects na1 = −a1/a0 and na2 = −a2/a0, matching the
+        // sign convention used by all the inline coeff helpers (lpfCoeffs, hpfCoeffs, etc.).
+        // Without the negation the allpass poles fall outside the unit circle, causing
+        // the filter state to diverge to ±Inf within a single render callback — which
+        // produces the audible ping and kills the audio graph.
+        let na1 = -Float(coeffs.a1)
+        let na2 = -Float(coeffs.a2)
         for ch in 0..<numCh {
             guard let buf = abl[ch].mData?.assumingMemoryBound(to: Float.self) else { continue }
             var w1 = subBassPhaseState[ch * 2]
