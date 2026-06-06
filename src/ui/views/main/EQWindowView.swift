@@ -10,6 +10,7 @@ struct EQWindowView: View {
     @State private var metersEnabledUI = true
     @State private var showDriverSheet = true
     @State private var showSaveSheet = false
+    @State private var eqGraphMaxX: CGFloat = 0
 
     /// Whether the driver installation overlay should be shown.
     private var needsDriverInstallation: Bool {
@@ -59,8 +60,6 @@ struct EQWindowView: View {
                             set: { store.updateChannelBalance($0) }
                         )
                     )
-
-                    EQCurveView(metersEnabled: metersEnabledUI)
                 }
 
                 DynamicsInlineView()
@@ -97,6 +96,26 @@ struct EQWindowView: View {
                     .frame(minWidth: 376)
                 }
             }
+            .background(
+                GeometryReader { geo in
+                    Color.clear
+                        .preference(
+                            key: BalanceSliderWidthKey.self,
+                            value: geo.frame(in: .named("mainVStack")).maxX
+                        )
+                }
+            )
+            .coordinateSpace(name: "mainVStack")
+            .onPreferenceChange(BalanceSliderWidthKey.self) { eqGraphMaxX = $0 }
+
+            HStack(spacing: 0) {
+                EQCurveView(metersEnabled: metersEnabledUI)
+                Spacer()
+            }
+            .frame(width: eqGraphMaxX > 0 ? eqGraphMaxX : nil, alignment: .leading)
+            .padding(.leading, 8)
+            .padding(.trailing, 4)
+            .padding(.top, 4)
 
             // Dual 31-band real-time spectrum analyser
             RTADashboardView(analyzer: store.rtaAnalyzer, metersEnabled: metersEnabledUI)
@@ -346,6 +365,15 @@ struct SystemEQToggleView: View {
             get: { !store.isBypassed },
             set: { store.isBypassed = !$0 }
         )
+    }
+}
+
+// MARK: - Preference Keys
+
+private struct BalanceSliderWidthKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
     }
 }
 
