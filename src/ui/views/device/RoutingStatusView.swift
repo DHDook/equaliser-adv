@@ -46,7 +46,7 @@ struct RoutingStatusView: View {
     }
 }
 
-#Preview("Idle") {
-    RoutingStatusView(viewModel: RoutingViewModel(store: EqualiserStore()))
-        .padding()
-}
+// #Preview("Idle") {
+//     RoutingStatusView(viewModel: RoutingViewModel(store: EqualiserStore()))
+//         .padding()
+// }

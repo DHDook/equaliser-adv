@@ -131,6 +131,6 @@ struct DriverInstallationView: View {
     }
 }
 
-#Preview("Not Installed") {
-    DriverInstallationView()
-}
+// #Preview("Not Installed") {
+//     DriverInstallationView()
+// }

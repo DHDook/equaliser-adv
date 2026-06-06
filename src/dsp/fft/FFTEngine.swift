@@ -103,11 +103,6 @@ final class FFTEngine {
 
         vDSP_fft_zrip(fftSetup, &splitComplex, 1, log2n, FFTDirection(kFFTDirection_Forward))
 
-        // Scale by 2 for real FFT
-        var scale: Float = 0.5
-        vDSP_vsmul(splitComplex.realp, 1, &scale, splitComplex.realp, 1, vDSP_Length(halfSize))
-        vDSP_vsmul(splitComplex.imagp, 1, &scale, splitComplex.imagp, 1, vDSP_Length(halfSize))
-
         return (realInput, imagInput)
     }
 
@@ -151,10 +146,9 @@ final class FFTEngine {
         // Perform inverse FFT
         vDSP_fft_zrip(fftSetup, &splitComplex, 1, log2n, FFTDirection(kFFTDirection_Inverse))
 
-        // Scale by 2 for real FFT
-        var scale: Float = 2.0
-        vDSP_vsmul(splitComplex.realp, 1, &scale, splitComplex.realp, 1, vDSP_Length(halfSize))
-        vDSP_vsmul(splitComplex.imagp, 1, &scale, splitComplex.imagp, 1, vDSP_Length(halfSize))
+        // Normalize: vDSP_fft_zrip inverse scales by N; divide to recover original amplitude.
+        var scale: Float = 1.0 / Float(fftSize)
+        vDSP_vsmul(splitComplex.realp, 1, &scale, splitComplex.realp, 1, vDSP_Length(fftSize))
 
         // Return real part
         return Array(realOutput.prefix(fftSize))

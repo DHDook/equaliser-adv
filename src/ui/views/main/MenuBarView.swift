@@ -119,7 +119,7 @@ struct MenuBarContentView: View {
     }
 }
 
-#Preview("Menu Bar") {
-    MenuBarContentView()
-        .environmentObject(EqualiserStore())
-}
+// #Preview("Menu Bar") {
+//     MenuBarContentView()
+//         .environmentObject(EqualiserStore())
+// }

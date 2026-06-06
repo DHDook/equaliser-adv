@@ -638,12 +638,25 @@ struct RoomCalibrationTab: View {
                         Button(isMeasuring ? "Stop Measurement" : "Start Sweep") {
                             if isMeasuring {
                                 isMeasuring = false
+                                store.stopSweepMeasurement(seatIndex: calibPosition)
                                 measuredSeats.insert(calibPosition)
                                 let pos = acousticMode == 1 ? positionLabels[calibPosition] : "primary"
                                 statusMessage = "Measurement complete for \(pos) position."
                             } else {
-                                isMeasuring = true
-                                statusMessage = "Sweep in progress — keep the room quiet…"
+                                Task {
+                                    let granted = await store.switchToManualMode()
+                                    if granted {
+                                        await MainActor.run {
+                                            isMeasuring = true
+                                            statusMessage = "Sweep in progress — keep the room quiet…"
+                                            store.startSweepMeasurement()
+                                        }
+                                    } else {
+                                        await MainActor.run {
+                                            statusMessage = "Microphone permission required for room measurement."
+                                        }
+                                    }
+                                }
                             }
                         }
                         .buttonStyle(.borderedProminent)
@@ -721,7 +734,13 @@ struct RoomCalibrationTab: View {
         }
         .formStyle(.grouped)
         .padding()
-        .onAppear { availableMics = Self.listInputDevices() }
+        .onAppear {
+            availableMics = Self.listInputDevices()
+            // Wire sweep completion callback
+            store.routingCoordinator.pipelineManager.renderPipeline?.onSweepPlaybackComplete = {
+                isMeasuring = false
+            }
+        }
     }
 
     // MARK: - Input Device Enumeration
@@ -881,8 +900,8 @@ final class UserGuideSettingsViewController: NSViewController {
     }
 }
 
-#Preview("Settings") {
-    SettingsView()
-        .environmentObject(EqualiserStore())
-}
+// #Preview("Settings") {
+//     SettingsView()
+//         .environmentObject(EqualiserStore())
+// }
 

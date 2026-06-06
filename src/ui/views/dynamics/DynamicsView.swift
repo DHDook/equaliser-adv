@@ -2315,13 +2315,13 @@ struct InlineBitRateView: View {
 
 // MARK: - Preview
 
-#Preview("Dynamics Panel") {
-    DynamicsView()
-        .environmentObject(EqualiserStore())
-}
+// #Preview("Dynamics Panel") {
+//     DynamicsView()
+//         .environmentObject(EqualiserStore())
+// }
 
-#Preview("Dynamics Inline") {
-    DynamicsInlineView()
-        .environmentObject(EqualiserStore())
-        .padding()
-}
+// #Preview("Dynamics Inline") {
+//     DynamicsInlineView()
+//         .environmentObject(EqualiserStore())
+//         .padding()
+// }

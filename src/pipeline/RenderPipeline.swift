@@ -1,6 +1,7 @@
 import AudioToolbox
 import CoreAudio
 import os.log
+import Atomics
 
 struct LevelMeterSnapshot {
     let inputDB: [Float]
@@ -86,6 +87,33 @@ final class RenderPipeline {
     /// Ring buffer capacity in samples per channel.
     /// See AudioConstants.ringBufferCapacity for rationale.
     private let ringBufferCapacity: Int = AudioConstants.ringBufferCapacity
+
+    // MARK: - Sweep Playback
+
+    /// Sweep buffer for room correction measurement.
+    private nonisolated(unsafe) var sweepBuffer: [Float] = []
+    private nonisolated(unsafe) var sweepReadPos: Int = 0
+    private let _sweepActive = ManagedAtomic<Int32>(0)
+
+    /// Completion callback for sweep playback.
+    var onSweepPlaybackComplete: (() -> Void)?
+
+    func startSweepPlayback(signal: [Float]) {
+        callbackContext?.startSweepPlayback(signal: signal)
+        callbackContext?.setSweepCompletionCallback { [weak self] in
+            DispatchQueue.main.async {
+                self?.onSweepPlaybackComplete?()
+            }
+        }
+    }
+
+    func stopSweepPlayback() {
+        callbackContext?.stopSweepPlayback()
+    }
+
+    func setSweepAnalyser(_ analyser: SweepAnalyser?) {
+        callbackContext?.setSweepAnalyser(analyser)
+    }
 
     // MARK: - Static Logging (for audio thread)
 
@@ -915,6 +943,18 @@ final class RenderPipeline {
         context.writeRTAInput(frameCount: Int(framesRead))
         context.writeGoniometer(frameCount: Int(framesRead))
 
+        // 0.5. Route microphone input to SweepAnalyser during recording
+        if context.isSweepActive,
+           let analyser = context.sweepAnalyser {
+            let inputBuffers = context.getInputBufferPointers
+            for ch in 0..<Int(context.channelCount) {
+                guard ch < inputBuffers.count else { continue }
+                let buf = inputBuffers[ch]
+                let samples = Array(UnsafeBufferPointer(start: buf, count: Int(framesRead)))
+                analyser.processSamples(samples, channel: ch)
+            }
+        }
+
         // If we got no samples, zero-fill output
         if framesRead == 0 {
             // DEBUG: To troubleshoot idle state, uncomment:
@@ -950,6 +990,28 @@ final class RenderPipeline {
                 } else {
                     memset(destData, 0, framesToCopy * MemoryLayout<Float>.size)
                 }
+            }
+        }
+
+        // 3.5. Mix in sweep signal if active (after copy to ioData where we have mutable access)
+        if context.isSweepActive {
+            let sweepBuf = context.sweepBuffer
+            let sweepPos = context.sweepReadPos
+            let remaining = sweepBuf.count - sweepPos
+            let toCopy = min(Int(frameCount), remaining)
+
+            for (index, buffer) in abl.enumerated() {
+                if let destData = buffer.mData?.assumingMemoryBound(to: Float.self) {
+                    for i in 0..<toCopy {
+                        destData[i] = destData[i] + sweepBuf[sweepPos + i]
+                    }
+                }
+            }
+
+            context.sweepReadPos = sweepPos + toCopy
+            if context.sweepReadPos >= sweepBuf.count {
+                context.stopSweepPlayback()
+                context.triggerSweepCompletion()
             }
         }
 

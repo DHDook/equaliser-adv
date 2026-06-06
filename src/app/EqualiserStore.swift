@@ -206,6 +206,7 @@ final class EqualiserStore: ObservableObject {
     let updateService = UpdateCheckService()
     let rtaAnalyzer        = AdvancedDualSpectrumAnalyzer()
     let goniometerEngine   = GoniometerBufferEngine()
+    private var sweepAnalyser: SweepAnalyser?
 
     // MARK: - Coordinators
     
@@ -219,6 +220,13 @@ final class EqualiserStore: ObservableObject {
     let persistence: AppStatePersistence
     private let logger = Logger(subsystem: "net.knage.equaliser", category: "EqualiserStore")
     private var cancellables = Set<AnyCancellable>()
+
+    private func makeSweepAnalyser() -> SweepAnalyser {
+        let sr = routingCoordinator.pipelineManager.renderPipeline?.sampleRate ?? 48_000
+        return SweepAnalyser(sampleRate: sr, duration: 10.0,
+                             startFrequency: 20.0, endFrequency: 20_000.0,
+                             channelCount: 2)
+    }
     
     // MARK: - Snapshot
 
@@ -624,7 +632,60 @@ final class EqualiserStore: ObservableObject {
     func switchToAutomaticMode() {
         routingCoordinator.switchToAutomaticMode()
     }
-    
+
+    // MARK: - Room Correction Sweep Measurement
+
+    /// Called by the UI "Start Sweep" button.
+    func startSweepMeasurement() {
+        sweepAnalyser = makeSweepAnalyser()
+        sweepAnalyser?.startRecording()
+        routingCoordinator.pipelineManager.renderPipeline?.setSweepAnalyser(sweepAnalyser)
+        routingCoordinator.pipelineManager.renderPipeline?.startSweepPlayback(
+            signal: sweepAnalyser!.sweepSignal
+        )
+    }
+
+    /// Called by the UI "Stop Measurement" button (or automatically when sweep ends).
+    func stopSweepMeasurement(seatIndex: Int) {
+        routingCoordinator.pipelineManager.renderPipeline?.stopSweepPlayback()
+        sweepAnalyser?.stopRecording()
+        guard let analyser = sweepAnalyser else { return }
+        let curve = analyser.computeFrequencyResponse(channel: 0)
+        if seatIndex == 0 || pendingMeasuredCurve == nil {
+            pendingMeasuredCurve = curve
+        } else {
+            // Average with existing measurement (logarithmic average in dB).
+            pendingMeasuredCurve = averageFrequencyCurves(pendingMeasuredCurve!, curve)
+        }
+    }
+
+    private func averageFrequencyCurves(
+        _ a: [(frequency: Double, gainDB: Double)],
+        _ b: [(frequency: Double, gainDB: Double)]
+    ) -> [(frequency: Double, gainDB: Double)] {
+        // Use curve A's frequency grid; interpolate B onto it.
+        return a.map { pointA in
+            let gainB = interpolateLog(curve: b, atHz: pointA.frequency)
+            return (pointA.frequency, (pointA.gainDB + gainB) / 2.0)
+        }
+    }
+
+    private func interpolateLog(
+        curve: [(frequency: Double, gainDB: Double)], atHz f: Double
+    ) -> Double {
+        guard curve.count > 1 else { return curve.first?.gainDB ?? 0 }
+        if f <= curve.first!.frequency { return curve.first!.gainDB }
+        if f >= curve.last!.frequency  { return curve.last!.gainDB }
+        for i in 0..<(curve.count - 1) {
+            let lo = curve[i], hi = curve[i + 1]
+            if f >= lo.frequency && f <= hi.frequency {
+                let t = log(f / lo.frequency) / log(hi.frequency / lo.frequency)
+                return lo.gainDB + t * (hi.gainDB - lo.gainDB)
+            }
+        }
+        return 0
+    }
+
     // MARK: - EQ Control
     
     /// Updates the gain for a specific EQ band.

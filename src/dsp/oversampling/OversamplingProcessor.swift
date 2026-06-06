@@ -154,24 +154,23 @@ final class OversamplingProcessor {
         frameCount: Int
     ) {
         let T = Self.tapsPerPhase
+        let F = Self.factor
         for i in 0..<frameCount {
-            // Load 4 samples from upsampled buffer into delay line
-            for p in 0..<Self.factor {
-                let srcIdx = i * Self.factor + p
-                delay[(delayIdx + p) % T] = src[srcIdx]
+            // Load F upsampled samples into the circular delay line.
+            for p in 0..<F {
+                delay[(delayIdx + p) % T] = src[i * F + p]
             }
-
-            // Apply polyphase FIR filter using appropriate phase for decimation
-            // For output sample i, use phase (i mod factor) coefficients
-            let phase = i % Self.factor
+            // Sum all F polyphase subfilters.
             var acc: Float = 0
-            let phaseCoeffs = downCoeffs[phase]
-            for k in 0..<T {
-                acc += phaseCoeffs[k] * delay[(delayIdx - k + T) % T]
+            for p in 0..<F {
+                let phaseCoeffs = downCoeffs[p]
+                let base = delayIdx + p
+                for k in 0..<T {
+                    acc += phaseCoeffs[k] * delay[(base - k + T) % T]
+                }
             }
             dst[i] = acc
-
-            delayIdx = (delayIdx + Self.factor) % T
+            delayIdx = (delayIdx + F) % T
         }
     }
 

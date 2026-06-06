@@ -3,6 +3,7 @@ import Atomics
 import CoreAudio
 import Darwin
 import os.log
+import Foundation
 
 /// Context passed to both the input and output HAL render callbacks.
 /// Contains ring buffers for inter-callback communication and all state
@@ -120,6 +121,30 @@ final class RenderCallbackContext: @unchecked Sendable {
 
     private nonisolated(unsafe) var linearPhaseEngine: LinearPhaseEQEngine
     private let _linearPhaseEnabled: ManagedAtomic<Int32>
+
+    // MARK: - Sweep Playback
+
+    /// Sweep buffer for room correction measurement.
+    private nonisolated(unsafe) var _sweepBuffer: [Float] = []
+    private nonisolated(unsafe) var _sweepReadPos: Int = 0
+    private let _sweepActive = ManagedAtomic<Int32>(0)
+
+    var sweepBuffer: [Float] {
+        get { _sweepBuffer }
+        set { _sweepBuffer = newValue }
+    }
+
+    var sweepReadPos: Int {
+        get { _sweepReadPos }
+        set { _sweepReadPos = newValue }
+    }
+
+    /// Sweep analyser reference for capturing microphone input during sweep.
+    private nonisolated(unsafe) var sweepAnalyserRef: SweepAnalyser?
+
+    var sweepAnalyser: SweepAnalyser? {
+        sweepAnalyserRef
+    }
 
     private let targetVolumeGainAtomic: ManagedAtomic<Int32> = ManagedAtomic(0) // Float 0.0 — silent until VolumeManager sets correct value
 
@@ -259,6 +284,7 @@ final class RenderCallbackContext: @unchecked Sendable {
     /// Sets oversampling enabled state (called from main thread).
     func setOversamplingEnabled(_ enabled: Bool) {
         _oversamplingEnabled.store(enabled ? 1 : 0, ordering: .relaxed)
+        dynamicsProcessor.setOversamplingEnabled(enabled)
         if !enabled { oversampler.reset() }
     }
 
@@ -277,6 +303,37 @@ final class RenderCallbackContext: @unchecked Sendable {
         linearPhaseEngine.updateIR(leftBands: leftBands,
                                     rightBands: rightBands,
                                     sampleRate: sampleRate)
+    }
+
+    // MARK: - Sweep Playback API
+
+    func setSweepAnalyser(_ analyser: SweepAnalyser?) {
+        sweepAnalyserRef = analyser
+    }
+
+    func startSweepPlayback(signal: [Float]) {
+        _sweepBuffer = signal
+        _sweepReadPos = 0
+        _sweepActive.store(1, ordering: .relaxed)
+    }
+
+    func stopSweepPlayback() {
+        _sweepActive.store(0, ordering: .relaxed)
+    }
+
+    var isSweepActive: Bool {
+        _sweepActive.load(ordering: .relaxed) != 0
+    }
+
+    /// Completion callback for sweep playback (called from audio thread).
+    private nonisolated(unsafe) var sweepCompletionCallback: (() -> Void)?
+
+    func setSweepCompletionCallback(_ callback: @escaping () -> Void) {
+        sweepCompletionCallback = callback
+    }
+
+    func triggerSweepCompletion() {
+        sweepCompletionCallback?()
     }
 
     // MARK: - Gain Read API (Audio Thread or Diagnostics)
@@ -349,6 +406,10 @@ final class RenderCallbackContext: @unchecked Sendable {
 
     /// Pre-computed input buffer pointers (immutable, avoids array allocation in provideFrames).
     private let inputBufferPointers: [UnsafePointer<Float>]
+
+    var getInputBufferPointers: [UnsafePointer<Float>] {
+        inputBufferPointers
+    }
 
     /// Pre-computed input buffer mutable pointers (immutable, avoids array allocation in provideFrames).
     private let inputBufferMutablePointers: [UnsafeMutablePointer<Float>]

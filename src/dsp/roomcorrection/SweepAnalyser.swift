@@ -17,7 +17,7 @@ final class SweepAnalyser {
     // MARK: - State
 
     /// Sweep signal buffer.
-    private var sweepSignal: [Float]
+    var sweepSignal: [Float]
 
     /// Inverse sweep for deconvolution.
     private var inverseSweep: [Float]
@@ -124,8 +124,8 @@ final class SweepAnalyser {
 
     /// Computes the frequency response from the impulse response.
     /// - Parameter channel: Channel to analyse
-    /// - Returns: Frequency response data (frequency in Hz, magnitude in dB)
-    func computeFrequencyResponse(channel: Int = 0) -> [(frequency: Double, magnitude: Double)] {
+    /// - Returns: Frequency response data (frequency in Hz, gain in dB)
+    func computeFrequencyResponse(channel: Int = 0) -> [(frequency: Double, gainDB: Double)] {
         let impulseResponse = computeImpulseResponse(channel: channel)
 
         // FFT to get frequency response
@@ -141,7 +141,7 @@ final class SweepAnalyser {
         let fftResult = fftEngine.forwardFFT(input: paddedIR)
 
         // Compute magnitude response
-        var response: [(frequency: Double, magnitude: Double)] = []
+        var response: [(frequency: Double, gainDB: Double)] = []
         let halfSize = fftSize / 2
 
         for i in 0..<halfSize {

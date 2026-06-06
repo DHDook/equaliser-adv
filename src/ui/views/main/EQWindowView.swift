@@ -347,7 +347,7 @@ struct SystemEQToggleView: View {
     }
 }
 
-#Preview("EQ Window") {
-    EQWindowView()
-        .environmentObject(EqualiserStore())
-}
+// #Preview("EQ Window") {
+//     EQWindowView()
+//         .environmentObject(EqualiserStore())
+// }
