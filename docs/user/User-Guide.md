@@ -479,7 +479,42 @@ This ensures phase-coherent time alignment between channels at the crossover fre
 
 ### Pause Gate
 
-Smoothly silences the output during extended near-silence periods, preventing low-level amplifier hiss and click artefacts when audio resumes. Useful when listening through a vintage amplifier that produces audible hiss. The gate opens when the RMS level exceeds −60 dBFS and closes after 500 ms of continuous sub-threshold signal.
+Smoothly silences the output during extended near-silence periods, preventing low-level amplifier hiss and click artefacts when audio resumes. Useful when listening through a vintage amplifier that produces audible hiss.
+
+**Control Order:**
+1. Enable Pause Gate
+2. Threshold
+3. Hold Time
+4. Release (Fade-Out)
+5. Attack (Fade-In)
+
+**Threshold**
+- Range: −120 dBFS to −40 dBFS
+- Default: −90 dBFS
+- Description: Signal level below which the Pause Gate begins preparing to close.
+
+**Hold Time**
+- Range: 0 ms to 5000 ms
+- Default: 250 ms
+- Description: How long the Pause Gate remains open after signal falls below threshold. Prevents unnecessary gate activity during short interruptions.
+
+**Release (Fade-Out)**
+- Range: 0 ms to 5000 ms
+- Default: 500 ms
+- Description: Controls how quickly audio fades out when playback stops or the Pause Gate closes. A shorter Release creates a rapid mute; a longer Release creates a smoother fade to silence.
+
+**Attack (Fade-In)**
+- Range: 0 ms to 500 ms
+- Default: 25 ms
+- Description: Controls how quickly audio fades back in when playback resumes or the Pause Gate opens. A shorter Attack restores audio almost immediately; a longer Attack creates a smoother fade-in and can help prevent clicks or abrupt transitions. This control directly affects perceived resume responsiveness.
+
+**Recommended Defaults:**
+- Threshold: −90 dBFS
+- Hold Time: 250 ms
+- Release (Fade-Out): 500 ms
+- Attack (Fade-In): 25 ms
+
+These settings provide fast resume behavior while maintaining smooth transitions during pause and unpause operations.
 
 ### Sync Buffer to Latency Mode
 

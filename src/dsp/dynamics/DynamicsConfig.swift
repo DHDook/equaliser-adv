@@ -395,6 +395,10 @@ struct AdvancedProcessingConfig: Codable, Equatable, Sendable {
 
     // ── G. Dynamic Pause Gate ─────────────────────────────────────────
     var pauseGateEnabled: Bool = false
+    var pauseGateThresholdDB: Float = -90.0
+    var pauseGateHoldTimeMs: Float = 250.0
+    var pauseGateReleaseMs: Float = 500.0
+    var pauseGateAttackMs: Float = 25.0
 
     // ── G. Stereo Mode Fold-Down ──────────────────────────────────────
     var stereoMode: StereoModeSelection = .stereo
@@ -495,7 +499,7 @@ struct AdvancedProcessingConfig: Codable, Equatable, Sendable {
         case dcOffsetFilterEnabled
         case deltaSoloActive
         case latencyMode
-        case pauseGateEnabled
+        case pauseGateEnabled, pauseGateThresholdDB, pauseGateHoldTimeMs, pauseGateReleaseMs, pauseGateAttackMs
         case stereoMode
         case hardwareSyncBufferEnabled
         case ditherMode
@@ -533,6 +537,10 @@ struct AdvancedProcessingConfig: Codable, Equatable, Sendable {
         deltaSoloActive: Bool = false,
         latencyMode: LatencyMode = .music,
         pauseGateEnabled: Bool = false,
+        pauseGateThresholdDB: Float = -90.0,
+        pauseGateHoldTimeMs: Float = 250.0,
+        pauseGateReleaseMs: Float = 500.0,
+        pauseGateAttackMs: Float = 25.0,
         stereoMode: StereoModeSelection = .stereo,
         hardwareSyncBufferEnabled: Bool = false,
         ditherMode: DitherMode = .bypass,
@@ -571,6 +579,10 @@ struct AdvancedProcessingConfig: Codable, Equatable, Sendable {
         self.deltaSoloActive                  = deltaSoloActive
         self.latencyMode                      = latencyMode
         self.pauseGateEnabled                 = pauseGateEnabled
+        self.pauseGateThresholdDB             = pauseGateThresholdDB
+        self.pauseGateHoldTimeMs              = pauseGateHoldTimeMs
+        self.pauseGateReleaseMs               = pauseGateReleaseMs
+        self.pauseGateAttackMs                = pauseGateAttackMs
         self.stereoMode                       = stereoMode
         self.hardwareSyncBufferEnabled        = hardwareSyncBufferEnabled
         self.ditherMode                       = ditherMode
@@ -611,6 +623,10 @@ struct AdvancedProcessingConfig: Codable, Equatable, Sendable {
         deltaSoloActive                  = try c.decodeIfPresent(Bool.self,                  forKey: .deltaSoloActive)                  ?? false
         latencyMode                      = try c.decodeIfPresent(LatencyMode.self,           forKey: .latencyMode)                      ?? .music
         pauseGateEnabled                 = try c.decodeIfPresent(Bool.self,                  forKey: .pauseGateEnabled)                 ?? false
+        pauseGateThresholdDB             = try c.decodeIfPresent(Float.self,                 forKey: .pauseGateThresholdDB)             ?? -90.0
+        pauseGateHoldTimeMs              = try c.decodeIfPresent(Float.self,                 forKey: .pauseGateHoldTimeMs)              ?? 250.0
+        pauseGateReleaseMs               = try c.decodeIfPresent(Float.self,                 forKey: .pauseGateReleaseMs)               ?? 500.0
+        pauseGateAttackMs                = try c.decodeIfPresent(Float.self,                 forKey: .pauseGateAttackMs)                ?? 25.0
         stereoMode                       = try c.decodeIfPresent(StereoModeSelection.self,   forKey: .stereoMode)                       ?? .stereo
         hardwareSyncBufferEnabled        = try c.decodeIfPresent(Bool.self,                  forKey: .hardwareSyncBufferEnabled)        ?? false
         ditherMode                       = try c.decodeIfPresent(DitherMode.self,            forKey: .ditherMode)                       ?? .bypass
@@ -652,6 +668,10 @@ struct AdvancedProcessingConfig: Codable, Equatable, Sendable {
         try c.encode(deltaSoloActive,                    forKey: .deltaSoloActive)
         try c.encode(latencyMode,                        forKey: .latencyMode)
         try c.encode(pauseGateEnabled,                   forKey: .pauseGateEnabled)
+        try c.encode(pauseGateThresholdDB,               forKey: .pauseGateThresholdDB)
+        try c.encode(pauseGateHoldTimeMs,                forKey: .pauseGateHoldTimeMs)
+        try c.encode(pauseGateReleaseMs,                 forKey: .pauseGateReleaseMs)
+        try c.encode(pauseGateAttackMs,                  forKey: .pauseGateAttackMs)
         try c.encode(stereoMode,                         forKey: .stereoMode)
         try c.encode(hardwareSyncBufferEnabled,          forKey: .hardwareSyncBufferEnabled)
         try c.encode(ditherMode,                         forKey: .ditherMode)

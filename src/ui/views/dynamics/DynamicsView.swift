@@ -48,6 +48,7 @@ struct DynamicsView: View {
                     // ── Right column ─────────────────────────────────────────
                     Form {
                         loudnessMatchSection
+                        pauseGateSection
                         clipperSection
                         limiterSection
                         stereoMatrixSection
@@ -502,6 +503,55 @@ struct DynamicsView: View {
                 .opacity(!store.dynamicsConfig.loudnessMatch.isEnabled ? 0.4 : 1.0)
         } header: {
             Text("LUFS Loudness Match")
+        }
+    }
+
+    // MARK: - Pause Gate Section
+
+    private var pauseGateSection: some View {
+        Section {
+            Toggle("Enabled", isOn: pauseGateBinding)
+                .toggleStyle(.switch)
+                .controlSize(.regular)
+                .font(.system(size: 13))
+
+            DynamicsSliderRow(
+                label: "Threshold",
+                value: pauseGateThresholdBinding,
+                range: -120.0...(-40.0),
+                step: 1.0,
+                formatValue: { String(format: "%.0f dB", $0) },
+                isDisabled: !store.dynamicsConfig.advanced.pauseGateEnabled
+            )
+
+            DynamicsSliderRow(
+                label: "Hold Time",
+                value: pauseGateHoldTimeBinding,
+                range: 0.0...5000.0,
+                step: 10.0,
+                formatValue: { String(format: "%.0f ms", $0) },
+                isDisabled: !store.dynamicsConfig.advanced.pauseGateEnabled
+            )
+
+            DynamicsSliderRow(
+                label: "Release (Fade-Out)",
+                value: pauseGateReleaseBinding,
+                range: 0.0...5000.0,
+                step: 10.0,
+                formatValue: { String(format: "%.0f ms", $0) },
+                isDisabled: !store.dynamicsConfig.advanced.pauseGateEnabled
+            )
+
+            DynamicsSliderRow(
+                label: "Attack (Fade-In)",
+                value: pauseGateAttackBinding,
+                range: 0.0...500.0,
+                step: 1.0,
+                formatValue: { String(format: "%.0f ms", $0) },
+                isDisabled: !store.dynamicsConfig.advanced.pauseGateEnabled
+            )
+        } header: {
+            Text("Pause Gate")
         }
     }
 
@@ -1238,6 +1288,30 @@ struct DynamicsView: View {
         Binding(
             get: { store.dynamicsConfig.advanced.pauseGateEnabled },
             set: { val in var adv = store.dynamicsConfig.advanced; adv.pauseGateEnabled = val; store.updateAdvancedProcessing(adv) }
+        )
+    }
+    private var pauseGateThresholdBinding: Binding<Double> {
+        Binding(
+            get: { Double(store.dynamicsConfig.advanced.pauseGateThresholdDB) },
+            set: { val in var adv = store.dynamicsConfig.advanced; adv.pauseGateThresholdDB = Float(val); store.updateAdvancedProcessing(adv) }
+        )
+    }
+    private var pauseGateHoldTimeBinding: Binding<Double> {
+        Binding(
+            get: { Double(store.dynamicsConfig.advanced.pauseGateHoldTimeMs) },
+            set: { val in var adv = store.dynamicsConfig.advanced; adv.pauseGateHoldTimeMs = Float(val); store.updateAdvancedProcessing(adv) }
+        )
+    }
+    private var pauseGateReleaseBinding: Binding<Double> {
+        Binding(
+            get: { Double(store.dynamicsConfig.advanced.pauseGateReleaseMs) },
+            set: { val in var adv = store.dynamicsConfig.advanced; adv.pauseGateReleaseMs = Float(val); store.updateAdvancedProcessing(adv) }
+        )
+    }
+    private var pauseGateAttackBinding: Binding<Double> {
+        Binding(
+            get: { Double(store.dynamicsConfig.advanced.pauseGateAttackMs) },
+            set: { val in var adv = store.dynamicsConfig.advanced; adv.pauseGateAttackMs = Float(val); store.updateAdvancedProcessing(adv) }
         )
     }
     private var oversamplingBinding: Binding<Bool> {
