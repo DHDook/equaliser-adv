@@ -576,6 +576,14 @@ final class RenderPipeline {
         callbackContext?.dynamicsProcessor.gainReductionDB ?? 0.0
     }
 
+    /// Current auto-headroom rider gain in dB (≤ 0). Thread-safe atomic read.
+    var liveAutoHeadroomGainDB: Float {
+        // autoHeadroomGainDB is nonisolated(unsafe) on the audio thread.
+        // Reading it from the main thread is safe for metering purposes: worst case
+        // is a torn read of a Float (4 bytes, aligned) which on ARM64 is atomic.
+        callbackContext?.dynamicsProcessor.autoHeadroomGainDB ?? 0.0
+    }
+
     /// Whether the soft clipper engaged on the last audio buffer.
     /// Thread-safe: reads the latest atomic value written by the audio thread.
     var clipperEngaged: Bool {

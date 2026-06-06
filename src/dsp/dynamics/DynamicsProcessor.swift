@@ -1,3 +1,4 @@
+import Accelerate
 import Atomics
 import AudioToolbox
 import CoreAudio
@@ -101,6 +102,10 @@ final class DynamicsProcessor: @unchecked Sendable {
     /// Pause gate: smoothed RMS envelope and gate state.
     nonisolated(unsafe) var pauseGateLevel:  Float = 0.0
     nonisolated(unsafe) var pauseGateIsOpen: Bool  = true
+    /// Slow-averaged limiter GR in dB (≤ 0). Updated once per callback by processAutoHeadroom.
+    nonisolated(unsafe) var autoHeadroomGRAccumDB:  Float = 0.0
+    /// Current auto-headroom gain in dB (≤ 0). Applied before soft clipper each callback.
+    nonisolated(unsafe) var autoHeadroomGainDB:     Float = 0.0
     /// TPDF dither: previous random value to form triangle-PDF noise.
     nonisolated(unsafe) var ditherPrevRand:  Float = 0.0
     /// 5-tap feedback delay for Wannamaker 5th-order noise shaper. Length = channelCount * 5.
@@ -183,7 +188,18 @@ final class DynamicsProcessor: @unchecked Sendable {
     private let _deharshTiltBits:        ManagedAtomic<Int32>  // Float bits, dB
     private let _balanceBits:            ManagedAtomic<Int32>  // Float bits, −1 to +1
     private let _channelBalanceBits:     ManagedAtomic<Int32>  // Float bits, −1 to +1 (linear L/R)
-    private let _tpGuardEnabled:         ManagedAtomic<Int32>
+    private let _tpGuardEnabled:              ManagedAtomic<Int32>
+
+    // Auto-headroom atomics (main thread → audio thread)
+    private let _autoHeadroomEnabled:         ManagedAtomic<Int32>
+    /// Alpha coefficient for both the GR accumulator and the gain smoother.
+    /// Pre-baked from the speed time constant and current sample rate.
+    private let _autoHeadroomAlphaBits:       ManagedAtomic<Int32>
+    /// Target sustained GR threshold in dB (positive value, e.g. 3.0 means tolerate 3 dB GR).
+    private let _autoHeadroomTargetGRBits:    ManagedAtomic<Int32>
+    /// Maximum gain reduction the rider may apply, in dB (positive value, e.g. 6.0).
+    private let _autoHeadroomMaxReductBits:   ManagedAtomic<Int32>
+
     private let _timeDelayBits:          ManagedAtomic<Int32>  // Float bits, ms
     private let _deltaSoloEnabled:       ManagedAtomic<Int32>
     private let _latencyModeBits:        ManagedAtomic<Int32>  // LatencyMode.rawValue
@@ -413,7 +429,12 @@ final class DynamicsProcessor: @unchecked Sendable {
         _deharshTiltBits        = ManagedAtomic(floatBits(-1.5))
         _balanceBits            = ManagedAtomic(floatBits(0.0))
         _channelBalanceBits     = ManagedAtomic(floatBits(0.0))
-        _tpGuardEnabled         = ManagedAtomic(0)
+        _tpGuardEnabled               = ManagedAtomic(0)
+        _autoHeadroomEnabled          = ManagedAtomic(0)
+        _autoHeadroomAlphaBits        = ManagedAtomic(floatBits(
+            Float(exp(-Double(512) / (10.0 * sampleRate)))))
+        _autoHeadroomTargetGRBits     = ManagedAtomic(floatBits(3.0))
+        _autoHeadroomMaxReductBits    = ManagedAtomic(floatBits(6.0))
         _timeDelayBits          = ManagedAtomic(floatBits(0.0))
         _deltaSoloEnabled       = ManagedAtomic(0)
         _latencyModeBits        = ManagedAtomic(Int32(LatencyMode.music.rawValue))
@@ -565,6 +586,33 @@ final class DynamicsProcessor: @unchecked Sendable {
     func setLimiterTruePeakGuardEnabled(_ v: Bool) {
         _tpGuardEnabled.store(v ? 1 : 0, ordering: .relaxed)
     }
+    func setAutoHeadroomEnabled(_ v: Bool) {
+        _autoHeadroomEnabled.store(v ? 1 : 0, ordering: .relaxed)
+        if !v {
+            // Reset rider state when disabled so re-enabling starts from neutral.
+            autoHeadroomGRAccumDB = 0.0
+            autoHeadroomGainDB    = 0.0
+        }
+    }
+
+    /// Recomputes the per-callback alpha and stores the target/maxReduction parameters.
+    /// Must be called whenever speed, sample rate, OR frame count changes.
+    func setAutoHeadroomParameters(
+        speed: AutoHeadroomSpeed,
+        targetGRDB: Float,
+        maxReductionDB: Float,
+        sampleRate: Double,
+        typicalFrameCount: Int
+    ) {
+        let tc = speed.timeConstantSeconds
+        // Alpha is defined per callback (not per sample). At steady-state buffer sizes
+        // this is precise; at variable buffer sizes the rider moves slightly faster or
+        // slower but remains stable and audibly correct.
+        let alpha = Float(exp(-Double(typicalFrameCount) / (tc * sampleRate)))
+        _autoHeadroomAlphaBits.store(floatBits(alpha), ordering: .relaxed)
+        _autoHeadroomTargetGRBits.store(floatBits(max(0.0, targetGRDB)), ordering: .relaxed)
+        _autoHeadroomMaxReductBits.store(floatBits(max(0.0, maxReductionDB)), ordering: .relaxed)
+    }
     func setStereoTimeDelayMS(_ ms: Float) {
         _timeDelayBits.store(floatBits(max(0.0, min(20.0, ms))), ordering: .relaxed)
     }
@@ -683,6 +731,14 @@ final class DynamicsProcessor: @unchecked Sendable {
         setDeharshTiltAmountDB(adv.deharshTiltAmountDB)
         setStereoBalancePosition(adv.stereoBalancePosition)
         setLimiterTruePeakGuardEnabled(adv.limiterTruePeakGuardEnabled)
+        setAutoHeadroomEnabled(adv.autoHeadroomEnabled)
+        setAutoHeadroomParameters(
+            speed:             adv.autoHeadroomSpeed,
+            targetGRDB:        adv.autoHeadroomTargetGRDB,
+            maxReductionDB:    adv.autoHeadroomMaxReductionDB,
+            sampleRate:        storedSampleRate,
+            typicalFrameCount: lookAheadSize > 0 ? lookAheadSize : 512
+        )
         setStereoTimeDelayMS(adv.stereoTimeDelayMS)
         setDeltaSoloActive(adv.deltaSoloActive)
         setLatencyMode(adv.latencyMode)
@@ -1554,6 +1610,44 @@ final class DynamicsProcessor: @unchecked Sendable {
         expEnvDB = env
     }
 
+    /// Updates the auto-headroom gain rider. Called once per audio callback, before
+    /// the per-sample clipper/limiter loop. Uses the GR written by the previous callback.
+    /// All state (`autoHeadroomGRAccumDB`, `autoHeadroomGainDB`) is audio-thread-only.
+    @inline(__always)
+    private func processAutoHeadroom(frameCount: Int) {
+        guard _autoHeadroomEnabled.load(ordering: .relaxed) != 0 else {
+            // Smoothly restore gain to 0 dB when disabled mid-session.
+            if autoHeadroomGainDB < -0.01 {
+                let alpha = bitsToFloat(_autoHeadroomAlphaBits.load(ordering: .relaxed))
+                autoHeadroomGainDB = alpha * autoHeadroomGainDB + (1.0 - alpha) * 0.0
+            } else {
+                autoHeadroomGainDB = 0.0
+            }
+            return
+        }
+
+        let alpha          = bitsToFloat(_autoHeadroomAlphaBits.load(ordering: .relaxed))
+        let targetGRDB     = bitsToFloat(_autoHeadroomTargetGRBits.load(ordering: .relaxed))
+        let maxReductDB    = bitsToFloat(_autoHeadroomMaxReductBits.load(ordering: .relaxed))
+
+        // Read current GR from the previous callback (≤ 0 dB, e.g. −3.0 for 3 dB GR).
+        let currentGR_dB   = bitsToFloat(_gainReductionBits.load(ordering: .relaxed))
+
+        // Slow-average the GR in dB domain. grAccumDB ≤ 0.
+        autoHeadroomGRAccumDB = alpha * autoHeadroomGRAccumDB +
+                                (1.0 - alpha) * currentGR_dB
+
+        // excessGR_dB is negative when limiter is working harder than the target.
+        // e.g. accum = −6 dB GR, target = 3 dB → excess = −3 dB → reduce by 3 dB.
+        let excessGR_dB = autoHeadroomGRAccumDB + targetGRDB
+
+        // targetDelta is the desired gain correction: ≤ 0, clamped to maxReduction.
+        let targetDelta = max(-maxReductDB, min(0.0, excessGR_dB))
+
+        // Smooth the gain toward the target using the same alpha.
+        autoHeadroomGainDB = alpha * autoHeadroomGainDB + (1.0 - alpha) * targetDelta
+    }
+
     // MARK: - Soft Clipper + Brickwall Limiter
 
     @inline(__always)
@@ -1567,12 +1661,37 @@ final class DynamicsProcessor: @unchecked Sendable {
             return
         }
 
+        // ── Auto-headroom: update rider state (reads previous callback's GR) ──────
+        processAutoHeadroom(frameCount: count)
+
+        // ── Apply auto-headroom pre-gain as a buffer-wide scalar ─────────────────
+        // Applying once per buffer (not per sample) avoids branching in the hot loop.
+        // Gain is ≤ 0 dB, so no clipping risk from the rider itself.
+        if autoHeadroomGainDB < -0.001 {
+            let linearGain = pow(10.0 as Float, autoHeadroomGainDB / 20.0)
+            for ch in 0..<numCh {
+                guard let buf = abl[ch].mData?.assumingMemoryBound(to: Float.self) else { continue }
+                // vDSP_vsmul is SIMD-accelerated on Apple Silicon.
+                var g = linearGain
+                vDSP_vsmul(buf, 1, &g, buf, 1, vDSP_Length(count))
+            }
+        }
+
         let driveLinear  = bitsToFloat(_softClipperDrive.load(ordering: .relaxed))
         let threshold    = bitsToFloat(_softClipperThreshold.load(ordering: .relaxed))
         let knee         = bitsToFloat(_softClipperKnee.load(ordering: .relaxed))
-        let ceiling      = bitsToFloat(_limiterCeiling.load(ordering: .relaxed))
         let alphaAttack  = bitsToFloat(_limiterAlphaAttack.load(ordering: .relaxed))
         let alphaRelease = bitsToFloat(_limiterAlphaRelease.load(ordering: .relaxed))
+
+        // ── TP Guard ceiling offset ───────────────────────────────────────────────
+        // The four-point FIR interpolator in scanPeak has a theoretical maximum gain
+        // of ≈1.865×. While peak signals that trigger this extreme overshoot are rare,
+        // reducing the effective ceiling by 0.5 dBTP when the guard is active provides
+        // safety headroom for the estimator's uncertainty.
+        let tpGuardOn    = _tpGuardEnabled.load(ordering: .relaxed) != 0
+        let rawCeiling   = bitsToFloat(_limiterCeiling.load(ordering: .relaxed))
+        // 0.5 dBTP offset: 10^(−0.5/20) ≈ 0.9441
+        let ceiling      = tpGuardOn ? rawCeiling * 0.9441 : rawCeiling
 
         let halfKnee   = knee * 0.5
         let xLower     = threshold - halfKnee
@@ -1582,14 +1701,16 @@ final class DynamicsProcessor: @unchecked Sendable {
         var writeIdx   = lookAheadWriteIndex
         var gC         = limiterGainCurrent
         var lastGC     = gC
-        var clipperWasActive = false
+        var clipperWasActive  = false
         var maxClipInputPeak: Float = 0.0
+        // TP guard: track inter-sample peak of post-limiter output.
+        var postLimiterPeak: Float = 0.0
 
         for frame in 0..<count {
             if softOn {
                 for ch in 0..<numCh {
                     guard let buf = abl[ch].mData?.assumingMemoryBound(to: Float.self) else { continue }
-                    let input = buf[frame] * driveLinear
+                    let input    = buf[frame] * driveLinear
                     let absInput = input < 0 ? -input : input
                     if absInput > xLower {
                         clipperWasActive = true
@@ -1597,6 +1718,15 @@ final class DynamicsProcessor: @unchecked Sendable {
                     }
                     buf[frame] = softClip(input, threshold: threshold,
                                           xLower: xLower, xUpper: xUpper, invTwoKnee: invTwoKnee)
+                }
+
+                // TP guard: check if clipper output could produce inter-sample peaks above ceiling.
+                if tpGuardOn {
+                    for ch in 0..<numCh {
+                        guard let buf = abl[ch].mData?.assumingMemoryBound(to: Float.self) else { continue }
+                        let s = abs(buf[frame])
+                        if s > postLimiterPeak { postLimiterPeak = s }
+                    }
                 }
             }
             if limOn {
@@ -1621,6 +1751,16 @@ final class DynamicsProcessor: @unchecked Sendable {
                     guard let buf = abl[ch].mData?.assumingMemoryBound(to: Float.self) else { continue }
                     buf[frame] = lookAheadBufs[ch][readIdx] * gC
                 }
+
+                // TP guard: accumulate inter-sample peak of the post-limiter output.
+                if tpGuardOn {
+                    for ch in 0..<numCh {
+                        guard let buf = abl[ch].mData?.assumingMemoryBound(to: Float.self) else { continue }
+                        let s = abs(buf[frame])
+                        if s > postLimiterPeak { postLimiterPeak = s }
+                    }
+                }
+
                 lastGC   = gC
                 writeIdx = (writeIdx + 1) % la
             }
@@ -1632,9 +1772,18 @@ final class DynamicsProcessor: @unchecked Sendable {
         let grDB = lastGC > 1e-9 ? 20.0 * log10(lastGC) : Float(-90.0)
         _gainReductionBits.store(floatBits(grDB), ordering: .relaxed)
 
-        // Clipper GR: estimate as difference between pre-clip peak and threshold
+        // ── TP Guard: set sticky tripped flags ───────────────────────────────────
+        // Check post-processing output for residual inter-sample peaks above rawCeiling.
+        // scanPeak is run on the look-ahead buffer above; here we check the sample-domain
+        // output as a secondary indicator that the guard was needed.
+        if tpGuardOn && postLimiterPeak > rawCeiling {
+            if limOn  { _truePeakLimiterTripped.store(1, ordering: .relaxed) }
+            if softOn { _truePeakClipperTripped.store(1, ordering: .relaxed) }
+        }
+
+        // Clipper GR: estimate as difference between pre-clip peak and threshold.
         if softOn && clipperWasActive && maxClipInputPeak > 1e-9 {
-            let threshDB  = maxClipInputPeak > 0.0 ? 20.0 * log10(threshold) : 0.0
+            let threshDB  = 20.0 * log10(threshold)
             let inputDB   = 20.0 * log10(maxClipInputPeak)
             let clipperGR = min(0.0, threshDB - inputDB)
             _clipperGRBits.store(floatBits(clipperGR), ordering: .relaxed)

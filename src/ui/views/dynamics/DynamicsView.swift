@@ -696,6 +696,72 @@ struct DynamicsView: View {
                 .font(.system(size: 13))
                 .disabled(!store.dynamicsConfig.limiter.isEnabled)
                 .opacity(!store.dynamicsConfig.limiter.isEnabled ? 0.4 : 1.0)
+
+            Divider()
+
+            Toggle("Auto-Headroom", isOn: autoHeadroomEnabledBinding)
+                .toggleStyle(.switch)
+                .controlSize(.regular)
+                .font(.system(size: 13))
+                .disabled(!store.dynamicsConfig.limiter.isEnabled)
+                .opacity(!store.dynamicsConfig.limiter.isEnabled ? 0.4 : 1.0)
+
+            DynamicsSliderRow(
+                label: "Target GR",
+                value: autoHeadroomTargetGRBinding,
+                range: 0.5...6.0,
+                step: 0.5,
+                formatValue: { String(format: "%.1f dB", $0) },
+                leftEndLabel: "Tight",
+                rightEndLabel: "Loose",
+                isDisabled: !store.dynamicsConfig.advanced.autoHeadroomEnabled
+                            || !store.dynamicsConfig.limiter.isEnabled
+            )
+
+            DynamicsSliderRow(
+                label: "Max Cut",
+                value: autoHeadroomMaxReductBinding,
+                range: 3.0...12.0,
+                step: 0.5,
+                formatValue: { String(format: "%.1f dB", $0) },
+                isDisabled: !store.dynamicsConfig.advanced.autoHeadroomEnabled
+                            || !store.dynamicsConfig.limiter.isEnabled
+            )
+
+            HStack(spacing: 8) {
+                Text("Response")
+                    .font(.system(size: 13))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 80, alignment: .leading)
+                Picker("", selection: autoHeadroomSpeedBinding) {
+                    ForEach(AutoHeadroomSpeed.allCases, id: \.self) { speed in
+                        Text(speed.rawValue).tag(speed)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .disabled(!store.dynamicsConfig.advanced.autoHeadroomEnabled
+                           || !store.dynamicsConfig.limiter.isEnabled)
+                .opacity((!store.dynamicsConfig.advanced.autoHeadroomEnabled
+                          || !store.dynamicsConfig.limiter.isEnabled) ? 0.4 : 1.0)
+            }
+
+            // Live auto-headroom gain indicator
+            HStack(spacing: 8) {
+                Text("Rider Gain")
+                    .font(.system(size: 13))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 80, alignment: .leading)
+                Text(store.liveAutoHeadroomGainDB < -0.05
+                     ? String(format: "%+.1f dB", store.liveAutoHeadroomGainDB)
+                     : "0.0 dB")
+                    .font(.system(size: 12, weight: .medium, design: .monospaced))
+                    .foregroundStyle(store.liveAutoHeadroomGainDB < -0.5 ? .orange : .secondary)
+                Spacer()
+            }
+            .opacity(store.dynamicsConfig.advanced.autoHeadroomEnabled
+                     && store.dynamicsConfig.limiter.isEnabled ? 1.0 : 0.4)
+
         } header: {
             Text("Limiter")
         }
@@ -1304,6 +1370,53 @@ struct DynamicsView: View {
             set: { val in var adv = store.dynamicsConfig.advanced; adv.limiterTruePeakGuardEnabled = val; store.updateAdvancedProcessing(adv) }
         )
     }
+
+    // MARK: - Auto-Headroom Bindings
+
+    private var autoHeadroomEnabledBinding: Binding<Bool> {
+        Binding(
+            get: { store.dynamicsConfig.advanced.autoHeadroomEnabled },
+            set: { v in
+                var adv = store.dynamicsConfig.advanced
+                adv.autoHeadroomEnabled = v
+                store.updateAdvancedProcessing(adv)
+            }
+        )
+    }
+
+    private var autoHeadroomTargetGRBinding: Binding<Double> {
+        Binding(
+            get: { Double(store.dynamicsConfig.advanced.autoHeadroomTargetGRDB) },
+            set: { v in
+                var adv = store.dynamicsConfig.advanced
+                adv.autoHeadroomTargetGRDB = Float(v)
+                store.updateAdvancedProcessing(adv)
+            }
+        )
+    }
+
+    private var autoHeadroomMaxReductBinding: Binding<Double> {
+        Binding(
+            get: { Double(store.dynamicsConfig.advanced.autoHeadroomMaxReductionDB) },
+            set: { v in
+                var adv = store.dynamicsConfig.advanced
+                adv.autoHeadroomMaxReductionDB = Float(v)
+                store.updateAdvancedProcessing(adv)
+            }
+        )
+    }
+
+    private var autoHeadroomSpeedBinding: Binding<AutoHeadroomSpeed> {
+        Binding(
+            get: { store.dynamicsConfig.advanced.autoHeadroomSpeed },
+            set: { v in
+                var adv = store.dynamicsConfig.advanced
+                adv.autoHeadroomSpeed = v
+                store.updateAdvancedProcessing(adv)
+            }
+        )
+    }
+
     private var latencyModeBinding: Binding<LatencyMode> {
         Binding(
             get: { store.dynamicsConfig.advanced.latencyMode },

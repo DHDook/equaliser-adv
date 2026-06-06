@@ -393,6 +393,25 @@ struct PauseGateParameters: Equatable, Sendable {
     var hysteresisDB:  Float  //   0 …   6  dB — open/close threshold separation
 }
 
+// MARK: - Auto-Headroom Speed
+
+/// Sets the time constant for the auto-headroom gain rider.
+/// Governs how quickly the rider responds to changes in sustained limiting activity.
+enum AutoHeadroomSpeed: String, Codable, Equatable, Sendable, CaseIterable {
+    case fast   = "Fast"    // ~3 s time constant
+    case medium = "Medium"  // ~10 s time constant
+    case slow   = "Slow"    // ~30 s time constant
+
+    /// Time constant in seconds used for both the GR accumulator and the gain smoother.
+    var timeConstantSeconds: Double {
+        switch self {
+        case .fast:   return 3.0
+        case .medium: return 10.0
+        case .slow:   return 30.0
+        }
+    }
+}
+
 struct AdvancedProcessingConfig: Codable, Equatable, Sendable {
 
     // ── A. High-Resolution Coefficient Decoupling ───────────────────────
@@ -423,6 +442,17 @@ struct AdvancedProcessingConfig: Codable, Equatable, Sendable {
 
     // ── E. True-Peak Auto-Guard ───────────────────────────────────────
     var limiterTruePeakGuardEnabled: Bool = false
+
+    // ── E. Auto-Headroom Gain Rider ───────────────────────────────────
+    /// When enabled, slowly reduces the input to the soft clipper/limiter stage to keep
+    /// sustained limiter gain reduction near `autoHeadroomTargetGRDB`.
+    var autoHeadroomEnabled:      Bool              = false
+    /// Target sustained limiter GR in dB. Range: 0.5 … 6.0. Default: 3.0.
+    var autoHeadroomTargetGRDB:   Float             = 3.0
+    /// Maximum gain reduction the rider may apply. Range: 3.0 … 12.0 dB. Default: 6.0.
+    var autoHeadroomMaxReductionDB: Float           = 6.0
+    /// Response time constant. Default: medium (10 s).
+    var autoHeadroomSpeed:        AutoHeadroomSpeed = .medium
 
     // ── E. Inter-Channel Time Delay ───────────────────────────────────
     var stereoTimeDelayMS: Float = 0.0
@@ -546,6 +576,10 @@ struct AdvancedProcessingConfig: Codable, Equatable, Sendable {
         case stereoBalancePosition
         case loudnessContourEnabled
         case limiterTruePeakGuardEnabled
+        case autoHeadroomEnabled
+        case autoHeadroomTargetGRDB
+        case autoHeadroomMaxReductionDB
+        case autoHeadroomSpeed
         case stereoTimeDelayMS
         case dcOffsetFilterEnabled
         case deltaSoloActive
@@ -588,7 +622,11 @@ struct AdvancedProcessingConfig: Codable, Equatable, Sendable {
         deharshTiltAmountDB: Float = -1.5,
         stereoBalancePosition: Float = 0.0,
         loudnessContourEnabled: Bool = false,
-        limiterTruePeakGuardEnabled: Bool = false,
+        limiterTruePeakGuardEnabled:  Bool              = false,
+        autoHeadroomEnabled:          Bool              = false,
+        autoHeadroomTargetGRDB:       Float             = 3.0,
+        autoHeadroomMaxReductionDB:   Float             = 6.0,
+        autoHeadroomSpeed:            AutoHeadroomSpeed = .medium,
         stereoTimeDelayMS: Float = 0.0,
         dcOffsetFilterEnabled: Bool = false,
         deltaSoloActive: Bool = false,
@@ -633,6 +671,10 @@ struct AdvancedProcessingConfig: Codable, Equatable, Sendable {
         self.stereoBalancePosition            = stereoBalancePosition
         self.loudnessContourEnabled           = loudnessContourEnabled
         self.limiterTruePeakGuardEnabled      = limiterTruePeakGuardEnabled
+        self.autoHeadroomEnabled              = autoHeadroomEnabled
+        self.autoHeadroomTargetGRDB           = autoHeadroomTargetGRDB
+        self.autoHeadroomMaxReductionDB       = autoHeadroomMaxReductionDB
+        self.autoHeadroomSpeed                = autoHeadroomSpeed
         self.stereoTimeDelayMS                = stereoTimeDelayMS
         self.dcOffsetFilterEnabled            = dcOffsetFilterEnabled
         self.deltaSoloActive                  = deltaSoloActive
@@ -679,6 +721,10 @@ struct AdvancedProcessingConfig: Codable, Equatable, Sendable {
         stereoBalancePosition            = try c.decodeIfPresent(Float.self,                 forKey: .stereoBalancePosition)            ?? 0.0
         loudnessContourEnabled           = try c.decodeIfPresent(Bool.self,                  forKey: .loudnessContourEnabled)           ?? false
         limiterTruePeakGuardEnabled      = try c.decodeIfPresent(Bool.self,                  forKey: .limiterTruePeakGuardEnabled)      ?? false
+        autoHeadroomEnabled              = try c.decodeIfPresent(Bool.self,                  forKey: .autoHeadroomEnabled)              ?? false
+        autoHeadroomTargetGRDB           = try c.decodeIfPresent(Float.self,                 forKey: .autoHeadroomTargetGRDB)           ?? 3.0
+        autoHeadroomMaxReductionDB       = try c.decodeIfPresent(Float.self,                 forKey: .autoHeadroomMaxReductionDB)       ?? 6.0
+        autoHeadroomSpeed                = try c.decodeIfPresent(AutoHeadroomSpeed.self,     forKey: .autoHeadroomSpeed)                ?? .medium
         stereoTimeDelayMS                = try c.decodeIfPresent(Float.self,                 forKey: .stereoTimeDelayMS)                ?? 0.0
         dcOffsetFilterEnabled            = try c.decodeIfPresent(Bool.self,                  forKey: .dcOffsetFilterEnabled)            ?? false
         deltaSoloActive                  = try c.decodeIfPresent(Bool.self,                  forKey: .deltaSoloActive)                  ?? false
@@ -726,6 +772,10 @@ struct AdvancedProcessingConfig: Codable, Equatable, Sendable {
         try c.encode(stereoBalancePosition,              forKey: .stereoBalancePosition)
         try c.encode(loudnessContourEnabled,             forKey: .loudnessContourEnabled)
         try c.encode(limiterTruePeakGuardEnabled,        forKey: .limiterTruePeakGuardEnabled)
+        try c.encode(autoHeadroomEnabled,                forKey: .autoHeadroomEnabled)
+        try c.encode(autoHeadroomTargetGRDB,             forKey: .autoHeadroomTargetGRDB)
+        try c.encode(autoHeadroomMaxReductionDB,         forKey: .autoHeadroomMaxReductionDB)
+        try c.encode(autoHeadroomSpeed,                  forKey: .autoHeadroomSpeed)
         try c.encode(stereoTimeDelayMS,                  forKey: .stereoTimeDelayMS)
         try c.encode(dcOffsetFilterEnabled,              forKey: .dcOffsetFilterEnabled)
         try c.encode(deltaSoloActive,                    forKey: .deltaSoloActive)

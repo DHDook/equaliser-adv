@@ -343,6 +343,10 @@ final class EqualiserStore: ObservableObject {
     var livePhaseCorrelation: Float {
         routingCoordinator.pipelineManager.renderPipeline?.livePhaseCorrelation ?? 0.0
     }
+    /// Current auto-headroom rider gain in dB, published for UI consumption.
+    var liveAutoHeadroomGainDB: Float {
+        routingCoordinator.pipelineManager.renderPipeline?.liveAutoHeadroomGainDB ?? 0.0
+    }
     /// Active pipeline sample rate (Hz), or 48 kHz when idle.
     var streamSampleRate: Double {
         routingCoordinator.pipelineManager.renderPipeline?.sampleRate ?? 48_000
