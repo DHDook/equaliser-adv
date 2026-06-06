@@ -10,7 +10,6 @@ struct EQWindowView: View {
     @State private var metersEnabledUI = true
     @State private var showDriverSheet = true
     @State private var showSaveSheet = false
-    @State private var eqGraphMaxX: CGFloat = 0
 
     /// Whether the driver installation overlay should be shown.
     private var needsDriverInstallation: Bool {
@@ -60,16 +59,9 @@ struct EQWindowView: View {
                             set: { store.updateChannelBalance($0) }
                         )
                     )
+
+                    EQCurveView(metersEnabled: metersEnabledUI)
                 }
-                .background(
-                    GeometryReader { geo in
-                        Color.clear
-                            .preference(
-                                key: BalanceSliderWidthKey.self,
-                                value: geo.frame(in: .named("mainVStack")).maxX
-                            )
-                    }
-                )
 
                 DynamicsInlineView()
                     .padding(.leading, 24)
@@ -105,16 +97,6 @@ struct EQWindowView: View {
                     .frame(minWidth: 376)
                 }
             }
-            .coordinateSpace(name: "mainVStack")
-            .onPreferenceChange(BalanceSliderWidthKey.self) { eqGraphMaxX = $0 }
-
-            HStack(spacing: 0) {
-                EQCurveView(metersEnabled: metersEnabledUI)
-                    .frame(maxWidth: eqGraphMaxX > 0 ? eqGraphMaxX : .infinity)
-                Spacer()
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.top, 4)
 
             // Dual 31-band real-time spectrum analyser
             RTADashboardView(analyzer: store.rtaAnalyzer, metersEnabled: metersEnabledUI)
@@ -364,15 +346,6 @@ struct SystemEQToggleView: View {
             get: { !store.isBypassed },
             set: { store.isBypassed = !$0 }
         )
-    }
-}
-
-// MARK: - Preference Keys
-
-private struct BalanceSliderWidthKey: PreferenceKey {
-    static let defaultValue: CGFloat = 0
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = max(value, nextValue())
     }
 }
 
