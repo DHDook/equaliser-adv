@@ -172,6 +172,7 @@ struct ChannelBalanceSlider: View {
 struct MasterVolumeSlider: View {
     @Binding var volume: Float
     @Binding var isMuted: Bool
+    @State private var localVolume: Float = 0.5
 
     var body: some View {
         VStack(spacing: 0) {
@@ -197,12 +198,19 @@ struct MasterVolumeSlider: View {
                     DragGesture(minimumDistance: 0)
                         .onChanged { value in
                             let newValue = valueAt(position: value.location, in: geometry.size)
+                            localVolume = Float(newValue)
                             volume = Float(newValue)
                         }
                 )
             }
             .frame(height: 20)
             .frame(width: 120)
+            .onAppear {
+                localVolume = volume
+            }
+            .onChange(of: volume) {
+                localVolume = volume
+            }
 
             HStack(spacing: 4) {
                 Toggle(isOn: $isMuted) {
@@ -224,12 +232,12 @@ struct MasterVolumeSlider: View {
     }
 
     private var volumePercentage: String {
-        let percentage = Int(volume * 100)
+        let percentage = Int(localVolume * 100)
         return "\(percentage)%"
     }
 
     private func thumbOffset(in size: CGSize) -> CGFloat {
-        let normalizedValue = Double(volume) // 0.0 to 1.0
+        let normalizedValue = Double(localVolume) // 0.0 to 1.0
         return size.width * CGFloat(normalizedValue) - 6
     }
 
