@@ -81,6 +81,9 @@ final class EqualiserStore: ObservableObject {
             if compareMode == .linearEQ {
                 routingCoordinator.eqStager.refreshLinearPhaseIRIfNeeded()
             }
+            if compareMode == .mixedPhase {
+                routingCoordinator.eqStager.refreshMixedPhaseIRIfNeeded()
+            }
         }
     }
     
@@ -565,6 +568,14 @@ final class EqualiserStore: ObservableObject {
                     self.rtaAnalyzer.assumedSampleRate = Float(sr)
                 }
                 self.refreshHighResDecouplingStatus()
+                // ADD: restore processing mode and IR state after pipeline restart
+                self.routingCoordinator.updateProcessingMode(systemEQOff: self.isBypassed, compareMode: self.compareMode)
+                if self.compareMode == .linearEQ {
+                    self.routingCoordinator.eqStager.refreshLinearPhaseIRIfNeeded()
+                }
+                if self.compareMode == .mixedPhase {
+                    self.routingCoordinator.eqStager.refreshMixedPhaseIRIfNeeded()
+                }
             }
             .store(in: &cancellables)
 

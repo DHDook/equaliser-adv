@@ -667,6 +667,7 @@ final class RenderPipeline {
         }
         callbackContext?.processingMode = mode
         callbackContext?.setLinearPhaseEnabled(compareMode == .linearEQ && !systemEQOff)
+        callbackContext?.setMixedPhaseEnabled(compareMode == .mixedPhase && !systemEQOff)
     }
 
     /// Updates whether meters are enabled on the audio thread.
@@ -810,6 +811,18 @@ final class RenderPipeline {
 
     func decayEQPeakMeters() {
         callbackContext?.decayEQPeakMeters()
+    }
+
+    /// Stages all-pass section coefficients for mixed-phase mode.
+    /// Called from the main thread when band parameters change.
+    func updateMixedPhaseSections(
+        leftSections:  [[BiquadCoefficients]],
+        rightSections: [[BiquadCoefficients]]
+    ) {
+        callbackContext?.updateMixedPhaseSections(
+            leftSections:  leftSections,
+            rightSections: rightSections
+        )
     }
 
     /// Returns the most recent meter snapshot from the audio thread.

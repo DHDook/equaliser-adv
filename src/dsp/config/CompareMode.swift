@@ -6,4 +6,5 @@ enum CompareMode: Int, Codable, Sendable {
     case linearEQ = 1
     case flat = 2
     case delta = 3
+    case mixedPhase = 4
 }

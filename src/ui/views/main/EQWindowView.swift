@@ -211,23 +211,32 @@ struct EQWindowView: View {
                             }
                             .buttonStyle(.plain)
                             .popover(isPresented: $showCompareHelp, arrowEdge: .trailing) {
-                                Text("Mode comparison: EQ = full processing active. Linear EQ = zero-phase FIR EQ mode (increased latency). Flat = bypass EQ at matched volume to hear unprocessed audio. Delta = solo the difference signal to hear the processed effect.")
+                                Text("""
+                                    EQ — Full biquad IIR processing. Minimum latency.
+                                    Linear — Zero-phase FIR convolution EQ. Eliminates phase distortion entirely at the cost of increased latency and pre-ringing artefacts.
+                                    Mixed — Biquad EQ with all-pass phase correction. Reduces phase distortion without pre-ringing or added latency. A practical middle ground between EQ and Linear modes.
+                                    Flat — Bypasses EQ at matched volume to audition unprocessed audio. Reverts automatically after 5 minutes.
+                                    Delta — Solos the EQ difference signal to hear the processed effect.
+                                    """)
                                     .font(.caption)
                                     .padding(12)
-                                    .frame(width: 280)
+                                    .frame(width: 320)
                             }
                         }
 
                         Picker("", selection: $store.compareMode) {
                             Text("EQ").tag(CompareMode.eq)
                             Text("Linear").tag(CompareMode.linearEQ)
+                            Text("Mixed").tag(CompareMode.mixedPhase)
                             Text("Flat").tag(CompareMode.flat)
                             Text("Delta").tag(CompareMode.delta)
                         }
                         .pickerStyle(.segmented)
                         .controlSize(.small)
-                        .frame(width: 180)
+                        .frame(width: 225)
                     }
+
+                    Spacer()
 
                     VStack(spacing: 4) {
                         Text("Flatten")
@@ -238,7 +247,7 @@ struct EQWindowView: View {
                             store.flattenBands()
                         } label: {
                             Text("Flatten")
-                                .frame(width: 50, height: 16)
+                                .frame(width: 40, height: 16)
                         }
                         .buttonStyle(.bordered)
                         .controlSize(.small)

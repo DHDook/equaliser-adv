@@ -122,6 +122,13 @@ final class RenderCallbackContext: @unchecked Sendable {
     private nonisolated(unsafe) var linearPhaseEngine: LinearPhaseEQEngine
     private let _linearPhaseEnabled: ManagedAtomic<Int32>
 
+    // MARK: - Mixed Phase EQ
+
+    // Mixed-phase all-pass chains (one per channel)
+    private nonisolated(unsafe) var leftAllPassChain:  AllPassChain
+    private nonisolated(unsafe) var rightAllPassChain: AllPassChain
+    private let _mixedPhaseEnabled: ManagedAtomic<Int32>
+
     // MARK: - Sweep Playback
 
     /// Sweep buffer for room correction measurement.
@@ -305,6 +312,28 @@ final class RenderCallbackContext: @unchecked Sendable {
                                     sampleRate: sampleRate)
     }
 
+    var isMixedPhaseEnabled: Bool {
+        _mixedPhaseEnabled.load(ordering: .relaxed) != 0
+    }
+
+    func setMixedPhaseEnabled(_ enabled: Bool) {
+        _mixedPhaseEnabled.store(enabled ? 1 : 0, ordering: .relaxed)
+        if !enabled {
+            leftAllPassChain.reset()
+            rightAllPassChain.reset()
+        }
+    }
+
+    /// Stages new all-pass sections derived from the current biquad band coefficients.
+    /// Called from the main thread when band parameters change while in mixed-phase mode.
+    func updateMixedPhaseSections(
+        leftSections:  [[BiquadCoefficients]],
+        rightSections: [[BiquadCoefficients]]
+    ) {
+        leftAllPassChain.stageSections(from: leftSections)
+        rightAllPassChain.stageSections(from: rightSections)
+    }
+
     // MARK: - Sweep Playback API
 
     func setSweepAnalyser(_ analyser: SweepAnalyser?) {
@@ -471,6 +500,9 @@ final class RenderCallbackContext: @unchecked Sendable {
         self._oversamplingEnabled = ManagedAtomic(0)
         self.linearPhaseEngine = LinearPhaseEQEngine(maxFrameCount: Int(maxFrameCount))
         self._linearPhaseEnabled = ManagedAtomic(0)
+        self.leftAllPassChain   = AllPassChain()
+        self.rightAllPassChain  = AllPassChain()
+        self._mixedPhaseEnabled = ManagedAtomic(0)
 
         let osAdditional = max(0, Int(channelCount) - 1)
         self.oversampledBufferListSize = MemoryLayout<AudioBufferList>.size
@@ -943,10 +975,36 @@ final class RenderCallbackContext: @unchecked Sendable {
     @inline(__always)
     func processEQ(frameCount: UInt32) {
         if _linearPhaseEnabled.load(ordering: .relaxed) != 0 {
+            // --- Linear-phase FIR convolution path (unchanged) ---
             let bufL = processingBuffers[0]
             let bufR = channelCount > 1 ? processingBuffers[1] : nil
             linearPhaseEngine.process(bufL: bufL, bufR: bufR, frameCount: Int(frameCount))
+
+        } else if _mixedPhaseEnabled.load(ordering: .relaxed) != 0 {
+            // --- Mixed-phase path: biquad IIR + all-pass phase correction ---
+
+            // 1. Run biquad EQ chains (magnitude response, same as normal EQ mode)
+            for chain in leftEQChains {
+                chain.applyPendingUpdates()
+                chain.process(buffer: processingBuffers[0], frameCount: frameCount)
+            }
+            if channelCount > 1 {
+                for chain in rightEQChains {
+                    chain.applyPendingUpdates()
+                    chain.process(buffer: processingBuffers[1], frameCount: frameCount)
+                }
+            }
+
+            // 2. Apply all-pass phase correction chains
+            leftAllPassChain.applyPendingUpdates()
+            leftAllPassChain.process(buffer: processingBuffers[0], frameCount: frameCount)
+            if channelCount > 1 {
+                rightAllPassChain.applyPendingUpdates()
+                rightAllPassChain.process(buffer: processingBuffers[1], frameCount: frameCount)
+            }
+
         } else {
+            // --- Standard biquad IIR path (unchanged) ---
             for chain in leftEQChains {
                 chain.applyPendingUpdates()
                 chain.process(buffer: processingBuffers[0], frameCount: frameCount)

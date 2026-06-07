@@ -122,6 +122,7 @@ final class EQCoefficientStager {
             layerBypass: false
         )
         refreshLinearPhaseIRIfNeeded()
+        refreshMixedPhaseIRIfNeeded()
     }
 
     func clearRoomCorrectionBands() {
@@ -135,6 +136,7 @@ final class EQCoefficientStager {
             layerBypass: true
         )
         refreshLinearPhaseIRIfNeeded()
+        refreshMixedPhaseIRIfNeeded()
     }
 
     func refreshLinearPhaseIRIfNeeded() {
@@ -148,6 +150,64 @@ final class EQCoefficientStager {
         ctx.updateLinearPhaseIR(leftBands: leftBands,
                                  rightBands: rightBands,
                                  sampleRate: currentSampleRate)
+    }
+
+    func refreshMixedPhaseIRIfNeeded() {
+        guard let pipeline = renderPipeline,
+              let ctx = pipeline.callbackContext,
+              ctx.isMixedPhaseEnabled else { return }
+
+        let activeCount = eqConfiguration.activeBandCount
+        let decoupling  = eqConfiguration.dynamicsConfig.advanced.coefficientDecouplingEnabled
+
+        let leftBands  = Array(eqConfiguration.leftState.userEQ.bands.prefix(activeCount))
+        let rightBands = Array(eqConfiguration.rightState.userEQ.bands.prefix(activeCount))
+
+        // Build per-band section arrays (bypassed bands contribute no sections).
+        // The all-pass sections are derived from the same biquad coefficients used
+        // by the EQ chains, so we recalculate them here using the same design path.
+        var leftSections:  [[BiquadCoefficients]] = []
+        var rightSections: [[BiquadCoefficients]] = []
+
+        let designRate = BiquadMath.designSampleRate(
+            actualRate: currentSampleRate,
+            coefficientDecouplingEnabled: decoupling)
+
+        for band in leftBands where !band.bypass {
+            let freq = designRate != currentSampleRate
+                ? BiquadMath.prewarpFrequency(frequency: Double(band.frequency),
+                                              actualRate: currentSampleRate,
+                                              designRate: designRate)
+                : Double(band.frequency)
+            let secs = BiquadMath.calculateSections(
+                type: band.filterType, sampleRate: designRate,
+                frequency: freq, q: Double(band.q),
+                gain: Double(band.gain), slope: band.slope)
+            leftSections.append(secs)
+        }
+
+        // In linked mode, right = left; in stereo, compute independently.
+        if eqConfiguration.channelMode == .linked {
+            rightSections = leftSections
+        } else {
+            for band in rightBands where !band.bypass {
+                let freq = designRate != currentSampleRate
+                    ? BiquadMath.prewarpFrequency(frequency: Double(band.frequency),
+                                                  actualRate: currentSampleRate,
+                                                  designRate: designRate)
+                    : Double(band.frequency)
+                let secs = BiquadMath.calculateSections(
+                    type: band.filterType, sampleRate: designRate,
+                    frequency: freq, q: Double(band.q),
+                    gain: Double(band.gain), slope: band.slope)
+                rightSections.append(secs)
+            }
+        }
+
+        pipeline.updateMixedPhaseSections(
+            leftSections:  leftSections,
+            rightSections: rightSections
+        )
     }
 
     // MARK: - Private Coefficient Helpers
@@ -187,6 +247,7 @@ final class EQCoefficientStager {
             sections: sections,
             bypass: config.bypass
         )
+        refreshMixedPhaseIRIfNeeded()
     }
 
     /// Recalculates and stages all coefficients for all active bands (full update path).
@@ -281,5 +342,6 @@ final class EQCoefficientStager {
             )
         }
         refreshLinearPhaseIRIfNeeded()
+        refreshMixedPhaseIRIfNeeded()
     }
 }
