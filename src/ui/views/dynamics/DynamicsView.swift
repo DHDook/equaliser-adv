@@ -55,10 +55,8 @@ struct DynamicsView: View {
                         spectralEnhancementSection
                         systemUtilitiesSection
                         ltiDenoisingSection
-                        ltiEarlyReflectionSection
-                        ltiHPFLinearizationSection
                         ltiSubBassSection
-                        ltiZLReverbSection
+                        ltiConvolutionSection
                     }
                     .formStyle(.grouped)
                     .frame(width: 460)
@@ -927,52 +925,6 @@ struct DynamicsView: View {
         }
     }
 
-    // MARK: - LTI: Early Reflection Cancellation Section
-
-    private var ltiEarlyReflectionSection: some View {
-        Section {
-            Toggle("Enabled", isOn: ltiEarlyReflectionEnabledBinding)
-                .toggleStyle(.switch)
-                .controlSize(.regular)
-                .font(.system(size: 13))
-
-            DynamicsSliderRow(
-                label: "Room Size",
-                value: ltiEarlyReflectionRoomSizeBinding,
-                range: 5.0...50.0,
-                step: 0.5,
-                formatValue: { String(format: "%.1f ms", $0) },
-                leftEndLabel: "Small",
-                rightEndLabel: "Large",
-                isDisabled: !store.dynamicsConfig.advanced.earlyReflectionCancellationEnabled
-            )
-        } header: {
-            Text("Early Reflection Cancellation")
-        }
-    }
-
-    // MARK: - LTI: HPF Phase Linearisation Section
-
-    private var ltiHPFLinearizationSection: some View {
-        Section {
-            Toggle("Enabled", isOn: ltiHPFLinearizationEnabledBinding)
-                .toggleStyle(.switch)
-                .controlSize(.regular)
-                .font(.system(size: 13))
-
-            DynamicsSliderRow(
-                label: "Frequency",
-                value: ltiHPFLinearizationFreqBinding,
-                range: 20.0...200.0,
-                step: 1.0,
-                formatValue: { String(format: "%.0f Hz", $0) },
-                isDisabled: !store.dynamicsConfig.advanced.hpfPhaseLinearizationEnabled
-            )
-        } header: {
-            Text("HPF Phase Linearisation")
-        }
-    }
-
     // MARK: - LTI: Sub-Bass Phase Alignment Section
 
     private var ltiSubBassSection: some View {
@@ -995,27 +947,45 @@ struct DynamicsView: View {
         }
     }
 
-    // MARK: - LTI: Zero-Latency Convolution Reverb Section
+    // MARK: - FIR Correction Section
 
-    private var ltiZLReverbSection: some View {
+    private var ltiConvolutionSection: some View {
         Section {
-            Toggle("Enabled", isOn: ltiZLReverbEnabledBinding)
+            Toggle("Enabled", isOn: convolutionEnabledBinding)
                 .toggleStyle(.switch)
                 .controlSize(.regular)
                 .font(.system(size: 13))
+                .disabled(store.convolutionConfig.irDisplayName == nil)
 
-            DynamicsSliderRow(
-                label: "Dry / Wet",
-                value: ltiZLReverbMixBinding,
-                range: 0.0...1.0,
-                step: 0.01,
-                formatValue: { String(format: "%.2f", $0) },
-                leftEndLabel: "Dry",
-                rightEndLabel: "Wet",
-                isDisabled: !store.dynamicsConfig.advanced.zlConvolutionReverbEnabled
-            )
+            HStack {
+                Text(store.convolutionConfig.irDisplayName ?? "No IR loaded")
+                    .font(.system(size: 12))
+                    .foregroundStyle(store.convolutionConfig.irDisplayName != nil
+                        ? .primary : .tertiary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Spacer()
+                Button("Load IR…") {
+                    let panel = NSOpenPanel()
+                    panel.allowedContentTypes = [.wav, .aiff, .audio]
+                    panel.allowsMultipleSelection = false
+                    panel.title = "Load Impulse Response"
+                    panel.message = "Select a WAV or AIFF impulse response (mono or stereo, max 10 s)"
+                    if panel.runModal() == .OK, let url = panel.url {
+                        store.loadConvolutionIR(url: url)
+                    }
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+            }
+
+            if let errorMessage = store.convolutionLoadError {
+                Text(errorMessage)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
         } header: {
-            Text("ZL Convolution Reverb")
+            Text("FIR Correction")
         }
     }
 
@@ -1612,30 +1582,6 @@ struct DynamicsView: View {
             set: { val in var adv = store.dynamicsConfig.advanced; adv.crosstalkCancellationAmount = Float(val); store.updateAdvancedProcessing(adv) }
         )
     }
-    private var ltiEarlyReflectionEnabledBinding: Binding<Bool> {
-        Binding(
-            get: { store.dynamicsConfig.advanced.earlyReflectionCancellationEnabled },
-            set: { val in var adv = store.dynamicsConfig.advanced; adv.earlyReflectionCancellationEnabled = val; store.updateAdvancedProcessing(adv) }
-        )
-    }
-    private var ltiEarlyReflectionRoomSizeBinding: Binding<Double> {
-        Binding(
-            get: { Double(store.dynamicsConfig.advanced.earlyReflectionRoomSizeMs) },
-            set: { val in var adv = store.dynamicsConfig.advanced; adv.earlyReflectionRoomSizeMs = Float(val); store.updateAdvancedProcessing(adv) }
-        )
-    }
-    private var ltiHPFLinearizationEnabledBinding: Binding<Bool> {
-        Binding(
-            get: { store.dynamicsConfig.advanced.hpfPhaseLinearizationEnabled },
-            set: { val in var adv = store.dynamicsConfig.advanced; adv.hpfPhaseLinearizationEnabled = val; store.updateAdvancedProcessing(adv) }
-        )
-    }
-    private var ltiHPFLinearizationFreqBinding: Binding<Double> {
-        Binding(
-            get: { Double(store.dynamicsConfig.advanced.hpfPhaseLinearizationFrequencyHz) },
-            set: { val in var adv = store.dynamicsConfig.advanced; adv.hpfPhaseLinearizationFrequencyHz = Float(val); store.updateAdvancedProcessing(adv) }
-        )
-    }
     private var ltiMultiSeatEnabledBinding: Binding<Bool> {
         Binding(
             get: { store.dynamicsConfig.advanced.multiSeatAveragingEnabled },
@@ -1660,16 +1606,10 @@ struct DynamicsView: View {
             set: { val in var adv = store.dynamicsConfig.advanced; adv.subBassAlignmentFrequencyHz = Float(val); store.updateAdvancedProcessing(adv) }
         )
     }
-    private var ltiZLReverbEnabledBinding: Binding<Bool> {
+    private var convolutionEnabledBinding: Binding<Bool> {
         Binding(
-            get: { store.dynamicsConfig.advanced.zlConvolutionReverbEnabled },
-            set: { val in var adv = store.dynamicsConfig.advanced; adv.zlConvolutionReverbEnabled = val; store.updateAdvancedProcessing(adv) }
-        )
-    }
-    private var ltiZLReverbMixBinding: Binding<Double> {
-        Binding(
-            get: { Double(store.dynamicsConfig.advanced.zlConvolutionReverbMix) },
-            set: { val in var adv = store.dynamicsConfig.advanced; adv.zlConvolutionReverbMix = Float(val); store.updateAdvancedProcessing(adv) }
+            get: { store.convolutionConfig.enabled },
+            set: { store.setConvolutionEnabled($0) }
         )
     }
 }
@@ -1853,17 +1793,19 @@ struct DynamicsInlineView: View {
                         Divider()
                         definitionEntry(title: "Crosstalk Cancel.", body: "Recursive binaural inversion filter reducing inter-channel acoustic leakage between speakers.")
                         Divider()
-                        definitionEntry(title: "Early Reflection", body: "FIR comb filter targeting first-order room boundary reflections.")
-                        Divider()
-                        definitionEntry(title: "HPF Linearise", body: "All-pass FIR network linearising group delay introduced by high-pass filter networks.")
-                        Divider()
                         definitionEntry(title: "Sub-Bass Align", body: "All-pass network phase-aligning sub-bass with main speaker bandwidth at the crossover frequency.")
                         Divider()
                         definitionEntry(title: "Room Correction", body: "Applies inverse filter to match a target response curve. Requires REW measurement import for accurate room correction.")
                         Divider()
                         definitionEntry(title: "Multi-Seat Avg.", body: "Composite HRTF correction averaged across multiple listening positions for more robust room correction.")
                         Divider()
-                        definitionEntry(title: "ZL Reverb", body: "Uniformly-partitioned FFT convolution reverb with zero added processing latency.")
+                        definitionEntry(
+                            title: "FIR Correction",
+                            body: "Uniformly-partitioned FFT convolution with a user-supplied WAV/AIFF impulse response. " +
+                                  "Supports headphone frequency response correction profiles (AutoEq, manufacturer measurements) " +
+                                  "and speaker/room FIR filters exported from measurement systems such as REW. " +
+                                  "Processed after the EQ chain. Zero added latency beyond one partition (~43 ms at 48 kHz)."
+                        )
                     }
                     .padding(14)
                 }
@@ -1923,11 +1865,9 @@ struct DynamicsInlineView: View {
             col2Toggle(label: "Denoiser",    isOn: inlineDenoisingEnabled)
             col2Toggle(label: "IR Align",    isOn: inlineIRAlignmentEnabled)
             col2Toggle(label: "Crosstalk",   isOn: inlineCrosstalkEnabled)
-            col2Toggle(label: "Early Refl",  isOn: inlineEarlyReflectionEnabled)
-            col2Toggle(label: "HPF Lin.",    isOn: inlineHPFLinearizationEnabled)
             col2Toggle(label: "Rm. Correct.", isOn: inlineRoomCorrectionBinding)
             col2Toggle(label: "Sub Align",   isOn: inlineSubBassEnabled)
-            col2Toggle(label: "ZL Reverb",   isOn: inlineZLReverbEnabled)
+            col2Toggle(label: "FIR",         isOn: inlineConvolutionEnabled)
         }
     }
 
@@ -2158,17 +2098,10 @@ struct DynamicsInlineView: View {
         )
     }
 
-    private var inlineEarlyReflectionEnabled: Binding<Bool> {
+    private var inlineConvolutionEnabled: Binding<Bool> {
         Binding(
-            get: { store.dynamicsConfig.advanced.earlyReflectionCancellationEnabled },
-            set: { v in var adv = store.dynamicsConfig.advanced; adv.earlyReflectionCancellationEnabled = v; store.updateAdvancedProcessing(adv) }
-        )
-    }
-
-    private var inlineHPFLinearizationEnabled: Binding<Bool> {
-        Binding(
-            get: { store.dynamicsConfig.advanced.hpfPhaseLinearizationEnabled },
-            set: { v in var adv = store.dynamicsConfig.advanced; adv.hpfPhaseLinearizationEnabled = v; store.updateAdvancedProcessing(adv) }
+            get: { store.convolutionConfig.enabled },
+            set: { store.setConvolutionEnabled($0) }
         )
     }
 
@@ -2185,13 +2118,6 @@ struct DynamicsInlineView: View {
         Binding(
             get: { store.dynamicsConfig.advanced.subBassPhaseAlignmentEnabled },
             set: { v in var adv = store.dynamicsConfig.advanced; adv.subBassPhaseAlignmentEnabled = v; store.updateAdvancedProcessing(adv) }
-        )
-    }
-
-    private var inlineZLReverbEnabled: Binding<Bool> {
-        Binding(
-            get: { store.dynamicsConfig.advanced.zlConvolutionReverbEnabled },
-            set: { v in var adv = store.dynamicsConfig.advanced; adv.zlConvolutionReverbEnabled = v; store.updateAdvancedProcessing(adv) }
         )
     }
 

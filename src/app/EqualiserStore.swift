@@ -90,6 +90,11 @@ final class EqualiserStore: ObservableObject {
     /// User preference for displaying bandwidth as octaves or Q factor.
     @Published var bandwidthDisplayMode: BandwidthDisplayMode = .qFactor
 
+    /// Convolution engine configuration.
+    @Published var convolutionConfig: ConvolutionConfig = ConvolutionConfig()
+    /// Error message from the most recent IR load attempt.
+    @Published var convolutionLoadError: String? = nil
+
     // MARK: - Forwarded Properties from RoutingCoordinator
     
     var routingStatus: RoutingStatus { routingCoordinator.routingStatus }
@@ -948,6 +953,61 @@ final class EqualiserStore: ObservableObject {
         adv.roomCorrectionEnabled = false
         updateAdvancedProcessing(adv)
         roomCorrectionBandCount = 0
+    }
+
+    // MARK: - Convolution Engine
+
+    func loadConvolutionIR(url: URL) {
+        convolutionLoadError = nil
+        let sr = routingCoordinator.pipelineManager.renderPipeline?.sampleRate ?? 48_000
+        Task.detached(priority: .userInitiated) {
+            do {
+                let result = try IRFileLoader.load(url: url, targetSampleRate: sr)
+                let bookmark = try? url.bookmarkData(
+                    options: .withSecurityScope,
+                    includingResourceValuesForKeys: nil,
+                    relativeTo: nil
+                )
+                await MainActor.run {
+                    self.routingCoordinator.updateConvolutionIR(
+                        left: result.leftSamples,
+                        right: result.rightSamples
+                    )
+                    self.convolutionConfig.irDisplayName = result.displayName
+                    self.convolutionConfig.irBookmark    = bookmark
+                    // Auto-enable on successful load
+                    if !self.convolutionConfig.enabled {
+                        self.setConvolutionEnabled(true)
+                    }
+                }
+            } catch {
+                await MainActor.run {
+                    self.convolutionLoadError = error.localizedDescription
+                }
+            }
+        }
+    }
+
+    func setConvolutionEnabled(_ enabled: Bool) {
+        convolutionConfig.enabled = enabled
+        routingCoordinator.pipelineManager.renderPipeline?.callbackContext?
+            .setConvolutionEnabled(enabled && convolutionConfig.irDisplayName != nil)
+    }
+
+    /// Call from routingStatus .active case (pipeline restart) alongside
+    /// the linearEQ and mixedPhase restore calls from the prior spec.
+    func reloadConvolutionIRFromBookmark() {
+        guard let bookmark = convolutionConfig.irBookmark else { return }
+        var isStale = false
+        guard let url = try? URL(
+            resolvingBookmarkData: bookmark,
+            options: .withSecurityScope,
+            relativeTo: nil,
+            bookmarkDataIsStale: &isStale
+        ) else { return }
+        guard url.startAccessingSecurityScopedResource() else { return }
+        // IRFileLoader.load will call stopAccessingSecurityScopedResource after reading
+        loadConvolutionIR(url: url)
     }
 
     private func buildTargetCurve() -> [(frequency: Double, gainDB: Double)] {

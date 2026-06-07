@@ -519,18 +519,6 @@ struct AdvancedProcessingConfig: Codable, Equatable, Sendable {
     /// Cancellation depth. Range: 0.0 – 1.0. Default: 0.5.
     var crosstalkCancellationAmount: Float = 0.5
 
-    /// Automatic Room Boundary Early Reflection Cancellation — FIR comb filter
-    /// targeting the first-order floor/ceiling/wall reflection group.
-    var earlyReflectionCancellationEnabled: Bool = false
-    /// Estimated first reflection arrival time in milliseconds. Range: 5 – 50 ms. Default: 20 ms.
-    var earlyReflectionRoomSizeMs: Float = 20.0
-
-    /// HPF Phase Linearisation — all-pass FIR compensation network that linearises
-    /// the group delay introduced by high-pass filter networks.
-    var hpfPhaseLinearizationEnabled: Bool = false
-    /// Target cutoff frequency for phase correction. Range: 20 – 200 Hz. Default: 80 Hz.
-    var hpfPhaseLinearizationFrequencyHz: Float = 80.0
-
     /// Multi-Seat Complex Averaging — combines head-related transfer function
     /// estimates from multiple listening positions into a composite correction.
     var multiSeatAveragingEnabled: Bool = false
@@ -542,12 +530,6 @@ struct AdvancedProcessingConfig: Codable, Equatable, Sendable {
     var subBassPhaseAlignmentEnabled: Bool = false
     /// Sub-bass crossover target. Range: 40 – 120 Hz. Default: 80 Hz.
     var subBassAlignmentFrequencyHz: Float = 80.0
-
-    /// Zero-Latency Convolution Reverb Engine — uniformly-partitioned FFT convolution
-    /// applying a room impulse response with zero added latency.
-    var zlConvolutionReverbEnabled: Bool = false
-    /// Dry/wet mix ratio. Range: 0.0 (dry) – 1.0 (full wet). Default: 0.1.
-    var zlConvolutionReverbMix: Float = 0.1
 
     /// 4x Oversampling — upsamples audio by 4x before EQ and downsamples after EQ.
     /// Improves high-frequency response and reduces aliasing artifacts.
@@ -604,11 +586,8 @@ struct AdvancedProcessingConfig: Codable, Equatable, Sendable {
         case linearDenoisingEnabled, linearDenoisingThresholdDB
         case speakerIRAlignmentEnabled, speakerIRDelayMs
         case crosstalkCancellationEnabled, crosstalkCancellationAmount
-        case earlyReflectionCancellationEnabled, earlyReflectionRoomSizeMs
-        case hpfPhaseLinearizationEnabled, hpfPhaseLinearizationFrequencyHz
         case multiSeatAveragingEnabled, multiSeatCount
         case subBassPhaseAlignmentEnabled, subBassAlignmentFrequencyHz
-        case zlConvolutionReverbEnabled, zlConvolutionReverbMix
         // highResDecouplingActive is not persisted (runtime-computed)
     }
 
@@ -650,16 +629,10 @@ struct AdvancedProcessingConfig: Codable, Equatable, Sendable {
         speakerIRDelayMs: Float = 0.0,
         crosstalkCancellationEnabled: Bool = false,
         crosstalkCancellationAmount: Float = 0.5,
-        earlyReflectionCancellationEnabled: Bool = false,
-        earlyReflectionRoomSizeMs: Float = 20.0,
-        hpfPhaseLinearizationEnabled: Bool = false,
-        hpfPhaseLinearizationFrequencyHz: Float = 80.0,
         multiSeatAveragingEnabled: Bool = false,
         multiSeatCount: Int = 2,
         subBassPhaseAlignmentEnabled: Bool = false,
-        subBassAlignmentFrequencyHz: Float = 80.0,
-        zlConvolutionReverbEnabled: Bool = false,
-        zlConvolutionReverbMix: Float = 0.1
+        subBassAlignmentFrequencyHz: Float = 80.0
     ) {
         self.highResDecouplingActive          = highResDecouplingActive
         self.loudnessDialogueGateEnabled      = loudnessDialogueGateEnabled
@@ -698,16 +671,10 @@ struct AdvancedProcessingConfig: Codable, Equatable, Sendable {
         self.speakerIRDelayMs                 = speakerIRDelayMs
         self.crosstalkCancellationEnabled     = crosstalkCancellationEnabled
         self.crosstalkCancellationAmount      = crosstalkCancellationAmount
-        self.earlyReflectionCancellationEnabled = earlyReflectionCancellationEnabled
-        self.earlyReflectionRoomSizeMs        = earlyReflectionRoomSizeMs
-        self.hpfPhaseLinearizationEnabled     = hpfPhaseLinearizationEnabled
-        self.hpfPhaseLinearizationFrequencyHz = hpfPhaseLinearizationFrequencyHz
         self.multiSeatAveragingEnabled        = multiSeatAveragingEnabled
         self.multiSeatCount                   = multiSeatCount
         self.subBassPhaseAlignmentEnabled     = subBassPhaseAlignmentEnabled
         self.subBassAlignmentFrequencyHz      = subBassAlignmentFrequencyHz
-        self.zlConvolutionReverbEnabled       = zlConvolutionReverbEnabled
-        self.zlConvolutionReverbMix           = zlConvolutionReverbMix
     }
 
     init(from decoder: Decoder) throws {
@@ -748,16 +715,10 @@ struct AdvancedProcessingConfig: Codable, Equatable, Sendable {
         speakerIRDelayMs                 = try c.decodeIfPresent(Float.self,                 forKey: .speakerIRDelayMs)                 ?? 0.0
         crosstalkCancellationEnabled     = try c.decodeIfPresent(Bool.self,                  forKey: .crosstalkCancellationEnabled)     ?? false
         crosstalkCancellationAmount      = try c.decodeIfPresent(Float.self,                 forKey: .crosstalkCancellationAmount)      ?? 0.5
-        earlyReflectionCancellationEnabled = try c.decodeIfPresent(Bool.self,                forKey: .earlyReflectionCancellationEnabled) ?? false
-        earlyReflectionRoomSizeMs        = try c.decodeIfPresent(Float.self,                 forKey: .earlyReflectionRoomSizeMs)        ?? 20.0
-        hpfPhaseLinearizationEnabled     = try c.decodeIfPresent(Bool.self,                  forKey: .hpfPhaseLinearizationEnabled)     ?? false
-        hpfPhaseLinearizationFrequencyHz = try c.decodeIfPresent(Float.self,                 forKey: .hpfPhaseLinearizationFrequencyHz) ?? 80.0
         multiSeatAveragingEnabled        = try c.decodeIfPresent(Bool.self,                  forKey: .multiSeatAveragingEnabled)        ?? false
         multiSeatCount                   = try c.decodeIfPresent(Int.self,                   forKey: .multiSeatCount)                   ?? 2
         subBassPhaseAlignmentEnabled     = try c.decodeIfPresent(Bool.self,                  forKey: .subBassPhaseAlignmentEnabled)     ?? false
         subBassAlignmentFrequencyHz      = try c.decodeIfPresent(Float.self,                 forKey: .subBassAlignmentFrequencyHz)      ?? 80.0
-        zlConvolutionReverbEnabled       = try c.decodeIfPresent(Bool.self,                  forKey: .zlConvolutionReverbEnabled)       ?? false
-        zlConvolutionReverbMix           = try c.decodeIfPresent(Float.self,                 forKey: .zlConvolutionReverbMix)           ?? 0.1
         highResDecouplingActive          = false  // always computed at runtime
     }
 
@@ -799,16 +760,10 @@ struct AdvancedProcessingConfig: Codable, Equatable, Sendable {
         try c.encode(speakerIRDelayMs,                   forKey: .speakerIRDelayMs)
         try c.encode(crosstalkCancellationEnabled,       forKey: .crosstalkCancellationEnabled)
         try c.encode(crosstalkCancellationAmount,        forKey: .crosstalkCancellationAmount)
-        try c.encode(earlyReflectionCancellationEnabled, forKey: .earlyReflectionCancellationEnabled)
-        try c.encode(earlyReflectionRoomSizeMs,          forKey: .earlyReflectionRoomSizeMs)
-        try c.encode(hpfPhaseLinearizationEnabled,       forKey: .hpfPhaseLinearizationEnabled)
-        try c.encode(hpfPhaseLinearizationFrequencyHz,   forKey: .hpfPhaseLinearizationFrequencyHz)
         try c.encode(multiSeatAveragingEnabled,          forKey: .multiSeatAveragingEnabled)
         try c.encode(multiSeatCount,                     forKey: .multiSeatCount)
         try c.encode(subBassPhaseAlignmentEnabled,       forKey: .subBassPhaseAlignmentEnabled)
         try c.encode(subBassAlignmentFrequencyHz,        forKey: .subBassAlignmentFrequencyHz)
-        try c.encode(zlConvolutionReverbEnabled,         forKey: .zlConvolutionReverbEnabled)
-        try c.encode(zlConvolutionReverbMix,             forKey: .zlConvolutionReverbMix)
     }
 }
 

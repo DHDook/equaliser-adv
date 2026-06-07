@@ -771,6 +771,12 @@ final class AudioRoutingCoordinator: ObservableObject {
         pipelineManager.volumeManager?.setMuted(muted)
     }
 
+    /// Updates the convolution engine's impulse response.
+    func updateConvolutionIR(left: [Float], right: [Float]) {
+        pipelineManager.renderPipeline?.callbackContext?
+            .updateConvolutionIR(left: left, right: right)
+    }
+
     // MARK: - Private Methods
 
     /// Ensures the driver is visible in CoreAudio, retrying if necessary.

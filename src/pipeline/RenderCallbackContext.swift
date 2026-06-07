@@ -129,6 +129,11 @@ final class RenderCallbackContext: @unchecked Sendable {
     private nonisolated(unsafe) var rightAllPassChain: AllPassChain
     private let _mixedPhaseEnabled: ManagedAtomic<Int32>
 
+    // MARK: - Convolution Engine
+
+    private nonisolated(unsafe) var convolutionEngine: ConvolutionEngine
+    private let _convolutionEnabled: ManagedAtomic<Int32>
+
     // MARK: - Sweep Playback
 
     /// Sweep buffer for room correction measurement.
@@ -503,6 +508,8 @@ final class RenderCallbackContext: @unchecked Sendable {
         self.leftAllPassChain   = AllPassChain()
         self.rightAllPassChain  = AllPassChain()
         self._mixedPhaseEnabled = ManagedAtomic(0)
+        self.convolutionEngine = ConvolutionEngine()
+        self._convolutionEnabled = ManagedAtomic(0)
 
         let osAdditional = max(0, Int(channelCount) - 1)
         self.oversampledBufferListSize = MemoryLayout<AudioBufferList>.size
@@ -969,6 +976,21 @@ final class RenderCallbackContext: @unchecked Sendable {
         setOversamplingEnabled(config.advanced.oversamplingEnabled)
     }
 
+    /// Updates the convolution engine's impulse response.
+    /// - Parameters:
+    ///   - left: Left channel impulse response samples.
+    ///   - right: Right channel impulse response samples.
+    func updateConvolutionIR(left: [Float], right: [Float]) {
+        convolutionEngine.updateIR(left: left, right: right)
+    }
+
+    /// Enables or disables convolution processing.
+    /// - Parameter enabled: Whether convolution should be enabled.
+    func setConvolutionEnabled(_ enabled: Bool) {
+        _convolutionEnabled.store(enabled ? 1 : 0, ordering: .relaxed)
+        convolutionEngine.setEnabled(enabled)
+    }
+
     /// Processes all EQ layers on processing buffers in-place.
     /// Called from audio thread after provideFrames() fills the processing buffers.
     /// - Parameter frameCount: Number of frames to process.
@@ -1013,6 +1035,21 @@ final class RenderCallbackContext: @unchecked Sendable {
                 for chain in rightEQChains {
                     chain.applyPendingUpdates()
                     chain.process(buffer: processingBuffers[1], frameCount: frameCount)
+                }
+            }
+        }
+
+        // --- Convolution processing (after EQ chain) ---
+        if _convolutionEnabled.load(ordering: .relaxed) != 0 {
+            let bufL = processingBuffers[0]
+            let bufR = channelCount > 1 ? processingBuffers[1] : nil
+            for i in 0..<Int(frameCount) {
+                let left = bufL[i]
+                let right = bufR?[i] ?? left
+                let processed = convolutionEngine.process(left: left, right: right)
+                bufL[i] = processed.left
+                if let bufR = bufR {
+                    bufR[i] = processed.right
                 }
             }
         }
