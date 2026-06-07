@@ -81,6 +81,7 @@ struct ChannelBalanceSlider: View {
             Text("Balance")
                 .font(.caption)
                 .foregroundStyle(.tertiary)
+                .padding(.bottom, 4)
 
             GeometryReader { geometry in
                 ZStack(alignment: .leading) {
@@ -171,14 +172,13 @@ struct ChannelBalanceSlider: View {
 struct MasterVolumeSlider: View {
     @Binding var volume: Float
     @Binding var isMuted: Bool
-    let onVolumeChange: (Float) -> Void
-    let onMuteChange: (Bool) -> Void
 
     var body: some View {
         VStack(spacing: 0) {
             Text("Volume")
                 .font(.caption)
                 .foregroundStyle(.tertiary)
+                .padding(.bottom, 4)
 
             GeometryReader { geometry in
                 ZStack(alignment: .leading) {
@@ -198,12 +198,14 @@ struct MasterVolumeSlider: View {
                         .onChanged { value in
                             let newValue = valueAt(position: value.location, in: geometry.size)
                             volume = Float(newValue)
-                            onVolumeChange(volume)
 
                             // Auto-mute at zero volume
                             if volume <= 0.0 {
                                 isMuted = true
-                                onMuteChange(true)
+                            }
+                            // Auto-unmute when volume is increased from 0
+                            else if volume > 0.0 && isMuted {
+                                isMuted = false
                             }
                         }
                 )
@@ -216,21 +218,16 @@ struct MasterVolumeSlider: View {
                 Text(volumePercentage)
                     .font(.system(size: 8))
                     .foregroundStyle(.tertiary)
-                    .frame(minWidth: 24, alignment: .trailing)
+                    .frame(minWidth: 32, alignment: .trailing)
             }
             .frame(width: 120)
 
-            HStack(spacing: 4) {
-                Toggle("", isOn: Binding(
-                    get: { isMuted },
-                    set: { newValue in
-                        isMuted = newValue
-                        onMuteChange(newValue)
-                    }
-                ))
-                .toggleStyle(.checkbox)
+            HStack(spacing: 6) {
+                Toggle("", isOn: $isMuted)
+                    .toggleStyle(.checkbox)
+                    .controlSize(.small)
                 Text("Mute")
-                    .font(.caption)
+                    .font(.system(size: 8))
                     .foregroundStyle(.secondary)
             }
             .frame(width: 120, alignment: .leading)
@@ -239,7 +236,7 @@ struct MasterVolumeSlider: View {
 
     private var volumePercentage: String {
         let percentage = Int(volume * 100)
-        return "\(percentage)"
+        return "\(percentage)%"
     }
 
     private func thumbOffset(in size: CGSize) -> CGFloat {
