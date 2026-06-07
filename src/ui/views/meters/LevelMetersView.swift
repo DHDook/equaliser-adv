@@ -226,7 +226,6 @@ struct MasterVolumeSlider: View {
                         .font(.system(size: 8))
                 }
                 .buttonStyle(PressedButtonStyle(isPressed: isMuted))
-                .controlSize(.mini)
                 Spacer()
                 Text(volumePercentage)
                     .font(.system(size: 8))

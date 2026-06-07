@@ -76,7 +76,7 @@ struct EQCurveView: View {
         }
 
         // Vertical frequency lines
-        let freqLines: [Double] = [50, 100, 200, 500, 1_000, 2_000, 5_000, 10_000, 20_000]
+        let freqLines: [Double] = [20, 50, 100, 200, 500, 1_000, 2_000, 5_000, 10_000, 20_000]
 
         for f in freqLines {
             let x = xForFreq(f, width: size.width)
@@ -91,13 +91,13 @@ struct EQCurveView: View {
 
     private func drawFreqLabels(ctx: GraphicsContext, size: CGSize) {
         let labelFreqs: [(Double, String)] = [
-            (50, "50"), (100, "100"), (200, "200"), (500, "500"),
+            (20, "20"), (50, "50"), (100, "100"), (200, "200"), (500, "500"),
             (1_000, "1k"), (2_000, "2k"), (5_000, "5k"), (10_000, "10k"), (20_000, "20k")
         ]
         for (f, label) in labelFreqs {
             let x = xForFreq(f, width: size.width)
             let isRightmost = f == 20_000
-            let isLeftmost = f == 50
+            let isLeftmost = f == 20
 
             let anchor: UnitPoint
             if isRightmost {
