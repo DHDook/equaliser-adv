@@ -224,8 +224,17 @@ struct MasterVolumeSlider: View {
                 }) {
                     Text("Mute")
                         .font(.system(size: 8))
+                        .foregroundStyle(isMuted ? .white : .secondary)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(isMuted ? Color.accentColor : Color.clear)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 4)
+                                .stroke(Color.accentColor, lineWidth: 1)
+                        )
+                        .cornerRadius(4)
                 }
-                .buttonStyle(PressedButtonStyle(isPressed: isMuted))
+                .buttonStyle(.plain)
                 Spacer()
                 Text(volumePercentage)
                     .font(.system(size: 8))

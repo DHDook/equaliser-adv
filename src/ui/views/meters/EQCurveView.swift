@@ -69,7 +69,7 @@ struct EQCurveView: View {
                     Text(label)
                         .font(.system(size: 7, design: .monospaced))
                         .foregroundStyle(.secondary.opacity(0.6)),
-                    at: CGPoint(x: 20, y: y - 6),
+                    at: CGPoint(x: 4, y: y - 6),
                     anchor: .topLeading
                 )
             }
@@ -112,7 +112,7 @@ struct EQCurveView: View {
             if isRightmost {
                 xOffset = -4
             } else if isLeftmost {
-                xOffset = 4
+                xOffset = 12
             } else {
                 xOffset = 0
             }
