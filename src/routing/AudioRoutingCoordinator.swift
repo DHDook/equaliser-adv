@@ -741,7 +741,29 @@ final class AudioRoutingCoordinator: ObservableObject {
     func reapplyConfiguration() {
         eqStager.reapplyConfiguration()
     }
-    
+
+    // MARK: - Volume Control
+
+    /// Current master volume (0.0 - 1.0).
+    var masterVolume: Float {
+        pipelineManager.volumeManager?.gain ?? 1.0
+    }
+
+    /// Whether audio is muted.
+    var isMuted: Bool {
+        pipelineManager.volumeManager?.muted ?? false
+    }
+
+    /// Sets the master volume (0.0 - 1.0).
+    func setMasterVolume(_ volume: Float) {
+        pipelineManager.volumeManager?.setGain(volume)
+    }
+
+    /// Sets the mute state.
+    func setMuted(_ muted: Bool) {
+        pipelineManager.volumeManager?.setMuted(muted)
+    }
+
     // MARK: - Private Methods
 
     /// Ensures the driver is visible in CoreAudio, retrying if necessary.

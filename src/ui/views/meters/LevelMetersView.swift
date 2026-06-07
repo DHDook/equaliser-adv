@@ -78,6 +78,10 @@ struct ChannelBalanceSlider: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            Text("Balance")
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+
             GeometryReader { geometry in
                 ZStack(alignment: .leading) {
                     // Background track (always gray)
@@ -128,9 +132,6 @@ struct ChannelBalanceSlider: View {
                 }
             }
             .frame(width: 120)
-            Text("Balance")
-                .font(.caption)
-                .foregroundStyle(.tertiary)
         }
     }
 
@@ -164,6 +165,91 @@ struct ChannelBalanceSlider: View {
     private func valueAt(position: CGPoint, in size: CGSize) -> Double {
         let normalizedPosition = max(0, min(1, position.x / size.width))
         return (normalizedPosition * 2.0) - 1.0
+    }
+}
+
+struct MasterVolumeSlider: View {
+    @Binding var volume: Float
+    @Binding var isMuted: Bool
+    let onVolumeChange: (Float) -> Void
+    let onMuteChange: (Bool) -> Void
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Text("Volume")
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+
+            GeometryReader { geometry in
+                ZStack(alignment: .leading) {
+                    // Background track (always gray)
+                    RoundedRectangle(cornerRadius: 2)
+                        .fill(Color.secondary.opacity(0.3))
+                        .frame(height: 4)
+
+                    // Thumb
+                    Circle()
+                        .fill(Color.accentColor)
+                        .frame(width: 12, height: 12)
+                        .offset(x: thumbOffset(in: geometry.size))
+                }
+                .gesture(
+                    DragGesture(minimumDistance: 0)
+                        .onChanged { value in
+                            let newValue = valueAt(position: value.location, in: geometry.size)
+                            volume = Float(newValue)
+                            onVolumeChange(volume)
+
+                            // Auto-mute at zero volume
+                            if volume <= 0.0 {
+                                isMuted = true
+                                onMuteChange(true)
+                            }
+                        }
+                )
+            }
+            .frame(height: 20)
+            .frame(width: 120)
+
+            HStack(spacing: 4) {
+                Spacer()
+                Text(volumePercentage)
+                    .font(.system(size: 8))
+                    .foregroundStyle(.tertiary)
+                    .frame(minWidth: 24, alignment: .trailing)
+            }
+            .frame(width: 120)
+
+            HStack(spacing: 4) {
+                Toggle("", isOn: Binding(
+                    get: { isMuted },
+                    set: { newValue in
+                        isMuted = newValue
+                        onMuteChange(newValue)
+                    }
+                ))
+                .toggleStyle(.checkbox)
+                Text("Mute")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .frame(width: 120, alignment: .leading)
+        }
+    }
+
+    private var volumePercentage: String {
+        let percentage = Int(volume * 100)
+        return "\(percentage)"
+    }
+
+    private func thumbOffset(in size: CGSize) -> CGFloat {
+        let normalizedValue = Double(volume) // 0.0 to 1.0
+        return size.width * CGFloat(normalizedValue) - 6
+    }
+
+    private func valueAt(position: CGPoint, in size: CGSize) -> Double {
+        let normalizedPosition = max(0, min(1, position.x / size.width))
+        return normalizedPosition // 0.0 to 1.0
     }
 }
 

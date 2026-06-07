@@ -45,7 +45,7 @@ struct EQWindowView: View {
                         .animation(.easeInOut(duration: 0.25), value: metersEnabledUI)
 
                     EQCurveView(metersEnabled: metersEnabledUI)
-                        .frame(width: 320, alignment: .leading)
+                        .frame(width: 333, alignment: .leading)
                         .offset(x: -8)
                         .padding(.leading, 16)
                         .padding(.top, 4)
@@ -66,6 +66,24 @@ struct EQWindowView: View {
                             get: { store.dynamicsConfig.channelBalance },
                             set: { store.updateChannelBalance($0) }
                         )
+                    )
+
+                    MasterVolumeSlider(
+                        volume: Binding(
+                            get: { store.routingCoordinator.masterVolume },
+                            set: { store.routingCoordinator.setMasterVolume($0) }
+                        ),
+                        isMuted: Binding(
+                            get: { store.routingCoordinator.isMuted },
+                            set: { store.routingCoordinator.setMuted($0) }
+                        ),
+                        onVolumeChange: { volume in
+                            // Unmute when volume is increased from 0
+                            if volume > 0.0 && store.routingCoordinator.isMuted {
+                                store.routingCoordinator.setMuted(false)
+                            }
+                        },
+                        onMuteChange: { _ in }
                     )
                 }
 

@@ -30,7 +30,7 @@ final class PipelineManager {
     // MARK: - State
 
     private(set) var renderPipeline: RenderPipeline?
-    private var volumeManager: VolumeManager?
+    private(set) var volumeManager: VolumeManager?
 
     private let logger = Logger(subsystem: "net.knage.equaliser", category: "PipelineManager")
 
