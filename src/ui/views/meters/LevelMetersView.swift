@@ -264,7 +264,7 @@ struct PressedButtonStyle: ButtonStyle {
             .background(isPressed ? Color.accentColor : Color.clear)
             .overlay(
                 RoundedRectangle(cornerRadius: 4)
-                    .stroke(isPressed ? Color.accentColor : Color.accentColor.opacity(0.5), lineWidth: 1)
+                    .stroke(Color.accentColor, lineWidth: 1)
             )
             .cornerRadius(4)
     }
