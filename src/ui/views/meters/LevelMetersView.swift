@@ -200,18 +200,9 @@ struct MasterVolumeSlider: View {
                             isDragging = true
                             let newValue = valueAt(position: value.location, in: geometry.size)
                             volume = Float(newValue)
-
-                            // Auto-mute at zero volume (only when dragging)
-                            if volume <= 0.0 {
-                                isMuted = true
-                            }
                         }
                         .onEnded { _ in
                             isDragging = false
-                            // Auto-unmute when volume is increased from 0 (only when dragging ends)
-                            if volume > 0.0 && isMuted {
-                                isMuted = false
-                            }
                         }
                 )
             }
