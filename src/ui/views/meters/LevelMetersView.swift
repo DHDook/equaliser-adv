@@ -261,8 +261,12 @@ struct PressedButtonStyle: ButtonStyle {
             .foregroundStyle(isPressed ? .primary : .secondary)
             .padding(.horizontal, 6)
             .padding(.vertical, 2)
-            .background(isPressed ? Color.accentColor.opacity(0.3) : Color.clear)
+            .background(isPressed ? Color.accentColor.opacity(0.3) : Color.secondary.opacity(0.1))
             .cornerRadius(4)
+            .overlay(
+                RoundedRectangle(cornerRadius: 4)
+                    .stroke(Color.secondary.opacity(0.3), lineWidth: 1)
+            )
     }
 }
 
