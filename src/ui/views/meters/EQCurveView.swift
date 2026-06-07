@@ -54,8 +54,8 @@ struct EQCurveView: View {
             let y = yForDB(db, height: size.height)
             let isZero = db == 0
             var path = Path()
-            path.move(to: CGPoint(x: 0, y: max(4, min(size.height - 4, y))))
-            path.addLine(to: CGPoint(x: size.width, y: max(4, min(size.height - 4, y))))
+            path.move(to: CGPoint(x: 0, y: max(8, min(size.height - 4, y))))
+            path.addLine(to: CGPoint(x: size.width, y: max(8, min(size.height - 4, y))))
             ctx.stroke(path,
                        with: .color(.secondary.opacity(isZero ? 0.55 : 0.18)),
                        style: StrokeStyle(
@@ -69,7 +69,7 @@ struct EQCurveView: View {
                     Text(label)
                         .font(.system(size: 7, design: .monospaced))
                         .foregroundStyle(.secondary.opacity(0.6)),
-                    at: CGPoint(x: 4, y: max(4, min(size.height - 4, y)) - 14),
+                    at: CGPoint(x: 4, y: max(8, min(size.height - 4, y)) - 14),
                     anchor: .topLeading
                 )
             }
@@ -82,7 +82,7 @@ struct EQCurveView: View {
             let x = xForFreq(f, width: size.width)
             var path = Path()
             path.move(to: CGPoint(x: x, y: 0))
-            path.addLine(to: CGPoint(x: x, y: size.height - 18)) // leave room for freq labels
+            path.addLine(to: CGPoint(x: x, y: size.height - 24)) // leave room for freq labels
             ctx.stroke(path,
                        with: .color(.secondary.opacity(0.15)),
                        style: StrokeStyle(lineWidth: 0.5, dash: [3, 4]))
@@ -190,7 +190,9 @@ struct EQCurveView: View {
     private func yForDB(_ db: Double, height: CGFloat) -> CGFloat {
         let clamped = max(-maxDB, min(maxDB, db))
         let norm = clamped / maxDB          // +1.0 … −1.0
-        return height * 0.5 * (1.0 - norm) // 0 = top, height = bottom
+        let verticalPadding: CGFloat = 8
+        let availableHeight = height - (verticalPadding * 2)
+        return verticalPadding + availableHeight * 0.5 * (1.0 - norm) // 0 = top, height = bottom
     }
 
     // MARK: - Magnitude Response Computation

@@ -206,10 +206,13 @@ struct MasterVolumeSlider: View {
 
             HStack(spacing: 4) {
                 Toggle(isOn: $isMuted) {
-                    Text("Mute")
-                        .font(.system(size: 8))
+                    EmptyView()
                 }
                 .toggleStyle(.switch)
+                .controlSize(.mini)
+                Text("Mute")
+                    .font(.system(size: 8))
+                    .foregroundStyle(.secondary)
                 Spacer()
                 Text(volumePercentage)
                     .font(.system(size: 8))
