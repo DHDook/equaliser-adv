@@ -82,7 +82,7 @@ struct EQCurveView: View {
             let x = xForFreq(f, width: size.width)
             var path = Path()
             path.move(to: CGPoint(x: x, y: 0))
-            path.addLine(to: CGPoint(x: x, y: size.height - 24)) // leave room for freq labels
+            path.addLine(to: CGPoint(x: x, y: size.height - 26)) // leave room for freq labels
             ctx.stroke(path,
                        with: .color(.secondary.opacity(0.15)),
                        style: StrokeStyle(lineWidth: 0.5, dash: [3, 4]))
