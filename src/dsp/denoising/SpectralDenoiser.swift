@@ -87,30 +87,31 @@ final class SpectralDenoiser: @unchecked Sendable {
 
         var srcPos = 0
         while srcPos < count {
-            // Accumulate input
+            // Fill the second half of inputAccum (the "new samples" region)
             let chunk = min(hop - accumPos, count - srcPos)
-            for i in 0..<chunk { inputAccum[accumPos + i] = buffer[srcPos + i] }
+            for i in 0..<chunk {
+                inputAccum[hop + accumPos + i] = buffer[srcPos + i]
+            }
             accumPos += chunk
             srcPos   += chunk
 
             if accumPos == hop {
+                // inputAccum[0..<hop]  = previous block's samples (history)
+                // inputAccum[hop..<N]  = current block's new samples
                 // Apply Hann window to inputAccum
                 var windowed = [Float](repeating: 0, count: N)
-                for i in 0..<hop {
-                    let w = 0.5 * (1.0 - cos(2.0 * Float.pi * Float(i) / Float(hop - 1)))
+                for i in 0..<N {
+                    let w = 0.5 * (1.0 - cos(2.0 * Float.pi * Float(i) / Float(N - 1)))
                     windowed[i] = inputAccum[i] * w
                 }
 
                 // Forward FFT (zrip)
                 workReal = windowed
-                workImag = [Float](repeating: 0, count: N)
+                vDSP_vclr(&workImag, 1, vDSP_Length(N))
                 workReal.withUnsafeMutableBufferPointer { rp in
                     workImag.withUnsafeMutableBufferPointer { ip in
-                        rp.baseAddress!.withMemoryRebound(to: DSPComplex.self, capacity: halfN) { cBuf in
-                            var sc = DSPSplitComplex(realp: rp.baseAddress!, imagp: ip.baseAddress!)
-                            vDSP_ctoz(cBuf, 2, &sc, 1, vDSP_Length(halfN))
-                            vDSP_fft_zrip(fftSetup, &sc, 1, log2n, Int32(FFT_FORWARD))
-                        }
+                        var sc = DSPSplitComplex(realp: rp.baseAddress!, imagp: ip.baseAddress!)
+                        vDSP_fft_zrip(fftSetup, &sc, 1, log2n, Int32(FFT_FORWARD))
                     }
                 }
 
@@ -128,29 +129,29 @@ final class SpectralDenoiser: @unchecked Sendable {
                     workImag.withUnsafeMutableBufferPointer { ip in
                         var sc = DSPSplitComplex(realp: rp.baseAddress!, imagp: ip.baseAddress!)
                         vDSP_fft_zrip(fftSetup, &sc, 1, log2n, Int32(FFT_INVERSE))
-                        var scale: Float = 1.0 / Float(N)
+                        var scale: Float = 1.0 / Float(2 * N)
                         vDSP_vsmul(rp.baseAddress!, 1, &scale, rp.baseAddress!, 1, vDSP_Length(N))
                     }
                 }
 
                 // Overlap-add into output overlap buffer
-                for i in 0..<hop {
+                // Accumulate the full N-point IFFT result into the overlap buffer
+                for i in 0..<N {
                     outputOverlap[i] += workReal[i]
                 }
 
-                // Write the first hop of overlap to output ring
+                // Write the completed first hop to the output ring
                 for i in 0..<hop {
                     outRing[outWritePos] = outputOverlap[i]
                     outWritePos = (outWritePos + 1) % ringSize
                 }
 
-                // Shift overlap buffer: move second half to first half
+                // Shift the overlap buffer left by hop, clearing the tail
                 for i in 0..<hop { outputOverlap[i] = outputOverlap[hop + i] }
                 for i in hop..<N { outputOverlap[i] = 0 }
 
-                // Overlap-add the second half of the IFFT result
-                for i in 0..<hop { outputOverlap[i] += workReal[hop + i] }
-
+                // Shift: current block becomes history for next block
+                for i in 0..<hop { inputAccum[i] = inputAccum[hop + i] }
                 accumPos = 0
             }
         }

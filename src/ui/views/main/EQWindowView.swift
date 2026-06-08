@@ -155,7 +155,7 @@ struct EQWindowView: View {
                 Spacer()
 
                 Spacer()
-                    .frame(width: 256)
+                    .frame(width: 192)
 
                 VStack(spacing: 4) {
                     Text("Bands")
