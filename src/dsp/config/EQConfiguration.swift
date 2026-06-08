@@ -8,6 +8,8 @@ import os.log
 enum ChannelFocus: String, Codable, Sendable {
     case left
     case right
+    case mid    // active when channelMode == .midSide
+    case side   // active when channelMode == .midSide
 }
 
 /// Configuration for a single EQ band.
@@ -137,12 +139,18 @@ final class EQConfiguration: ObservableObject {
     /// Band count for the currently focused channel.
     /// In linked mode, returns activeBandCount.
     /// In stereo mode, returns the band count of the focused channel.
+    /// In midSide mode, returns the band count of the focused channel (Mid or Side).
     var focusedChannelBandCount: Int {
         switch channelMode {
         case .linked:
             return activeBandCount
         case .stereo:
             return channelFocus == .left
+                ? leftState.userEQ.activeBandCount
+                : rightState.userEQ.activeBandCount
+        case .midSide:
+            // Mid stored in leftState, Side stored in rightState
+            return (channelFocus == .mid || channelFocus == .left)
                 ? leftState.userEQ.activeBandCount
                 : rightState.userEQ.activeBandCount
         }
@@ -157,12 +165,18 @@ final class EQConfiguration: ObservableObject {
     /// Returns bands for the currently edited channel:
     /// - In linked mode: left channel bands (both channels have same settings)
     /// - In stereo mode: bands for the channel being edited
+    /// - In midSide mode: Mid stored in leftState, Side stored in rightState
     var bands: [EQBandConfiguration] {
         switch channelMode {
         case .linked:
             return leftState.userEQ.bands
         case .stereo:
             return channelFocus == .left
+                ? leftState.userEQ.bands
+                : rightState.userEQ.bands
+        case .midSide:
+            // Mid stored in leftState, Side stored in rightState
+            return (channelFocus == .mid || channelFocus == .left)
                 ? leftState.userEQ.bands
                 : rightState.userEQ.bands
         }
@@ -258,9 +272,11 @@ final class EQConfiguration: ObservableObject {
             rightState.userEQ.activeBandCount = clamped
             activeBandCount = clamped
 
-        case .stereo:
+        case .stereo, .midSide:
             // Stereo mode: set only the channel being edited
-            if channelFocus == .left {
+            // MidSide mode: Mid stored in leftState, Side stored in rightState
+            let editLeft = (channelFocus == .left || channelFocus == .mid)
+            if editLeft {
                 let oldCount = leftState.userEQ.activeBandCount
                 guard clamped != oldCount else { return clamped }
 
@@ -337,12 +353,13 @@ final class EQConfiguration: ObservableObject {
             // Linked mode: set both channels
             leftState.userEQ.activeBandCount = clamped
             rightState.userEQ.activeBandCount = clamped
-        case .stereo:
+        case .stereo, .midSide:
             // Stereo mode: set only the specified channel
+            // MidSide mode: Mid stored in leftState, Side stored in rightState
             switch channel {
-            case .left:
+            case .left, .mid:
                 leftState.userEQ.activeBandCount = clamped
-            case .right:
+            case .right, .side:
                 rightState.userEQ.activeBandCount = clamped
             }
         }
@@ -350,7 +367,7 @@ final class EQConfiguration: ObservableObject {
         switch channelMode {
         case .linked:
             activeBandCount = leftState.userEQ.activeBandCount
-        case .stereo:
+        case .stereo, .midSide:
             activeBandCount = max(leftState.userEQ.activeBandCount, rightState.userEQ.activeBandCount)
         }
     }
@@ -434,22 +451,41 @@ final class EQConfiguration: ObservableObject {
     func setChannelMode(_ newMode: ChannelMode) {
         guard newMode != channelMode else { return }
 
-        if newMode == .stereo && channelMode == .linked {
-            // Copy left state to right when switching to stereo
+        switch (channelMode, newMode) {
+        case (.linked, .stereo):
+            // Give right channel a copy of linked bands as starting point
             rightState = leftState
-        } else if newMode == .linked && channelMode == .stereo {
-            // Copy left state to right when switching to linked ("L always wins")
+        case (.stereo, .linked):
+            // Discard independent right bands; use left as the linked config
             rightState = leftState
+            channelFocus = .left
+        case (.linked, .midSide):
+            // Start with identical Mid and Side (flat side = unaltered stereo image)
+            rightState = leftState
+            channelFocus = .mid
+        case (.midSide, .linked):
+            // Left (Mid) state becomes the linked configuration; discard Side bands
+            rightState = leftState
+            channelFocus = .left
+        case (.stereo, .midSide):
+            // Reinterpret L as Mid and R as Side — no data change needed
+            channelFocus = .mid
+        case (.midSide, .stereo):
+            // Reinterpret Mid as L and Side as R — no data change needed
+            channelFocus = .left
+        default:
+            break
         }
 
         channelMode = newMode
 
-        // Update activeBandCount to reflect the mode change
+        // Sync activeBandCount for the new mode
         switch channelMode {
         case .linked:
             activeBandCount = leftState.userEQ.activeBandCount
-        case .stereo:
-            activeBandCount = max(leftState.userEQ.activeBandCount, rightState.userEQ.activeBandCount)
+        case .stereo, .midSide:
+            activeBandCount = max(leftState.userEQ.activeBandCount,
+                                  rightState.userEQ.activeBandCount)
         }
 
         objectWillChange.send()
@@ -464,6 +500,7 @@ final class EQConfiguration: ObservableObject {
     /// Updates the gain for a specific band.
     /// In linked mode, updates both channels.
     /// In stereo mode, updates only the currently edited channel.
+    /// In midSide mode, Mid stored in leftState, Side stored in rightState.
     func updateBandGain(index: Int, gain: Float) {
         guard isValidIndex(index) else { return }
 
@@ -471,7 +508,8 @@ final class EQConfiguration: ObservableObject {
             leftState.userEQ.bands[index].gain = gain
             rightState.userEQ.bands[index].gain = gain
         } else {
-            if channelFocus == .left {
+            let editLeft = (channelFocus == .left || channelFocus == .mid)
+            if editLeft {
                 leftState.userEQ.bands[index].gain = gain
             } else {
                 rightState.userEQ.bands[index].gain = gain
@@ -503,7 +541,8 @@ final class EQConfiguration: ObservableObject {
             leftState.userEQ.bands[index].q = q
             rightState.userEQ.bands[index].q = q
         } else {
-            if channelFocus == .left {
+            let editLeft = (channelFocus == .left || channelFocus == .mid)
+            if editLeft {
                 leftState.userEQ.bands[index].q = q
             } else {
                 rightState.userEQ.bands[index].q = q
@@ -535,7 +574,8 @@ final class EQConfiguration: ObservableObject {
             leftState.userEQ.bands[index].frequency = frequency
             rightState.userEQ.bands[index].frequency = frequency
         } else {
-            if channelFocus == .left {
+            let editLeft = (channelFocus == .left || channelFocus == .mid)
+            if editLeft {
                 leftState.userEQ.bands[index].frequency = frequency
             } else {
                 rightState.userEQ.bands[index].frequency = frequency
@@ -567,7 +607,8 @@ final class EQConfiguration: ObservableObject {
             leftState.userEQ.bands[index].bypass = bypass
             rightState.userEQ.bands[index].bypass = bypass
         } else {
-            if channelFocus == .left {
+            let editLeft = (channelFocus == .left || channelFocus == .mid)
+            if editLeft {
                 leftState.userEQ.bands[index].bypass = bypass
             } else {
                 rightState.userEQ.bands[index].bypass = bypass
@@ -599,7 +640,8 @@ final class EQConfiguration: ObservableObject {
             leftState.userEQ.bands[index].filterType = filterType
             rightState.userEQ.bands[index].filterType = filterType
         } else {
-            if channelFocus == .left {
+            let editLeft = (channelFocus == .left || channelFocus == .mid)
+            if editLeft {
                 leftState.userEQ.bands[index].filterType = filterType
             } else {
                 rightState.userEQ.bands[index].filterType = filterType
@@ -631,7 +673,8 @@ final class EQConfiguration: ObservableObject {
             leftState.userEQ.bands[index].slope = slope
             rightState.userEQ.bands[index].slope = slope
         } else {
-            if channelFocus == .left {
+            let editLeft = (channelFocus == .left || channelFocus == .mid)
+            if editLeft {
                 leftState.userEQ.bands[index].slope = slope
             } else {
                 rightState.userEQ.bands[index].slope = slope

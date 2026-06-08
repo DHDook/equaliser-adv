@@ -654,7 +654,9 @@ final class RenderPipeline {
     // MARK: - EQ Control
 
     /// Updates the processing mode on the audio thread.
-    func updateProcessingMode(systemEQOff: Bool, compareMode: CompareMode) {
+    func updateProcessingMode(systemEQOff: Bool,
+                          compareMode: CompareMode,
+                          channelMode: ChannelMode) {
         let mode: Int32
         if systemEQOff {
             mode = 0
@@ -668,6 +670,7 @@ final class RenderPipeline {
         callbackContext?.processingMode = mode
         callbackContext?.setLinearPhaseEnabled(compareMode == .linearEQ && !systemEQOff)
         callbackContext?.setMixedPhaseEnabled(compareMode == .mixedPhase && !systemEQOff)
+        callbackContext?.setMidSideEnabled(channelMode == .midSide && !systemEQOff)
     }
 
     /// Updates whether meters are enabled on the audio thread.

@@ -237,8 +237,19 @@ final class EQCoefficientStager {
             slope: config.slope
         )
 
-        let target: EQChannelTarget = eqConfiguration.channelMode == .linked ? .both :
-            (eqConfiguration.channelFocus == .left ? .left : .right)
+        let target: EQChannelTarget
+        switch eqConfiguration.channelMode {
+        case .linked:
+            target = .both
+        case .stereo:
+            target = eqConfiguration.channelFocus == .left ? .left : .right
+        case .midSide:
+            // Mid stored in leftState → leftEQChain
+            // Side stored in rightState → rightEQChain
+            let editingMid = (eqConfiguration.channelFocus == .mid ||
+                              eqConfiguration.channelFocus == .left)
+            target = editingMid ? .left : .right
+        }
 
         renderPipeline?.updateBandCoefficients(
             channel: target,

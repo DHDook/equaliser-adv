@@ -157,8 +157,12 @@ final class PipelineManager {
     // MARK: - Pipeline Pass-throughs
 
     /// Updates the processing mode on the render pipeline.
-    func updateProcessingMode(systemEQOff: Bool, compareMode: CompareMode) {
-        renderPipeline?.updateProcessingMode(systemEQOff: systemEQOff, compareMode: compareMode)
+    func updateProcessingMode(systemEQOff: Bool,
+                          compareMode: CompareMode,
+                          channelMode: ChannelMode) {
+        renderPipeline?.updateProcessingMode(systemEQOff: systemEQOff,
+                                         compareMode: compareMode,
+                                         channelMode: channelMode)
     }
 
     /// Updates the input gain on the render pipeline.

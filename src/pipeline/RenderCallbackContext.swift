@@ -122,6 +122,10 @@ final class RenderCallbackContext: @unchecked Sendable {
     private nonisolated(unsafe) var linearPhaseEngine: LinearPhaseEQEngine
     private let _linearPhaseEnabled: ManagedAtomic<Int32>
 
+    // MARK: - Mid/Side EQ
+
+    private let _midSideEnabled: ManagedAtomic<Int32>
+
     // MARK: - Mixed Phase EQ
 
     // Mixed-phase all-pass chains (one per channel)
@@ -307,6 +311,14 @@ final class RenderCallbackContext: @unchecked Sendable {
     func setLinearPhaseEnabled(_ enabled: Bool) {
         _linearPhaseEnabled.store(enabled ? 1 : 0, ordering: .relaxed)
         if !enabled { linearPhaseEngine.reset() }
+    }
+
+    var isMidSideEnabled: Bool {
+        _midSideEnabled.load(ordering: .relaxed) != 0
+    }
+
+    func setMidSideEnabled(_ enabled: Bool) {
+        _midSideEnabled.store(enabled ? 1 : 0, ordering: .relaxed)
     }
 
     func updateLinearPhaseIR(leftBands: [EQBandConfiguration],
@@ -505,6 +517,7 @@ final class RenderCallbackContext: @unchecked Sendable {
         self._oversamplingEnabled = ManagedAtomic(0)
         self.linearPhaseEngine = LinearPhaseEQEngine(maxFrameCount: Int(maxFrameCount))
         self._linearPhaseEnabled = ManagedAtomic(0)
+        self._midSideEnabled = ManagedAtomic(0)
         self.leftAllPassChain   = AllPassChain()
         self.rightAllPassChain  = AllPassChain()
         self._mixedPhaseEnabled = ManagedAtomic(0)
@@ -996,6 +1009,27 @@ final class RenderCallbackContext: @unchecked Sendable {
     /// - Parameter frameCount: Number of frames to process.
     @inline(__always)
     func processEQ(frameCount: UInt32) {
+        let midSideOn = _midSideEnabled.load(ordering: .relaxed) != 0
+
+        // ── M/S encode: L/R → Mid/Side ──────────────────────────────────────────
+        // Mid  = 0.5 * (L + R)  → processingBuffers[0]
+        // Side = 0.5 * (L − R)  → processingBuffers[1]
+        if midSideOn && channelCount > 1 {
+            let bufL = processingBuffers[0]
+            let bufR = processingBuffers[1]
+            let n = Int(frameCount)
+            for i in 0..<n {
+                let l = bufL[i], r = bufR[i]
+                bufL[i] = 0.5 * (l + r)
+                bufR[i] = 0.5 * (l - r)
+            }
+        }
+
+        // ── Existing EQ dispatch (unchanged) ────────────────────────────────────
+        // Left chains process processingBuffers[0] (Mid in M/S mode).
+        // Right chains process processingBuffers[1] (Side in M/S mode).
+        // No changes needed here — the chains receive whatever is in the buffers.
+
         if _linearPhaseEnabled.load(ordering: .relaxed) != 0 {
             // --- Linear-phase FIR convolution path (unchanged) ---
             let bufL = processingBuffers[0]
@@ -1036,6 +1070,20 @@ final class RenderCallbackContext: @unchecked Sendable {
                     chain.applyPendingUpdates()
                     chain.process(buffer: processingBuffers[1], frameCount: frameCount)
                 }
+            }
+        }
+
+        // ── M/S decode: Mid/Side → L/R ──────────────────────────────────────────
+        // L = Mid + Side
+        // R = Mid − Side
+        if midSideOn && channelCount > 1 {
+            let bufM = processingBuffers[0]
+            let bufS = processingBuffers[1]
+            let n = Int(frameCount)
+            for i in 0..<n {
+                let m = bufM[i], s = bufS[i]
+                bufM[i] = m + s
+                bufS[i] = m - s
             }
         }
 

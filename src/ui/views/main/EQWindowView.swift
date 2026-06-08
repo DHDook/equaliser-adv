@@ -177,24 +177,35 @@ struct EQWindowView: View {
                         Picker("", selection: $store.channelMode) {
                             Text("Linked").tag(ChannelMode.linked)
                             Text("Stereo").tag(ChannelMode.stereo)
+                            Text("M/S").tag(ChannelMode.midSide)
                         }
                         .pickerStyle(.segmented)
                         .controlSize(.small)
-                        .frame(width: 100)
+                        .frame(width: 145)
                     }
 
-                    if store.channelMode == .stereo {
+                    if store.channelMode == .stereo || store.channelMode == .midSide {
                         VStack(spacing: 4) {
                             Text("Edit")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
-                            Picker("", selection: $store.channelFocus) {
-                                Text("L").tag(ChannelFocus.left)
-                                Text("R").tag(ChannelFocus.right)
+                            if store.channelMode == .stereo {
+                                Picker("", selection: $store.channelFocus) {
+                                    Text("L").tag(ChannelFocus.left)
+                                    Text("R").tag(ChannelFocus.right)
+                                }
+                                .pickerStyle(.segmented)
+                                .controlSize(.small)
+                                .frame(width: 60)
+                            } else {
+                                Picker("", selection: $store.channelFocus) {
+                                    Text("Mid").tag(ChannelFocus.mid)
+                                    Text("Side").tag(ChannelFocus.side)
+                                }
+                                .pickerStyle(.segmented)
+                                .controlSize(.small)
+                                .frame(width: 80)
                             }
-                            .pickerStyle(.segmented)
-                            .controlSize(.small)
-                            .frame(width: 60)
                         }
                     }
 

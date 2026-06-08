@@ -85,6 +85,7 @@ enum EasyEffectsExporter {
 
         // Determine split-channels based on channel mode
         let isStereo = preset.settings.channelMode == "stereo"
+            || preset.settings.channelMode == "midSide"
 
         // Build the equalizer section with left/right channels
         let equalizer: [String: Any] = [

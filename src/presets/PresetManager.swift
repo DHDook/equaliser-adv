@@ -348,7 +348,7 @@ final class PresetManager: ObservableObject {
         switch config.channelMode {
         case .linked:
             config.setActiveBandCount(leftBandCount)
-        case .stereo:
+        case .stereo, .midSide:
             config.setActiveBandCount(leftBandCount, channel: .left)
             config.setActiveBandCount(rightBandCount, channel: .right)
         }

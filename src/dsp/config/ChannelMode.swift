@@ -5,4 +5,8 @@ enum ChannelMode: String, Codable, Sendable, CaseIterable {
 
     /// Independent L and R configurations.
     case stereo
+
+    /// Mid (sum) and Side (difference) edited independently
+    /// using leftState for Mid, rightState for Side
+    case midSide
 }

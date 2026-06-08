@@ -17,7 +17,7 @@ final class EqualiserStore: ObservableObject {
         get { eqConfiguration.globalBypass }
         set {
             eqConfiguration.globalBypass = newValue
-            routingCoordinator.updateProcessingMode(systemEQOff: newValue, compareMode: compareMode)
+            routingCoordinator.updateProcessingMode(systemEQOff: newValue, compareMode: compareMode, channelMode: channelMode)
         }
     }
     
@@ -65,7 +65,7 @@ final class EqualiserStore: ObservableObject {
     
     @Published var compareMode: CompareMode = .eq {
         didSet {
-            routingCoordinator.updateProcessingMode(systemEQOff: isBypassed, compareMode: compareMode)
+            routingCoordinator.updateProcessingMode(systemEQOff: isBypassed, compareMode: compareMode, channelMode: channelMode)
 
             switch compareMode {
             case .flat:
@@ -193,6 +193,11 @@ final class EqualiserStore: ObservableObject {
         set {
             eqConfiguration.setChannelMode(newValue)
             routingCoordinator.reapplyConfiguration()
+            routingCoordinator.updateProcessingMode(
+                systemEQOff: isBypassed,
+                compareMode: compareMode,
+                channelMode: newValue
+            )
             presetManager.markAsModified()
         }
     }
@@ -578,7 +583,7 @@ final class EqualiserStore: ObservableObject {
                 }
                 self.refreshHighResDecouplingStatus()
                 // ADD: restore processing mode and IR state after pipeline restart
-                self.routingCoordinator.updateProcessingMode(systemEQOff: self.isBypassed, compareMode: self.compareMode)
+                self.routingCoordinator.updateProcessingMode(systemEQOff: self.isBypassed, compareMode: self.compareMode, channelMode: self.channelMode)
                 if self.compareMode == .linearEQ {
                     self.routingCoordinator.eqStager.refreshLinearPhaseIRIfNeeded()
                 }
