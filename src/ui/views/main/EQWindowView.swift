@@ -154,12 +154,18 @@ struct EQWindowView: View {
 
                 Spacer()
 
+                Spacer()
+                    .frame(width: 256)
+
                 VStack(spacing: 4) {
                     Text("Bands")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     BandCountControl()
                 }
+
+                Spacer()
+                    .frame(width: 128)
 
                 Spacer()
 
