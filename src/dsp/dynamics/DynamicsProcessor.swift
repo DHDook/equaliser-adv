@@ -29,6 +29,7 @@ final class DynamicsProcessor: @unchecked Sendable {
     // MARK: - Constants
 
     static let maxLookAheadSamples: Int = 4096
+    static let maxIRAlignSamples:   Int = 12000  // 5 ms at 192 kHz
 
     // MARK: - Audio-Thread State
 
@@ -114,6 +115,19 @@ final class DynamicsProcessor: @unchecked Sendable {
     /// Layout: [ch * 2 + 0] = w1, [ch * 2 + 1] = w2.
     nonisolated(unsafe) var subBassPhaseState: [Float]
 
+    // Speaker IR alignment per-channel ring buffers (same pattern as timeDelayBufs)
+    private let irAlignBufs: [UnsafeMutablePointer<Float>]
+    nonisolated(unsafe) var irAlignWriteIdx: Int = 0
+    nonisolated(unsafe) var irAlignSamples:  Int = 0
+    // Thiran all-pass state: [ch * 2 + 0] = w1, [ch * 2 + 1] = w2
+    nonisolated(unsafe) var irAlignApState: [Float]
+
+    // Crosstalk cancellation filter state (one LP filter state per channel)
+    nonisolated(unsafe) var crosstalkFilterState: [Float]
+
+    // Linear denoising (one SpectralDenoiser per channel)
+    private let denoisers: [SpectralDenoiser]
+
     // MARK: - Atomic Parameters (main thread → audio thread)
 
     // De-esser
@@ -187,8 +201,25 @@ final class DynamicsProcessor: @unchecked Sendable {
     private let _deharshEnabled:         ManagedAtomic<Int32>
     private let _deharshTiltBits:        ManagedAtomic<Int32>  // Float bits, dB
     private let _balanceBits:            ManagedAtomic<Int32>  // Float bits, −1 to +1
+    private let _symmetryBalanceEnabled: ManagedAtomic<Int32>
     private let _channelBalanceBits:     ManagedAtomic<Int32>  // Float bits, −1 to +1 (linear L/R)
     private let _tpGuardEnabled:              ManagedAtomic<Int32>
+
+    // Panning Gain Matrix atomics
+    private let _panningEnabled:       ManagedAtomic<Int32>
+    private let _panningCrossfeedBits: ManagedAtomic<Int32>  // Float bits, 0.0–0.5
+
+    // Speaker IR Alignment atomics
+    private let _irAlignEnabled:  ManagedAtomic<Int32>
+    private let _irAlignDelayBits: ManagedAtomic<Int32>  // Float bits, ms
+
+    // Crosstalk cancellation atomics
+    private let _crosstalkEnabled:    ManagedAtomic<Int32>
+    private let _crosstalkAmountBits: ManagedAtomic<Int32>  // Float bits, 0.0–0.5
+
+    // Linear denoising atomics
+    private let _denoisingEnabled:      ManagedAtomic<Int32>
+    private let _denoisingThresholdBits: ManagedAtomic<Int32>  // Float bits, dB
 
     // Auto-headroom atomics (main thread → audio thread)
     private let _autoHeadroomEnabled:         ManagedAtomic<Int32>
@@ -400,6 +431,7 @@ final class DynamicsProcessor: @unchecked Sendable {
         // Advanced DSP buffers
         var delays: [UnsafeMutablePointer<Float>] = []
         var deltas: [UnsafeMutablePointer<Float>] = []
+        var irBufs: [UnsafeMutablePointer<Float>] = []
         for _ in 0..<ch {
             let dBuf = UnsafeMutablePointer<Float>.allocate(capacity: Self.maxDelaySamples)
             dBuf.initialize(repeating: 0, count: Self.maxDelaySamples)
@@ -407,9 +439,13 @@ final class DynamicsProcessor: @unchecked Sendable {
             let dtBuf = UnsafeMutablePointer<Float>.allocate(capacity: Self.maxLookAheadSamples)
             dtBuf.initialize(repeating: 0, count: Self.maxLookAheadSamples)
             deltas.append(dtBuf)
+            let irBuf = UnsafeMutablePointer<Float>.allocate(capacity: Self.maxIRAlignSamples)
+            irBuf.initialize(repeating: 0, count: Self.maxIRAlignSamples)
+            irBufs.append(irBuf)
         }
         self.timeDelayBufs = delays
         self.deltaBufs     = deltas
+        self.irAlignBufs   = irBufs
 
         // Advanced DSP state arrays (initialised to zero = neutral)
         self.dcOffsetState = Array(repeating: 0.0, count: 2 * ch)
@@ -417,6 +453,9 @@ final class DynamicsProcessor: @unchecked Sendable {
         self.contourState  = Array(repeating: 0.0, count: 4 * ch)
         self.noiseShapeState = Array(repeating: 0.0, count: ch * 5)
         self.subBassPhaseState = Array(repeating: 0.0, count: ch * 2)
+        self.irAlignApState = Array(repeating: 0.0, count: ch * 2)
+        self.crosstalkFilterState = Array(repeating: 0.0, count: ch)
+        self.denoisers = (0..<ch).map { _ in SpectralDenoiser() }
 
         // Advanced processing atomics (main → audio)
         _stereoMode             = ManagedAtomic(Int32(StereoModeSelection.stereo.rawValue))
@@ -428,8 +467,17 @@ final class DynamicsProcessor: @unchecked Sendable {
         _deharshEnabled         = ManagedAtomic(0)
         _deharshTiltBits        = ManagedAtomic(floatBits(-1.5))
         _balanceBits            = ManagedAtomic(floatBits(0.0))
+        _symmetryBalanceEnabled = ManagedAtomic(0)
         _channelBalanceBits     = ManagedAtomic(floatBits(0.0))
         _tpGuardEnabled               = ManagedAtomic(0)
+        _panningEnabled       = ManagedAtomic(0)
+        _panningCrossfeedBits = ManagedAtomic(floatBits(0.3))
+        _irAlignEnabled       = ManagedAtomic(0)
+        _irAlignDelayBits     = ManagedAtomic(floatBits(0.0))
+        _crosstalkEnabled     = ManagedAtomic(0)
+        _crosstalkAmountBits  = ManagedAtomic(floatBits(0.5))
+        _denoisingEnabled       = ManagedAtomic(0)
+        _denoisingThresholdBits = ManagedAtomic(floatBits(-60.0))
         _autoHeadroomEnabled          = ManagedAtomic(0)
         _autoHeadroomAlphaBits        = ManagedAtomic(floatBits(
             Float(exp(-Double(512) / (10.0 * sampleRate)))))
@@ -475,6 +523,10 @@ final class DynamicsProcessor: @unchecked Sendable {
         }
         for p in deltaBufs {
             p.deinitialize(count: Self.maxLookAheadSamples)
+            p.deallocate()
+        }
+        for p in irAlignBufs {
+            p.deinitialize(count: Self.maxIRAlignSamples)
             p.deallocate()
         }
     }
@@ -579,6 +631,36 @@ final class DynamicsProcessor: @unchecked Sendable {
     }
     func setStereoBalancePosition(_ balance: Float) {
         _balanceBits.store(floatBits(max(-1.0, min(1.0, balance))), ordering: .relaxed)
+    }
+    func setSymmetryBalanceEnabled(_ v: Bool) {
+        _symmetryBalanceEnabled.store(v ? 1 : 0, ordering: .relaxed)
+    }
+    func setPanningEnabled(_ v: Bool) {
+        _panningEnabled.store(v ? 1 : 0, ordering: .relaxed)
+    }
+    func setPanningCrossfeedAmount(_ amount: Float) {
+        _panningCrossfeedBits.store(floatBits(max(0.0, min(0.5, amount))), ordering: .relaxed)
+    }
+    func setIRAlignmentEnabled(_ v: Bool) {
+        _irAlignEnabled.store(v ? 1 : 0, ordering: .relaxed)
+    }
+    func setIRAlignmentDelayMs(_ ms: Float) {
+        _irAlignDelayBits.store(floatBits(max(0.0, min(5.0, ms))), ordering: .relaxed)
+    }
+    func setCrosstalkEnabled(_ v: Bool) {
+        _crosstalkEnabled.store(v ? 1 : 0, ordering: .relaxed)
+    }
+    func setCrosstalkAmount(_ amount: Float) {
+        _crosstalkAmountBits.store(floatBits(max(0.0, min(0.5, amount))), ordering: .relaxed)
+    }
+    func setDenoisingEnabled(_ v: Bool) {
+        _denoisingEnabled.store(v ? 1 : 0, ordering: .relaxed)
+        if !v { denoisers.forEach { $0.reset() } }
+    }
+    func setDenoisingThresholdDB(_ db: Float) {
+        _denoisingThresholdBits.store(floatBits(max(-80.0, min(-40.0, db))), ordering: .relaxed)
+        let linear = pow(10.0, max(-80.0, min(-40.0, db)) / 20.0)
+        denoisers.forEach { $0.setThresholdDB(linear > 0 ? 20.0 * log10(linear) : -80.0) }
     }
     func setChannelBalance(_ balance: Float) {
         _channelBalanceBits.store(floatBits(max(-1.0, min(1.0, balance))), ordering: .relaxed)
@@ -723,6 +805,8 @@ final class DynamicsProcessor: @unchecked Sendable {
         let adv = config.advanced
         setStereoMode(adv.stereoMode)
         setDCOffsetFilterEnabled(adv.dcOffsetFilterEnabled)
+        setDenoisingEnabled(adv.linearDenoisingEnabled)
+        setDenoisingThresholdDB(adv.linearDenoisingThresholdDB)
         setDialogueGateEnabled(adv.loudnessDialogueGateEnabled)
         setLoudnessContourEnabled(adv.loudnessContourEnabled)
         setDeesserDynamicModeEnabled(adv.deesserDynamicModeEnabled)
@@ -730,6 +814,7 @@ final class DynamicsProcessor: @unchecked Sendable {
         setDeharshFilterEnabled(adv.deharshFilterEnabled)
         setDeharshTiltAmountDB(adv.deharshTiltAmountDB)
         setStereoBalancePosition(adv.stereoBalancePosition)
+        setSymmetryBalanceEnabled(adv.symmetryBalanceEnabled)
         setLimiterTruePeakGuardEnabled(adv.limiterTruePeakGuardEnabled)
         setAutoHeadroomEnabled(adv.autoHeadroomEnabled)
         setAutoHeadroomParameters(
@@ -740,6 +825,12 @@ final class DynamicsProcessor: @unchecked Sendable {
             typicalFrameCount: lookAheadSize > 0 ? lookAheadSize : 512
         )
         setStereoTimeDelayMS(adv.stereoTimeDelayMS)
+        setIRAlignmentEnabled(adv.speakerIRAlignmentEnabled)
+        setIRAlignmentDelayMs(adv.speakerIRDelayMs)
+        setPanningEnabled(adv.panningGainMatrixEnabled)
+        setPanningCrossfeedAmount(adv.panningCrossfeedAmount)
+        setCrosstalkEnabled(adv.crosstalkCancellationEnabled)
+        setCrosstalkAmount(adv.crosstalkCancellationAmount)
         setDeltaSoloActive(adv.deltaSoloActive)
         setLatencyMode(adv.latencyMode)
         setPauseGateEnabled(adv.pauseGateEnabled)
@@ -793,6 +884,11 @@ final class DynamicsProcessor: @unchecked Sendable {
         for i in 0..<subBassPhaseState.count { subBassPhaseState[i] = 0 }
         for p in timeDelayBufs { p.initialize(repeating: 0, count: Self.maxDelaySamples) }
         timeDelayWriteIdx = 0
+        for p in irAlignBufs { p.initialize(repeating: 0, count: Self.maxIRAlignSamples) }
+        irAlignWriteIdx = 0
+        for i in 0..<irAlignApState.count { irAlignApState[i] = 0 }
+        for i in 0..<crosstalkFilterState.count { crosstalkFilterState[i] = 0 }
+        denoisers.forEach { $0.reset() }
     }
 
     // MARK: - DSP Processing (audio thread)
@@ -822,8 +918,13 @@ final class DynamicsProcessor: @unchecked Sendable {
         let ditherMode    = _ditherModeBits.load(ordering: .relaxed)
         let deltaSoloOn   = _deltaSoloEnabled.load(ordering: .relaxed) != 0
 
-        let subPhaseOn = _subBassPhaseEnabled.load(ordering: .relaxed) != 0
-        guard stereoModeRaw != 0 || dcOn || subPhaseOn || wideOn || lufsOn || contourOn
+        let subPhaseOn   = _subBassPhaseEnabled.load(ordering: .relaxed) != 0
+        let symBalanceOn = _symmetryBalanceEnabled.load(ordering: .relaxed) != 0
+        let panningOn    = _panningEnabled.load(ordering: .relaxed) != 0
+        let irAlignOn    = _irAlignEnabled.load(ordering: .relaxed) != 0
+        let crosstalkOn  = _crosstalkEnabled.load(ordering: .relaxed) != 0
+        let denoisingOn  = _denoisingEnabled.load(ordering: .relaxed) != 0
+        guard stereoModeRaw != 0 || dcOn || subPhaseOn || symBalanceOn || panningOn || irAlignOn || crosstalkOn || denoisingOn || wideOn || lufsOn || contourOn
                 || deEsserOn || mbOn || compOn || expOn || softOn || limOn
                 || deharshOn || pauseOn || ditherMode != 0 || deltaSoloOn else {
             _gainReductionBits.store(floatBits(0.0), ordering: .relaxed)
@@ -832,6 +933,9 @@ final class DynamicsProcessor: @unchecked Sendable {
 
         // Capture pre-chain signal for delta solo (must be first).
         if deltaSoloOn { captureDeltaInput(abl: abl, numCh: numCh, count: count) }
+
+        // Stage −2: Spectral noise gate.
+        if denoisingOn { processDenoising(abl: abl, numCh: numCh, count: count) }
 
         // Stage −1: Stereo mode fold-down.
         if stereoModeRaw != 0 { processStereoMode(abl: abl, numCh: numCh, count: count) }
@@ -885,8 +989,17 @@ final class DynamicsProcessor: @unchecked Sendable {
         // Stage 6: De-Harsh Tilt Filter.
         if deharshOn { processDeHarsh(abl: abl, numCh: numCh, count: count) }
 
+        // Stage 6.5: Speaker IR Alignment fractional delay.
+        if irAlignOn { processIRAlignment(abl: abl, numCh: numCh, count: count) }
+
         // Stage 7: Balance Matrix + Inter-Channel Time Delay.
         processBalanceAndDelay(abl: abl, numCh: numCh, count: count)
+
+        // Stage 7.5: Panning Gain Matrix crossfeed.
+        if panningOn { processPanningMatrix(abl: abl, numCh: numCh, count: count) }
+
+        // Stage 7.6: Crosstalk cancellation.
+        if crosstalkOn { processCrosstalkCancellation(abl: abl, numCh: numCh, count: count) }
 
         // Stage 8: Dynamic Pause Gate.
         if pauseOn { processPauseGate(abl: abl, numCh: numCh, count: count) }
@@ -1049,12 +1162,15 @@ final class DynamicsProcessor: @unchecked Sendable {
         // balance ∈ [−1, +1]: −1 = full left, 0 = centre (unity gain both channels), +1 = full right.
         // Map to angle ∈ [0, π/2] symmetrically: centre → π/4, giving gainL = gainR = 1.0.
         // The √2 pre-scale ensures that cos(π/4)×√2 = 1.0 at centre, maintaining unity gain.
-        let balance  = bitsToFloat(_balanceBits.load(ordering: .relaxed))
-        let angle    = (balance + 1.0) * Float.pi * 0.25   // 0 … π/2
-        let gainL    = max(0.0, cos(angle)) * Float.sqrt2
-        let gainR    = max(0.0, sin(angle)) * Float.sqrt2
-        if gainL != 1.0 || gainR != 1.0 {
-            for i in 0..<count { bufL[i] *= gainL; bufR[i] *= gainR }
+        let symEnabled = _symmetryBalanceEnabled.load(ordering: .relaxed) != 0
+        if symEnabled {
+            let balance  = bitsToFloat(_balanceBits.load(ordering: .relaxed))
+            let angle    = (balance + 1.0) * Float.pi * 0.25   // 0 … π/2
+            let gainL    = max(0.0, cos(angle)) * Float.sqrt2
+            let gainR    = max(0.0, sin(angle)) * Float.sqrt2
+            if gainL != 1.0 || gainR != 1.0 {
+                for i in 0..<count { bufL[i] *= gainL; bufR[i] *= gainR }
+            }
         }
 
         // Live balance meter: (powerR − powerL) / totalPower.
@@ -1080,6 +1196,123 @@ final class DynamicsProcessor: @unchecked Sendable {
             let readIdx = (timeDelayWriteIdx - delaySamples + bufSize) % bufSize
             bufR[i] = delayBuf[readIdx]
             timeDelayWriteIdx = (timeDelayWriteIdx + 1) % bufSize
+        }
+    }
+
+    /// Thiran all-pass fractional-sample delay applied uniformly to all channels.
+    /// Compensates for multi-driver speaker acoustic-centre offset.
+    @inline(__always)
+    private func processIRAlignment(
+        abl: UnsafeMutableAudioBufferListPointer, numCh: Int, count: Int
+    ) {
+        let ms       = bitsToFloat(_irAlignDelayBits.load(ordering: .relaxed))
+        let dSamples = Double(ms) * storedSampleRate / 1000.0
+        let intDel   = min(Int(dSamples), Self.maxIRAlignSamples - 1)
+        let frac     = Float(dSamples - Double(intDel))   // 0.0 ..< 1.0
+
+        // Thiran 2nd-order all-pass: D = frac + 1.0 (maps frac to [1, 2))
+        let D: Float = frac + 1.0
+        let a1_thiran: Float = -2.0 * (D - 2.0) / (D + 1.0)
+        let a2_thiran: Float = ((D - 1.0) * (D - 2.0)) / ((D + 1.0) * (D + 2.0))
+        // Thiran numerator: b0 = a2, b1 = a1, b2 = 1
+        let b0 = a2_thiran
+        let b1 = a1_thiran
+        let b2: Float = 1.0
+        // Negate feedback coefficients for processBiquad convention (na1 = -a1, na2 = -a2)
+        let na1 = -a1_thiran
+        let na2 = -a2_thiran
+
+        irAlignSamples = intDel
+        let bufSize = Self.maxIRAlignSamples
+
+        for ch in 0..<numCh {
+            guard let buf = abl[ch].mData?.assumingMemoryBound(to: Float.self) else { continue }
+            let ringBuf = irAlignBufs[ch]
+            var w1 = irAlignApState[ch * 2]
+            var w2 = irAlignApState[ch * 2 + 1]
+            var writeIdx = irAlignWriteIdx   // local copy; same starting position for each channel
+
+            for i in 0..<count {
+                ringBuf[writeIdx] = buf[i]
+                let readIdx = (writeIdx - intDel + bufSize) % bufSize
+                buf[i] = Self.processBiquad(ringBuf[readIdx],
+                    b0: b0, b1: b1, b2: b2, na1: na1, na2: na2,
+                    w1: &w1, w2: &w2)
+                writeIdx = (writeIdx + 1) % bufSize
+            }
+            irAlignApState[ch * 2]     = w1
+            irAlignApState[ch * 2 + 1] = w2
+            if ch == 0 { irAlignWriteIdx = writeIdx }  // advance shared index once after first channel
+        }
+    }
+
+    /// Bilinear stereo crossfeed matrix.
+    /// outL = (1−α)·inL + α·inR,  outR = (1−α)·inR + α·inL
+    /// α = 0 → pure stereo, α = 0.5 → mono.
+    @inline(__always)
+    private func processPanningMatrix(
+        abl: UnsafeMutableAudioBufferListPointer, numCh: Int, count: Int
+    ) {
+        guard numCh >= 2,
+              let bufL = abl[0].mData?.assumingMemoryBound(to: Float.self),
+              let bufR = abl[1].mData?.assumingMemoryBound(to: Float.self) else { return }
+
+        let alpha  = bitsToFloat(_panningCrossfeedBits.load(ordering: .relaxed))
+        let direct = 1.0 - alpha
+
+        for i in 0..<count {
+            let l = bufL[i]
+            let r = bufR[i]
+            bufL[i] = direct * l + alpha * r
+            bufR[i] = direct * r + alpha * l
+        }
+    }
+
+    /// Open-loop crosstalk cancellation via shelved cross-channel subtraction.
+    /// Fc ≈ 700 Hz models loudspeaker head-shadow for ~60° speaker separation.
+    @inline(__always)
+    private func processCrosstalkCancellation(
+        abl: UnsafeMutableAudioBufferListPointer, numCh: Int, count: Int
+    ) {
+        guard numCh >= 2,
+              let bufL = abl[0].mData?.assumingMemoryBound(to: Float.self),
+              let bufR = abl[1].mData?.assumingMemoryBound(to: Float.self) else { return }
+
+        let beta = bitsToFloat(_crosstalkAmountBits.load(ordering: .relaxed))
+
+        // First-order LP: y[n] = (1−α)·x[n] + α·y[n−1]
+        // α = exp(−2π·fc/sr), fc = 700 Hz
+        let fc: Double = 700.0
+        let alpha = Float(exp(-2.0 * Double.pi * fc / storedSampleRate))
+        let oneMinusAlpha = 1.0 - alpha
+
+        var stateL = crosstalkFilterState[0]
+        var stateR = crosstalkFilterState[min(1, crosstalkFilterState.count - 1)]
+
+        for i in 0..<count {
+            let inL = bufL[i]
+            let inR = bufR[i]
+
+            // Low-pass filter the cross-channel signals (captures head-shadow)
+            stateL = oneMinusAlpha * inL + alpha * stateL  // filtered left (for subtraction from right)
+            stateR = oneMinusAlpha * inR + alpha * stateR  // filtered right (for subtraction from left)
+
+            // Subtract scaled cross-channel contribution from each output
+            bufL[i] = inL - beta * stateR
+            bufR[i] = inR - beta * stateL
+        }
+
+        crosstalkFilterState[0] = stateL
+        if crosstalkFilterState.count > 1 { crosstalkFilterState[1] = stateR }
+    }
+
+    @inline(__always)
+    private func processDenoising(
+        abl: UnsafeMutableAudioBufferListPointer, numCh: Int, count: Int
+    ) {
+        for ch in 0..<min(numCh, denoisers.count) {
+            guard let buf = abl[ch].mData?.assumingMemoryBound(to: Float.self) else { continue }
+            denoisers[ch].process(buffer: buf, count: count)
         }
     }
 

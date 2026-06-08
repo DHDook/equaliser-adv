@@ -894,6 +894,35 @@ struct DynamicsView: View {
                 .font(.system(size: 13))
                 .disabled(!store.dynamicsConfig.advanced.roomCorrectionEnabled)
 
+            if store.dynamicsConfig.advanced.multiSeatAveragingEnabled {
+                HStack(spacing: 8) {
+                    Button("Add Seat") {
+                        store.addSeatMeasurement()
+                    }
+                    .controlSize(.regular)
+                    .font(.system(size: 11))
+                    .disabled(store.pendingMeasuredCurve == nil)
+
+                    Button("Clear Seats") {
+                        store.clearSeatMeasurements()
+                    }
+                    .controlSize(.regular)
+                    .font(.system(size: 11))
+                    .disabled(store.seatMeasurements.isEmpty)
+
+                    Button("Apply Calibration") {
+                        store.applyMultiSeatCalibration()
+                    }
+                    .controlSize(.regular)
+                    .font(.system(size: 11))
+                    .disabled(store.seatMeasurements.isEmpty)
+
+                    Text("\(store.seatMeasurements.count) seats")
+                        .font(.system(size: 11))
+                        .foregroundColor(.secondary)
+                }
+            }
+
             Toggle("Sync Buffer to Latency Mode", isOn: syncBufferBinding)
                 .toggleStyle(.switch)
                 .controlSize(.regular)

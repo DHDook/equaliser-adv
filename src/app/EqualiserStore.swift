@@ -345,6 +345,10 @@ final class EqualiserStore: ObservableObject {
     @Published var roomCorrectionBandCount: Int = 0
     @Published var customREWTargetCurve: [(frequency: Double, gainDB: Double)]? = nil
 
+    /// Accumulated measurement curves for multi-seat averaging.
+    /// Each element is one full-range frequency response measurement.
+    @Published var seatMeasurements: [[(frequency: Double, gainDB: Double)]] = []
+
     // MARK: - Advanced Live Metrics (audio thread → main thread)
 
     /// Smoothed Pearson L/R phase correlation (−1.0 anti-phase … +1.0 in-phase).
@@ -676,6 +680,41 @@ final class EqualiserStore: ObservableObject {
         } else {
             // Average with existing measurement (logarithmic average in dB).
             pendingMeasuredCurve = averageFrequencyCurves(pendingMeasuredCurve!, curve)
+        }
+    }
+
+    /// Adds a single-seat measurement to the multi-seat collection.
+    func addSeatMeasurement() {
+        guard let curve = pendingMeasuredCurve else { return }
+        seatMeasurements.append(curve)
+        pendingMeasuredCurve = nil
+    }
+
+    /// Clears all accumulated seat measurements.
+    func clearSeatMeasurements() {
+        seatMeasurements.removeAll()
+    }
+
+    /// Computes complex average of all seat measurements and stores in pendingMeasuredCurve.
+    func applyMultiSeatCalibration() {
+        guard !seatMeasurements.isEmpty else { return }
+        let first = seatMeasurements[0]
+        var complexSum: [(re: Double, im: Double)] = first.map { _ in (0.0, 0.0) }
+        for measurement in seatMeasurements {
+            for (i, point) in measurement.enumerated() {
+                let gain = pow(10.0, point.gainDB / 20.0)
+                let phase = 0.0 // Assume zero phase for magnitude-only measurements
+                complexSum[i].re += gain * cos(phase)
+                complexSum[i].im += gain * sin(phase)
+            }
+        }
+        let count = Double(seatMeasurements.count)
+        pendingMeasuredCurve = first.enumerated().map { i, point in
+            let avgRe = complexSum[i].re / count
+            let avgIm = complexSum[i].im / count
+            let avgMag = sqrt(avgRe * avgRe + avgIm * avgIm)
+            let avgGainDB = avgMag > 0 ? 20.0 * log10(avgMag) : -120.0
+            return (point.frequency, avgGainDB)
         }
     }
 
