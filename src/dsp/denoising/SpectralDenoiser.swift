@@ -16,6 +16,14 @@ final class SpectralDenoiser: @unchecked Sendable {
     private static let hopSize: Int = 512   // N/2 — 50% overlap
     private static let halfN:   Int = fftSize / 2
 
+    // Gain smoother time constants.
+    // Attack  = how quickly gain rises when a signal appears  (~20 ms → fast, avoids smearing onsets)
+    // Release = how quickly gain falls when a signal disappears (~80 ms → slow, avoids musical noise)
+    // Expressed as per-frame IIR coefficients: alpha = exp(-1 / (tau_ms / frame_ms))
+    // At 48 kHz, frame_ms = hopSize / sampleRate * 1000 = 512 / 48000 * 1000 ≈ 10.67 ms
+    private static let gainAttackAlpha:  Float = 0.5866   // tau ≈ 20 ms at 48 kHz
+    private static let gainReleaseAlpha: Float = 0.8752   // tau ≈ 80 ms at 48 kHz
+
     // MARK: - FFT
     private let log2n:    vDSP_Length
     private let fftSetup: FFTSetup
@@ -30,6 +38,10 @@ final class SpectralDenoiser: @unchecked Sendable {
     nonisolated(unsafe) private var outputOverlap: [Float]  // length N
     nonisolated(unsafe) private var workReal:      [Float]  // length N
     nonisolated(unsafe) private var workImag:      [Float]  // length N — zeroed with vDSP_vclr
+    // Per-bin smoothed Wiener gain from the previous frame.
+    // Indexed 0..halfN-1. Entry 0 = DC gain, entry 1..halfN-2 = complex bins,
+    // entry halfN-1 = Nyquist gain (stored separately but same size array).
+    nonisolated(unsafe) private var prevGain: [Float]  // length halfN + 1
 
     // MARK: - Output ring
     nonisolated(unsafe) private var outRing:     [Float]    // length N * 2
@@ -78,6 +90,9 @@ final class SpectralDenoiser: @unchecked Sendable {
         workImag      = [Float](repeating: 0, count: N)
         outRing       = [Float](repeating: 0, count: N * 2)
 
+        // Initialize smoothed gains to 1.0 — denoiser starts transparent and fades in.
+        prevGain = [Float](repeating: 1.0, count: Self.halfN + 1)
+
         // Initialize read pointer to lag one hop behind write pointer
         // to account for the inherent OLA latency of one analysis frame.
         outWritePos = 0
@@ -123,6 +138,8 @@ final class SpectralDenoiser: @unchecked Sendable {
         outWritePos = 0
         outReadPos  = N * 2 - hop
         accumPos    = 0
+        // Reset smoothed gains to 1.0 so the denoiser opens transparently after a reset.
+        for i in 0..<prevGain.count { prevGain[i] = 1.0 }
     }
 
     @inline(__always)
@@ -172,42 +189,54 @@ final class SpectralDenoiser: @unchecked Sendable {
                         // Forward FFT.
                         vDSP_fft_zrip(fftSetup, &sc, 1, log2n, Int32(FFT_FORWARD))
 
-                        // ── FIX 1: Wiener soft gain — replaces hard binary gate ────────
+                        // ── Smoothed Wiener gain ───────────────────────────────────────────────
                         //
-                        // Old code: if mag < threshold { rp[k] = 0; ip[k] = 0 }
-                        // This zeros bins completely near the threshold, causing each
-                        // to switch between fully present and fully absent between frames.
-                        // At 50% overlap the switching frequency is ~43 Hz — perceived
-                        // as the "synthesized" or "vocoder" quality (musical noise).
+                        // The instantaneous Wiener gain G(k) = snrSq/(snrSq+1) is correct but
+                        // when applied frame-by-frame without memory, it produces abrupt bin-level
+                        // steps on transients that appear as spectral splatter / roughness in the
+                        // time domain. The synthesis window was masking this by blurring frame
+                        // boundaries, at the cost of Hann² amplitude modulation.
                         //
-                        // Wiener gain: G(k) = SNR²(k) / (SNR²(k) + 1)
-                        // where SNR(k) = |X(k)| / noiseFloor.
-                        // A bin well above the noise floor: SNR >> 1, G → 1.0 (passes).
-                        // A bin at the noise floor: SNR = 1, G = 0.5 (-6 dB, attenuated).
-                        // A bin well below: SNR << 1, G → 0 (suppressed).
-                        // The gain is continuous and monotone — no abrupt switching,
-                        // no musical noise.
+                        // The correct fix is a per-bin first-order IIR smoother with asymmetric
+                        // time constants: fast attack (signal appears quickly → minimal smear of
+                        // transient onset) and slow release (signal disappears slowly → no musical
+                        // noise as gains ramp down smoothly rather than stepping).
                         //
-                        // The wienerFloor prevents G from reaching zero for any bin.
-                        // This maintains phase continuity across frames and eliminates
-                        // residual musical noise at the cost of a noise floor.
-                        //
-                        // DC (rp[0]) and Nyquist (ip[0]) are real-valued scalars.
-                        let dcMagSq  = rp[0] * rp[0]
-                        let dcSNRsq  = dcMagSq / noiseFloorSq
-                        rp[0] *= max(wienerFloor, dcSNRsq / (dcSNRsq + 1.0))
+                        // Gain for frame n:  G_smooth[k,n] = alpha * G_smooth[k,n-1] + (1-alpha) * G_instant[k]
+                        // where alpha = gainAttackAlpha when G_instant > G_smooth (gain rising)
+                        //       alpha = gainReleaseAlpha when G_instant < G_smooth (gain falling)
 
-                        let nyMagSq  = ip[0] * ip[0]
-                        let nySNRsq  = nyMagSq / noiseFloorSq
-                        ip[0] *= max(wienerFloor, nySNRsq / (nySNRsq + 1.0))
+                        let attackAlpha  = Self.gainAttackAlpha
+                        let releaseAlpha = Self.gainReleaseAlpha
 
-                        // Complex bins 1 .. halfN-1.
+                        // DC bin (index 0 in prevGain)
+                        let dcMagSq   = rp[0] * rp[0]
+                        let dcSNRsq   = dcMagSq / noiseFloorSq
+                        let dcTarget  = max(wienerFloor, dcSNRsq / (dcSNRsq + 1.0))
+                        let dcAlpha   = dcTarget > prevGain[0] ? attackAlpha : releaseAlpha
+                        let dcGain    = dcAlpha * prevGain[0] + (1.0 - dcAlpha) * dcTarget
+                        prevGain[0]   = dcGain
+                        rp[0]        *= dcGain
+
+                        // Nyquist bin (index halfN in prevGain)
+                        let nyMagSq   = ip[0] * ip[0]
+                        let nySNRsq   = nyMagSq / noiseFloorSq
+                        let nyTarget  = max(wienerFloor, nySNRsq / (nySNRsq + 1.0))
+                        let nyAlpha   = nyTarget > prevGain[halfN] ? attackAlpha : releaseAlpha
+                        let nyGain    = nyAlpha * prevGain[halfN] + (1.0 - nyAlpha) * nyTarget
+                        prevGain[halfN] = nyGain
+                        ip[0]        *= nyGain
+
+                        // Complex bins 1..halfN-1
                         for k in 1..<halfN {
-                            let magSq  = rp[k] * rp[k] + ip[k] * ip[k]
-                            let snrSq  = magSq / noiseFloorSq
-                            let gain   = max(wienerFloor, snrSq / (snrSq + 1.0))
-                            rp[k] *= gain
-                            ip[k] *= gain
+                            let magSq    = rp[k] * rp[k] + ip[k] * ip[k]
+                            let snrSq    = magSq / noiseFloorSq
+                            let target   = max(wienerFloor, snrSq / (snrSq + 1.0))
+                            let alpha    = target > prevGain[k] ? attackAlpha : releaseAlpha
+                            let gain     = alpha * prevGain[k] + (1.0 - alpha) * target
+                            prevGain[k]  = gain
+                            rp[k]       *= gain
+                            ip[k]       *= gain
                         }
 
                         // Inverse FFT.
