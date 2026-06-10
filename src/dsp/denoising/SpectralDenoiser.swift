@@ -218,9 +218,13 @@ final class SpectralDenoiser: @unchecked Sendable {
                         // vDSP_fft_zrip forward scales output by 2 relative to a
                         // standard DFT. The inverse does not cancel this factor.
                         // Round-trip: IFFT(FFT(x)) = 2N * x.
-                        // With synthesis window applied, the combined gain is halved,
-                        // so we use 1/N instead of 1/(2N) to compensate.
-                        var scale: Float = 1.0 / Float(N)
+                        // Correct normalization: 1/(2N), not 1/N.
+                        //
+                        // The previous 1/N made every frame 6 dB too loud. For input
+                        // signals above ~-6 dBFS, the output exceeded 0 dBFS and was
+                        // clipped or limited by downstream stages — causing the
+                        // level-dependent distortion.
+                        var scale: Float = 1.0 / Float(2 * N)
                         vDSP_vsmul(rp.baseAddress!, 1, &scale, rp.baseAddress!, 1,
                                    vDSP_Length(halfN))
                         vDSP_vsmul(ip.baseAddress!, 1, &scale, ip.baseAddress!, 1,
@@ -234,10 +238,8 @@ final class SpectralDenoiser: @unchecked Sendable {
                     }
                 }
 
-                // Apply synthesis Hann window before OLA.
-                // Combined with the analysis window this satisfies COLA at 50% overlap
-                // and eliminates frame-boundary discontinuities.
-                for i in 0..<N { outputOverlap[i] += workReal[i] * hannWindow[i] }
+                // Overlap-add into outputOverlap.
+                for i in 0..<N { outputOverlap[i] += workReal[i] }
 
                 // Flush the first hop to the output ring.
                 for i in 0..<hop {
