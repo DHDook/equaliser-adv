@@ -948,21 +948,59 @@ struct DynamicsView: View {
                 .controlSize(.regular)
                 .font(.system(size: 13))
 
-            // ── Preset picker ─────────────────────────────────────────
+            // ── Reduction amount slider ───────────────────────────────
+            DynamicsSliderRow(
+                label: "Reduction",
+                value: denoiserReductionAmountBinding,
+                range: 0.0...1.0,
+                step: 0.01,
+                formatValue: { String(format: "%.0f%%", $0 * 100) },
+                isDisabled: !store.dynamicsConfig.advanced.linearDenoisingEnabled
+            )
+
+            // ── Resolution mode selector ────────────────────────────
             HStack(spacing: 8) {
-                Text("Character")
+                Text("Resolution")
                     .font(.system(size: 13))
                     .foregroundStyle(.secondary)
                     .frame(width: 80, alignment: .leading)
-                Picker("", selection: ltiDenoisingPresetBinding) {
-                    ForEach(DenoiserPreset.allCases, id: \.self) { preset in
-                        Text(preset.rawValue).tag(preset)
-                    }
+                Picker("", selection: denoiserModeBinding) {
+                    Text("Quality").tag(DenoiserMode.quality)
+                    Text("High").tag(DenoiserMode.high)
+                    Text("Ultra").tag(DenoiserMode.ultra)
                 }
                 .pickerStyle(.segmented)
                 .labelsHidden()
                 .disabled(!store.dynamicsConfig.advanced.linearDenoisingEnabled)
                 .opacity(!store.dynamicsConfig.advanced.linearDenoisingEnabled ? 0.4 : 1.0)
+            }
+
+            // ── Noise profile capture ───────────────────────────────
+            HStack(spacing: 8) {
+                Text("Profile")
+                    .font(.system(size: 13))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 80, alignment: .leading)
+                Text(store.dynamicsConfig.advanced.denoiserHasCapturedProfile ? "Captured" : "Adaptive")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(store.dynamicsConfig.advanced.denoiserHasCapturedProfile ? Color.accentColor : Color.secondary)
+                Spacer()
+                Button("Capture") {
+                    // TODO: Call startNoiseCapture() on the denoiser
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .font(.system(size: 11))
+                .disabled(!store.dynamicsConfig.advanced.linearDenoisingEnabled)
+                .opacity(!store.dynamicsConfig.advanced.linearDenoisingEnabled ? 0.4 : 1.0)
+                Button("Reset") {
+                    // TODO: Call resetNoiseProfile() on the denoiser
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .font(.system(size: 11))
+                .disabled(!store.dynamicsConfig.advanced.linearDenoisingEnabled || !store.dynamicsConfig.advanced.denoiserHasCapturedProfile)
+                .opacity(!store.dynamicsConfig.advanced.linearDenoisingEnabled || !store.dynamicsConfig.advanced.denoiserHasCapturedProfile ? 0.4 : 1.0)
             }
 
             // ── Fine-tune threshold slider ────────────────────────────
@@ -1680,6 +1718,18 @@ struct DynamicsView: View {
         Binding(
             get: { Double(store.dynamicsConfig.advanced.linearDenoisingThresholdDB) },
             set: { val in var adv = store.dynamicsConfig.advanced; adv.linearDenoisingThresholdDB = Float(val); store.updateAdvancedProcessing(adv) }
+        )
+    }
+    private var denoiserReductionAmountBinding: Binding<Double> {
+        Binding(
+            get: { Double(store.dynamicsConfig.advanced.denoiserReductionAmount) },
+            set: { val in var adv = store.dynamicsConfig.advanced; adv.denoiserReductionAmount = Float(val); store.updateAdvancedProcessing(adv) }
+        )
+    }
+    private var denoiserModeBinding: Binding<DenoiserMode> {
+        Binding(
+            get: { store.dynamicsConfig.advanced.denoiserMode },
+            set: { val in var adv = store.dynamicsConfig.advanced; adv.denoiserMode = val; store.updateAdvancedProcessing(adv) }
         )
     }
     private var ltiDenoisingPresetBinding: Binding<DenoiserPreset> {

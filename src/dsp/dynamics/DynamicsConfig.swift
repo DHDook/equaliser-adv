@@ -538,6 +538,12 @@ struct AdvancedProcessingConfig: Codable, Equatable, Sendable {
     /// Active denoiser operating-point preset.
     /// Seeds the noiseFloorDB and wienerFloor on the SpectralDenoiser.
     var linearDenoisingPreset: DenoiserPreset = .standard
+    /// Noise reduction amount. Range: 0.0 (transparent) – 1.0 (maximum). Default: 0.5.
+    var denoiserReductionAmount: Float = 0.5
+    /// Denoiser FFT resolution mode. Default: .high.
+    var denoiserMode: DenoiserMode = .high
+    /// Whether a noise profile has been captured (vs adaptive mode).
+    var denoiserHasCapturedProfile: Bool = false
 
     /// Speaker Impulse Response Alignment — applies fractional-sample delay
     /// compensation to time-align the acoustic centres of multi-driver systems.
@@ -632,6 +638,7 @@ struct AdvancedProcessingConfig: Codable, Equatable, Sendable {
         case symmetryBalanceEnabled
         case panningGainMatrixEnabled, panningCrossfeedAmount
         case linearDenoisingEnabled, linearDenoisingThresholdDB, linearDenoisingPreset
+        case denoiserReductionAmount, denoiserMode, denoiserHasCapturedProfile
         case speakerIRAlignmentEnabled, speakerIRDelayMs
         case crosstalkCancellationEnabled, crosstalkCancellationAmount
         case multiSeatAveragingEnabled, multiSeatCount
@@ -674,6 +681,9 @@ struct AdvancedProcessingConfig: Codable, Equatable, Sendable {
         linearDenoisingEnabled: Bool = false,
         linearDenoisingThresholdDB: Float = -60.0,
         linearDenoisingPreset: DenoiserPreset = .standard,
+        denoiserReductionAmount: Float = 0.5,
+        denoiserMode: DenoiserMode = .high,
+        denoiserHasCapturedProfile: Bool = false,
         speakerIRAlignmentEnabled: Bool = false,
         speakerIRDelayMs: Float = 0.0,
         crosstalkCancellationEnabled: Bool = false,
@@ -726,6 +736,9 @@ struct AdvancedProcessingConfig: Codable, Equatable, Sendable {
         self.linearDenoisingEnabled           = linearDenoisingEnabled
         self.linearDenoisingThresholdDB       = linearDenoisingThresholdDB
         self.linearDenoisingPreset           = linearDenoisingPreset
+        self.denoiserReductionAmount          = denoiserReductionAmount
+        self.denoiserMode                    = denoiserMode
+        self.denoiserHasCapturedProfile      = denoiserHasCapturedProfile
         self.speakerIRAlignmentEnabled        = speakerIRAlignmentEnabled
         self.speakerIRDelayMs                 = speakerIRDelayMs
         self.crosstalkCancellationEnabled     = crosstalkCancellationEnabled
@@ -780,6 +793,9 @@ struct AdvancedProcessingConfig: Codable, Equatable, Sendable {
         linearDenoisingEnabled           = try c.decodeIfPresent(Bool.self,                  forKey: .linearDenoisingEnabled)           ?? false
         linearDenoisingThresholdDB       = try c.decodeIfPresent(Float.self,                 forKey: .linearDenoisingThresholdDB)       ?? -60.0
         linearDenoisingPreset           = try c.decodeIfPresent(DenoiserPreset.self,     forKey: .linearDenoisingPreset)           ?? .standard
+        denoiserReductionAmount          = try c.decodeIfPresent(Float.self,                 forKey: .denoiserReductionAmount)          ?? 0.5
+        denoiserMode                    = try c.decodeIfPresent(DenoiserMode.self,         forKey: .denoiserMode)                    ?? .high
+        denoiserHasCapturedProfile      = try c.decodeIfPresent(Bool.self,                  forKey: .denoiserHasCapturedProfile)      ?? false
         speakerIRAlignmentEnabled        = try c.decodeIfPresent(Bool.self,                  forKey: .speakerIRAlignmentEnabled)        ?? false
         speakerIRDelayMs                 = try c.decodeIfPresent(Float.self,                 forKey: .speakerIRDelayMs)                 ?? 0.0
         crosstalkCancellationEnabled     = try c.decodeIfPresent(Bool.self,                  forKey: .crosstalkCancellationEnabled)     ?? false
@@ -835,6 +851,9 @@ struct AdvancedProcessingConfig: Codable, Equatable, Sendable {
         try c.encode(linearDenoisingEnabled,             forKey: .linearDenoisingEnabled)
         try c.encode(linearDenoisingThresholdDB,         forKey: .linearDenoisingThresholdDB)
         try c.encode(linearDenoisingPreset,             forKey: .linearDenoisingPreset)
+        try c.encode(denoiserReductionAmount,            forKey: .denoiserReductionAmount)
+        try c.encode(denoiserMode,                     forKey: .denoiserMode)
+        try c.encode(denoiserHasCapturedProfile,       forKey: .denoiserHasCapturedProfile)
         try c.encode(speakerIRAlignmentEnabled,          forKey: .speakerIRAlignmentEnabled)
         try c.encode(speakerIRDelayMs,                   forKey: .speakerIRDelayMs)
         try c.encode(crosstalkCancellationEnabled,       forKey: .crosstalkCancellationEnabled)
