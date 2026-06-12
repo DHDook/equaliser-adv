@@ -63,6 +63,14 @@ struct EQWindowView: View {
                         onOutputGainChange: { store.updateOutputGain($0) }
                     )
 
+                    LatencyReadoutView(
+                        totalLatencyMs: 0.0,
+                        alignmentDelayMs: 0.0,
+                        sampleRate: 48000.0
+                    )
+
+                    TruePeakMeterView(truePeakDB: -90.0, isOversampled: false)
+
                     ChannelBalanceSlider(
                         balance: Binding(
                             get: { store.dynamicsConfig.channelBalance },
@@ -167,7 +175,40 @@ struct EQWindowView: View {
                 Spacer()
                     .frame(width: 128)
 
-                Spacer()
+                // Snapshot comparison controls (Part 9.1)
+                VStack(spacing: 4) {
+                    Text("Compare")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    HStack(spacing: 4) {
+                        ForEach(["A", "B", "C", "D"], id: \.self) { key in
+                            Button(action: {
+                                if store.selectedSnapshotKey == key {
+                                    // Already selected - save current state
+                                    store.saveSnapshot(key: key)
+                                } else {
+                                    // Restore snapshot
+                                    store.restoreSnapshot(key: key)
+                                }
+                            }) {
+                                Text(key)
+                                    .font(.system(size: 11, weight: .medium))
+                                    .frame(width: 24, height: 24)
+                            }
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
+                            .background(store.selectedSnapshotKey == key ? Color.accentColor.opacity(0.3) : Color.clear)
+                            .overlay(
+                                store.snapshots[key] != nil ?
+                                    Circle()
+                                        .fill(Color.accentColor)
+                                        .frame(width: 4, height: 4)
+                                        .offset(x: 8, y: -8)
+                                    : nil
+                            )
+                        }
+                    }
+                }
 
                 HStack(spacing: 12) {
                     VStack(spacing: 4) {

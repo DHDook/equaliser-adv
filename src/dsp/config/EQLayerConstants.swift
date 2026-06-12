@@ -11,7 +11,10 @@ enum EQLayerConstants {
     /// Room correction parametric bands (layer 1).
     static let roomCorrectionLayerIndex = 1
 
+    /// Subwoofer EQ bands (layer 2) — applied only to the mono low-band signal in bass management.
+    static let subEQLayerIndex = 2
+
     // Future layer indices (reserved for future use):
-    // static let headphoneCorrectionLayerIndex = 2
-    // static let genreLayerIndex = 2
+    // static let headphoneCorrectionLayerIndex = 3
+    // static let genreLayerIndex = 3
 }

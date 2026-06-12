@@ -121,9 +121,43 @@ final class DynamicsProcessor: @unchecked Sendable {
     /// Mono bass lowpass filters (left and right channels).
     nonisolated(unsafe) var monoBassLowpassL: BiquadFilter
     nonisolated(unsafe) var monoBassLowpassR: BiquadFilter
+    /// Mono bass highpass filters (left and right channels) for LP/HP split.
+    nonisolated(unsafe) var monoBassHighpassL: BiquadFilter
+    nonisolated(unsafe) var monoBassHighpassR: BiquadFilter
     /// Mains high-pass filters (left and right channels).
     nonisolated(unsafe) var mainsHighPassL: BiquadFilter
     nonisolated(unsafe) var mainsHighPassR: BiquadFilter
+
+    /// Bass Management Linkwitz-Riley crossover instance.
+    nonisolated(unsafe) var bassManagementCrossover: LinkwitzRileyCrossover
+    /// Bass Management crossover state (per channel).
+    /// Layout: [ch * stateSizePerChannel] where stateSizePerChannel = sectionCount * 4
+    nonisolated(unsafe) var bassManagementState: [Float]
+    /// Bass Management enabled flag (atomic).
+    private let _bassManagementEnabled: ManagedAtomic<Int32>
+    /// Bass Management crossover frequency in Hz (atomic, stored as float bits).
+    private let _bassManagementCrossoverHzBits: ManagedAtomic<Int32>
+    /// Bass Management slope (atomic, stored as raw Int32).
+    private let _bassManagementSlopeBits: ManagedAtomic<Int32>
+    /// Bass Management low band gain in dB (atomic, stored as float bits).
+    private let _lowBandGainDBBits: ManagedAtomic<Int32>
+    /// Bass Management low band polarity inverted flag (atomic).
+    private let _lowBandPolarityInverted: ManagedAtomic<Int32>
+    /// Bass Management low band shelf enabled flag (atomic).
+    private let _lowBandLowShelfEnabled: ManagedAtomic<Int32>
+    /// Bass Management low band shelf frequency in Hz (atomic, stored as float bits).
+    private let _lowBandLowShelfFreqBits: ManagedAtomic<Int32>
+    /// Bass Management low band shelf gain in dB (atomic, stored as float bits).
+    private let _lowBandLowShelfGainBits: ManagedAtomic<Int32>
+    /// Bass Management low band shelf filter state (2 state variables).
+    nonisolated(unsafe) var lowBandLowShelfState: [Float]
+    /// Bass Management low band delay ring buffer (single channel for mono low signal).
+    private let lowBandDelayBuf: UnsafeMutablePointer<Float>
+    nonisolated(unsafe) var lowBandDelayWriteIdx: Int = 0
+    /// Bass Management low band delay in samples (atomic, stored as float bits).
+    private let _lowBandDelaySamplesBits: ManagedAtomic<Int32>
+    /// Lagrange 4th-order (5-tap) fractional delay FIR state for low band.
+    nonisolated(unsafe) var lowBandDelayApState: [Float]
 
     // Speaker IR alignment per-channel ring buffers (same pattern as timeDelayBufs)
     private let irAlignBufs: [UnsafeMutablePointer<Float>]
@@ -468,6 +502,12 @@ final class DynamicsProcessor: @unchecked Sendable {
             irBuf.initialize(repeating: 0, count: Self.maxIRAlignSamples)
             irBufs.append(irBuf)
         }
+        // Low band delay buffer (single channel for mono low signal)
+        // Size for 100 ms maximum delay
+        let lowBandDelaySize = Int(sampleRate * 0.1) + 10  // +10 for safety margin
+        let lowBandBuf = UnsafeMutablePointer<Float>.allocate(capacity: lowBandDelaySize)
+        lowBandBuf.initialize(repeating: 0, count: lowBandDelaySize)
+        self.lowBandDelayBuf = lowBandBuf
         self.timeDelayBufs = delays
         self.deltaBufs     = deltas
         self.irAlignBufs   = irBufs
@@ -482,6 +522,19 @@ final class DynamicsProcessor: @unchecked Sendable {
         self.irAlignApState = Array(repeating: 0.0, count: ch * 5)
         self.crosstalkFilterState = Array(repeating: 0.0, count: ch)
         self.denoisers = (0..<ch).map { _ in SpectralDenoiser() }
+
+        // Bass Management state (initialised for LR4 = 2 sections, 4 state vars per section per channel)
+        let defaultSlope = BassCrossoverSlope.lr4
+        let defaultSectionCount = defaultSlope.cascadedStageCount
+        let defaultStateSize = defaultSectionCount * 4  // 2 state vars * 2 paths per section
+        self.bassManagementState = Array(repeating: 0.0, count: ch * defaultStateSize)
+        self.bassManagementCrossover = LinkwitzRileyCrossover(
+            crossoverHz: 80.0,
+            slope: defaultSlope,
+            sampleRate: sampleRate
+        )
+        self.lowBandLowShelfState = Array(repeating: 0.0, count: 2)
+        self.lowBandDelayApState = Array(repeating: 0.0, count: 5)
 
         // Advanced processing atomics (main → audio)
         _stereoMode             = ManagedAtomic(Int32(StereoModeSelection.stereo.rawValue))
@@ -536,6 +589,17 @@ final class DynamicsProcessor: @unchecked Sendable {
         _mainsHighPassEnabled = ManagedAtomic(0)
         _mainsHighPassFrequencyBits = ManagedAtomic(floatBits(80.0))
 
+        // Bass Management atomics
+        _bassManagementEnabled = ManagedAtomic(0)
+        _bassManagementCrossoverHzBits = ManagedAtomic(floatBits(80.0))
+        _bassManagementSlopeBits = ManagedAtomic(Int32(BassCrossoverSlope.lr4.rawValue))
+        _lowBandGainDBBits = ManagedAtomic(floatBits(0.0))
+        _lowBandPolarityInverted = ManagedAtomic(0)
+        _lowBandLowShelfEnabled = ManagedAtomic(0)
+        _lowBandLowShelfFreqBits = ManagedAtomic(floatBits(30.0))
+        _lowBandLowShelfGainBits = ManagedAtomic(floatBits(0.0))
+        _lowBandDelaySamplesBits = ManagedAtomic(floatBits(0.0))
+
         // System volume feed atomics
         _systemVolumeBits = ManagedAtomic(floatBits(1.0))
 
@@ -551,6 +615,19 @@ final class DynamicsProcessor: @unchecked Sendable {
         )
         monoBassLowpassL.setCoefficients(monoBassCoeffs, resetState: true)
         monoBassLowpassR.setCoefficients(monoBassCoeffs, resetState: true)
+
+        // Mono bass highpass filters (2nd-order Butterworth at 80 Hz) for LP/HP split
+        monoBassHighpassL = BiquadFilter()
+        monoBassHighpassR = BiquadFilter()
+        let monoBassHighpassCoeffs = BiquadMath.calculateCoefficients(
+            type: .highPass,
+            sampleRate: sampleRate,
+            frequency: 80.0,
+            q: 0.7071,  // Butterworth Q
+            gain: 0.0
+        )
+        monoBassHighpassL.setCoefficients(monoBassHighpassCoeffs, resetState: true)
+        monoBassHighpassR.setCoefficients(monoBassHighpassCoeffs, resetState: true)
 
         // Mains high-pass filters (2nd-order Butterworth at 80 Hz)
         mainsHighPassL = BiquadFilter()
@@ -785,7 +862,7 @@ final class DynamicsProcessor: @unchecked Sendable {
         _autoHeadroomMaxReductBits.store(floatBits(max(0.0, maxReductionDB)), ordering: .relaxed)
     }
     func setStereoTimeDelayMS(_ ms: Float) {
-        _timeDelayBits.store(floatBits(max(0.0, min(20.0, ms))), ordering: .relaxed)
+        _timeDelayBits.store(floatBits(max(-20.0, min(20.0, ms))), ordering: .relaxed)
     }
     func setDeltaSoloActive(_ v: Bool) {
         _deltaSoloEnabled.store(v ? 1 : 0, ordering: .relaxed)
@@ -840,6 +917,34 @@ final class DynamicsProcessor: @unchecked Sendable {
     }
     func setOversamplingEnabled(_ v: Bool) {
         _oversamplingEnabled.store(v ? 1 : 0, ordering: .relaxed)
+    }
+    func setBassManagementEnabled(_ v: Bool) {
+        _bassManagementEnabled.store(v ? 1 : 0, ordering: .relaxed)
+    }
+    func setBassManagementCrossoverHz(_ hz: Float) {
+        _bassManagementCrossoverHzBits.store(floatBits(max(20.0, min(200.0, hz))), ordering: .relaxed)
+    }
+    func setBassManagementSlope(_ slope: BassCrossoverSlope) {
+        _bassManagementSlopeBits.store(Int32(slope.rawValue), ordering: .relaxed)
+    }
+    func setLowBandGainDB(_ db: Float) {
+        _lowBandGainDBBits.store(floatBits(max(-12.0, min(12.0, db))), ordering: .relaxed)
+    }
+    func setLowBandPolarityInverted(_ v: Bool) {
+        _lowBandPolarityInverted.store(v ? 1 : 0, ordering: .relaxed)
+    }
+    func setLowBandLowShelfEnabled(_ v: Bool) {
+        if v { for i in 0..<lowBandLowShelfState.count { lowBandLowShelfState[i] = 0 } }
+        _lowBandLowShelfEnabled.store(v ? 1 : 0, ordering: .relaxed)
+    }
+    func setLowBandLowShelfFreqHz(_ hz: Float) {
+        _lowBandLowShelfFreqBits.store(floatBits(max(20.0, min(100.0, hz))), ordering: .relaxed)
+    }
+    func setLowBandLowShelfGainDB(_ db: Float) {
+        _lowBandLowShelfGainBits.store(floatBits(max(-12.0, min(12.0, db))), ordering: .relaxed)
+    }
+    func setLowBandDelaySamples(_ samples: Float) {
+        _lowBandDelaySamplesBits.store(floatBits(max(0.0, samples)), ordering: .relaxed)
     }
 
     /// Applies a full config snapshot atomically (main thread).
@@ -921,7 +1026,7 @@ final class DynamicsProcessor: @unchecked Sendable {
             sampleRate:        storedSampleRate,
             typicalFrameCount: lookAheadSize > 0 ? lookAheadSize : 512
         )
-        setStereoTimeDelayMS(adv.stereoTimeDelayMS)
+        setStereoTimeDelayMS(adv.interChannelDelayMs)
         setIRAlignmentEnabled(adv.speakerIRAlignmentEnabled)
         setIRAlignmentDelayMs(adv.speakerIRDelayMs)
         setPanningEnabled(adv.panningGainMatrixEnabled)
@@ -943,6 +1048,37 @@ final class DynamicsProcessor: @unchecked Sendable {
         setSubBassPhaseAlignmentEnabled(adv.subBassPhaseAlignmentEnabled)
         setSubBassAlignmentFrequencyHz(adv.subBassAlignmentFrequencyHz)
         setOversamplingEnabled(adv.oversamplingEnabled)
+
+        // Bass Management - rebuild crossover when parameters change
+        setBassManagementEnabled(adv.bassManagement.enabled)
+        setBassManagementCrossoverHz(adv.bassManagement.crossoverHz)
+        setBassManagementSlope(adv.bassManagement.slope)
+        setLowBandGainDB(adv.bassManagement.lowBandGainDB)
+        setLowBandPolarityInverted(adv.bassManagement.lowBandPolarityInverted)
+        setLowBandLowShelfEnabled(adv.bassManagement.lowBandLowShelfEnabled)
+        setLowBandLowShelfFreqHz(adv.bassManagement.lowBandLowShelfFreqHz)
+        setLowBandLowShelfGainDB(adv.bassManagement.lowBandLowShelfGainDB)
+        setLowBandDelaySamples(adv.bassManagement.lowBandDelaySamples)
+
+        // Rebuild LinkwitzRileyCrossover instance on control thread
+        let newCrossover = LinkwitzRileyCrossover(
+            crossoverHz: adv.bassManagement.crossoverHz,
+            slope: adv.bassManagement.slope,
+            sampleRate: storedSampleRate
+        )
+        let newStateSize = newCrossover.stateSizePerChannel
+        let ch = 2  // Stereo only
+        var newState = Array(repeating: Float(0.0), count: ch * newStateSize)
+        // Preserve existing state where possible
+        let oldStateSize = bassManagementCrossover.stateSizePerChannel
+        let minStateSize = min(oldStateSize, newStateSize)
+        for chIdx in 0..<ch {
+            for i in 0..<minStateSize {
+                newState[chIdx * newStateSize + i] = bassManagementState[chIdx * oldStateSize + i]
+            }
+        }
+        bassManagementState = newState
+        bassManagementCrossover = newCrossover
     }
 
     /// Called when the pipeline sample rate changes (main thread).
@@ -1077,24 +1213,13 @@ final class DynamicsProcessor: @unchecked Sendable {
         // Stage 4: Expander.
         if expOn { processExpander(abl: abl, numCh: numCh, count: count) }
 
-        // Mains high-pass filter (before limiter).
-        if numCh >= 2 {
-            guard let bufL = abl[0].mData?.assumingMemoryBound(to: Float.self),
-                  let bufR = abl[1].mData?.assumingMemoryBound(to: Float.self) else { return }
-            processMainsHighPass(bufL: bufL, bufR: bufR, frameCount: frameCount)
-        }
+        // Bass Management (before limiter, replaces mains high-pass and mono bass)
+        processBassManagement(abl: abl, numCh: numCh, count: count)
 
         // Stage 5: Soft Clipper + Brickwall Limiter.
         let oversampleOn = _oversamplingEnabled.load(ordering: .relaxed) != 0
         if !oversampleOn {
             processSoftClipperAndLimiter(abl: abl, numCh: numCh, count: count, softOn: softOn, limOn: limOn)
-        }
-
-        // Mono bass summing (after limiter, before de-harsh).
-        if numCh >= 2 {
-            guard let bufL = abl[0].mData?.assumingMemoryBound(to: Float.self),
-                  let bufR = abl[1].mData?.assumingMemoryBound(to: Float.self) else { return }
-            processMonoBass(bufL: bufL, bufR: bufR, frameCount: frameCount)
         }
 
         // Stage 6: De-Harsh Tilt Filter.
@@ -1309,20 +1434,33 @@ final class DynamicsProcessor: @unchecked Sendable {
             ordering: .relaxed
         )
 
-        // Inter-channel time delay (right channel delayed relative to left).
+        // Inter-channel time delay (signed: positive = delay R relative to L, negative = delay L relative to R).
         let delayMs      = bitsToFloat(_timeDelayBits.load(ordering: .relaxed))
-        let newDelay     = Int((delayMs / 1000.0) * Float(storedSampleRate) + 0.5)
+        let absDelayMs  = abs(delayMs)
+        let newDelay     = Int((absDelayMs / 1000.0) * Float(storedSampleRate) + 0.5)
         let delaySamples = min(newDelay, Self.maxDelaySamples - 1)
         timeDelaySamples = delaySamples
         guard delaySamples > 0 else { return }
 
-        let delayBuf = timeDelayBufs[1]
         let bufSize  = Self.maxDelaySamples
-        for i in 0..<count {
-            delayBuf[timeDelayWriteIdx] = bufR[i]
-            let readIdx = (timeDelayWriteIdx - delaySamples + bufSize) % bufSize
-            bufR[i] = delayBuf[readIdx]
-            timeDelayWriteIdx = (timeDelayWriteIdx + 1) % bufSize
+        if delayMs > 0 {
+            // Delay right channel relative to left
+            let delayBuf = timeDelayBufs[1]
+            for i in 0..<count {
+                delayBuf[timeDelayWriteIdx] = bufR[i]
+                let readIdx = (timeDelayWriteIdx - delaySamples + bufSize) % bufSize
+                bufR[i] = delayBuf[readIdx]
+                timeDelayWriteIdx = (timeDelayWriteIdx + 1) % bufSize
+            }
+        } else {
+            // Delay left channel relative to right
+            let delayBuf = timeDelayBufs[0]
+            for i in 0..<count {
+                delayBuf[timeDelayWriteIdx] = bufL[i]
+                let readIdx = (timeDelayWriteIdx - delaySamples + bufSize) % bufSize
+                bufL[i] = delayBuf[readIdx]
+                timeDelayWriteIdx = (timeDelayWriteIdx + 1) % bufSize
+            }
         }
     }
 
@@ -1764,99 +1902,145 @@ final class DynamicsProcessor: @unchecked Sendable {
         }
     }
 
-    /// Mono bass summing: sums L+R below crossover frequency for subwoofer output.
+    /// Bass Management: Linkwitz-Riley crossover for subwoofer integration.
     /// - Parameters:
-    ///   - bufL: Left channel buffer (mutable, will be overwritten with mono)
-    ///   - bufR: Right channel buffer (mutable, will be overwritten with mono)
-    ///   - frameCount: Number of frames to process
+    ///   - abl: Audio buffer list (must have at least 2 channels)
+    ///   - numCh: Number of channels
+    ///   - count: Number of frames to process
     @inline(__always)
-    private func processMonoBass(
-        bufL: UnsafeMutablePointer<Float>,
-        bufR: UnsafeMutablePointer<Float>,
-        frameCount: UInt32
+    private func processBassManagement(
+        abl: UnsafeMutableAudioBufferListPointer,
+        numCh: Int,
+        count: Int
     ) {
-        guard _monoBassEnabled.load(ordering: .relaxed) != 0 else { return }
+        guard _bassManagementEnabled.load(ordering: .relaxed) != 0 else { return }
+        guard numCh >= 2 else { return }
 
-        let count = Int(frameCount)
-        let crossover = bitsToFloat(_monoBassCrossoverBits.load(ordering: .relaxed))
-        let sr = storedSampleRate
+        guard let bufL = abl[0].mData?.assumingMemoryBound(to: Float.self),
+              let bufR = abl[1].mData?.assumingMemoryBound(to: Float.self) else { return }
 
-        // Recompute lowpass coefficients if crossover changed
-        // (Simple approach: recompute every call for now, can optimize with dirty flag later)
-        let coeffs = BiquadMath.calculateCoefficients(
-            type: .lowPass,
-            sampleRate: sr,
-            frequency: Double(crossover),
-            q: 0.7071,  // Butterworth Q
-            gain: 0.0
-        )
-        monoBassLowpassL.setCoefficients(coeffs, resetState: false)
-        monoBassLowpassR.setCoefficients(coeffs, resetState: false)
+        // Process each channel through LP and HP paths
+        var lowL = [Float](repeating: 0, count: count)
+        var lowR = [Float](repeating: 0, count: count)
+        var highL = [Float](repeating: 0, count: count)
+        var highR = [Float](repeating: 0, count: count)
 
-        // Lowpass-filter both channels
-        var tempL = [Float](repeating: 0, count: count)
-        var tempR = [Float](repeating: 0, count: count)
-
-        tempL.withUnsafeMutableBufferPointer { tempLPtr in
-            monoBassLowpassL.process(input: bufL, output: tempLPtr.baseAddress!, frameCount: frameCount)
-        }
-
-        tempR.withUnsafeMutableBufferPointer { tempRPtr in
-            monoBassLowpassR.process(input: bufR, output: tempRPtr.baseAddress!, frameCount: frameCount)
-        }
-
-        // Sum the filtered outputs and write mono to both channels
+        // Copy input to temp buffers
         for i in 0..<count {
-            let mono = tempL[i] + tempR[i]
-            bufL[i] = mono
-            bufR[i] = mono
-        }
-    }
-
-    /// Mains high-pass filter: removes sub-bass from main speakers when using subwoofer.
-    /// - Parameters:
-    ///   - bufL: Left channel buffer (mutable, will be filtered in-place)
-    ///   - bufR: Right channel buffer (mutable, will be filtered in-place)
-    ///   - frameCount: Number of frames to process
-    @inline(__always)
-    private func processMainsHighPass(
-        bufL: UnsafeMutablePointer<Float>,
-        bufR: UnsafeMutablePointer<Float>,
-        frameCount: UInt32
-    ) {
-        guard _mainsHighPassEnabled.load(ordering: .relaxed) != 0 else { return }
-
-        let count = Int(frameCount)
-        let frequency = bitsToFloat(_mainsHighPassFrequencyBits.load(ordering: .relaxed))
-        let sr = storedSampleRate
-
-        // Recompute highpass coefficients if frequency changed
-        let coeffs = BiquadMath.calculateCoefficients(
-            type: .highPass,
-            sampleRate: sr,
-            frequency: Double(frequency),
-            q: 0.7071,  // Butterworth Q
-            gain: 0.0
-        )
-        mainsHighPassL.setCoefficients(coeffs, resetState: false)
-        mainsHighPassR.setCoefficients(coeffs, resetState: false)
-
-        // Highpass-filter both channels in-place
-        var tempL = [Float](repeating: 0, count: count)
-        var tempR = [Float](repeating: 0, count: count)
-
-        tempL.withUnsafeMutableBufferPointer { tempLPtr in
-            mainsHighPassL.process(input: bufL, output: tempLPtr.baseAddress!, frameCount: frameCount)
+            lowL[i] = bufL[i]
+            lowR[i] = bufR[i]
+            highL[i] = bufL[i]
+            highR[i] = bufR[i]
         }
 
-        tempR.withUnsafeMutableBufferPointer { tempRPtr in
-            mainsHighPassR.process(input: bufR, output: tempRPtr.baseAddress!, frameCount: frameCount)
-        }
+        // Process LP and HP for each channel
+        bassManagementCrossover.processLowPass(&lowL, state: &bassManagementState, channelIndex: 0, frameCount: count)
+        bassManagementCrossover.processHighPass(&highL, state: &bassManagementState, channelIndex: 0, frameCount: count)
+        bassManagementCrossover.processLowPass(&lowR, state: &bassManagementState, channelIndex: 1, frameCount: count)
+        bassManagementCrossover.processHighPass(&highR, state: &bassManagementState, channelIndex: 1, frameCount: count)
 
-        // Write filtered outputs back to buffers
+        // Sum low bands to get mono low
+        var monoLow = [Float](repeating: 0, count: count)
         for i in 0..<count {
-            bufL[i] = tempL[i]
-            bufR[i] = tempR[i]
+            monoLow[i] = lowL[i] + lowR[i]
+        }
+
+        // Part 2 sub-band processing chain
+        // Order: EQ → shelf → gain → polarity → delay
+
+        // 2.2: Apply Sub EQ layer (stubbed for now - will be wired in Part 2.2)
+        // monoLow = applyEQLayer(subEQLayerIndex, monoLow)
+
+        // 2.1: Apply room-gain compensation low shelf if enabled
+        let lowShelfEnabled = _lowBandLowShelfEnabled.load(ordering: .relaxed) != 0
+        if lowShelfEnabled {
+            let shelfFreq = bitsToFloat(_lowBandLowShelfFreqBits.load(ordering: .relaxed))
+            let shelfGain = bitsToFloat(_lowBandLowShelfGainBits.load(ordering: .relaxed))
+            let sr = storedSampleRate
+            let (b0, b1, b2, na1, na2) = Self.lowShelfCoeffs(fc: shelfFreq, gainDB: shelfGain, sr: sr)
+            var w1 = lowBandLowShelfState[0]
+            var w2 = lowBandLowShelfState[1]
+            for i in 0..<count {
+                monoLow[i] = Self.processBiquad(monoLow[i], b0: b0, b1: b1, b2: b2,
+                                                 na1: na1, na2: na2, w1: &w1, w2: &w2)
+            }
+            lowBandLowShelfState[0] = w1
+            lowBandLowShelfState[1] = w2
+        }
+
+        // Apply sub trim gain
+        let gainDB = bitsToFloat(_lowBandGainDBBits.load(ordering: .relaxed))
+        let gainLinear = pow(10.0, gainDB / 20.0)
+        if gainLinear != 1.0 {
+            for i in 0..<count {
+                monoLow[i] *= gainLinear
+            }
+        }
+
+        // Apply polarity inversion if enabled
+        let polarityInverted = _lowBandPolarityInverted.load(ordering: .relaxed) != 0
+        if polarityInverted {
+            for i in 0..<count {
+                monoLow[i] *= -1.0
+            }
+        }
+
+        // 2.4: Apply fractional delay for subwoofer alignment
+        let delaySamples = bitsToFloat(_lowBandDelaySamplesBits.load(ordering: .relaxed))
+        if delaySamples > 0 {
+            let intDel = min(Int(delaySamples), Int(storedSampleRate * 0.1) - 1)
+            let frac = Float(delaySamples - Float(intDel))
+
+            // Lagrange 4th-order (5-tap) fractional delay FIR
+            var lagCoeffs: (Float, Float, Float, Float, Float)
+            do {
+                let d = Double(frac)
+                var c = [Double](repeating: 0, count: 5)
+                for k in 0..<5 {
+                    var h = 1.0
+                    for n in 0..<5 where n != k {
+                        h *= (d - Double(n - 2)) / Double(k - n)
+                    }
+                    c[k] = h
+                }
+                lagCoeffs = (Float(c[0]), Float(c[1]), Float(c[2]), Float(c[3]), Float(c[4]))
+            }
+
+            let bufSize = Int(storedSampleRate * 0.1) + 10
+            var tap0 = lowBandDelayApState[0]
+            var tap1 = lowBandDelayApState[1]
+            var tap2 = lowBandDelayApState[2]
+            var tap3 = lowBandDelayApState[3]
+            var tap4 = lowBandDelayApState[4]
+            let (lc0, lc1, lc2, lc3, lc4) = lagCoeffs
+            var writeIdx = lowBandDelayWriteIdx
+
+            for i in 0..<count {
+                // Push into integer delay ring buffer
+                lowBandDelayBuf[writeIdx] = monoLow[i]
+                let readIdx = (writeIdx - intDel + bufSize) % bufSize
+                let s = lowBandDelayBuf[readIdx]
+
+                // Shift FIR delay line and apply Lagrange coefficients
+                tap4 = tap3; tap3 = tap2; tap2 = tap1; tap1 = tap0
+                tap0 = s
+                monoLow[i] = lc0 * tap0 + lc1 * tap1 + lc2 * tap2 + lc3 * tap3 + lc4 * tap4
+
+                writeIdx = (writeIdx + 1) % bufSize
+            }
+
+            lowBandDelayApState[0] = tap0
+            lowBandDelayApState[1] = tap1
+            lowBandDelayApState[2] = tap2
+            lowBandDelayApState[3] = tap3
+            lowBandDelayApState[4] = tap4
+            lowBandDelayWriteIdx = writeIdx
+        }
+
+        // Recombine: high band + mono low
+        for i in 0..<count {
+            bufL[i] = highL[i] + monoLow[i]
+            bufR[i] = highR[i] + monoLow[i]
         }
     }
 

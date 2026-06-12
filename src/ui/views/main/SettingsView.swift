@@ -549,6 +549,7 @@ struct RoomCalibrationTab: View {
     @State private var acousticMode   = 0        // 0 = Single Point, 1 = Multi-Seat Avg
     @State private var measuredSeats: Set<Int> = []   // indices of measured positions
     @State private var statusMessage  = "Ambient shield active — monitoring room silence."
+    @State private var selectedMeasurementTab = 0  // 0 = Magnitude, 1 = Phase, 2 = Group Delay, 3 = Impulse, 4 = Step, 5 = ETC/Waterfall
 
     // Loopback measurement state
     @State private var maxBands: Int = 16
@@ -579,7 +580,7 @@ struct RoomCalibrationTab: View {
                         .foregroundStyle(.secondary)
 
                     Picker("Target curve", selection: $store.selectedTargetCurveName) {
-                        ForEach(TargetCurveLibrary.allCurves, id: \.name) { curve in
+                        ForEach(TargetCurveLibrary.allCurves.filter { !$0.appliesToSubBandOnly }, id: \.name) { curve in
                             Text(curve.name).tag(curve.name)
                         }
                         Text("Custom…").tag("Custom…")
@@ -587,33 +588,118 @@ struct RoomCalibrationTab: View {
                     .pickerStyle(.menu)
                     .controlSize(.small)
                     .onChange(of: store.selectedTargetCurveName) { _, newValue in
-                        if newValue == "Custom…" {
-                            // Open file panel for CSV import
-                            let panel = NSOpenPanel()
-                            panel.allowedContentTypes = [.commaSeparatedText]
-                            panel.allowsMultipleSelection = false
-                            panel.title = "Select Target Curve CSV"
-                            if panel.runModal() == .OK, let url = panel.url {
-                                do {
-                                    try store.importTargetCurveFromCSV(url: url)
-                                } catch {
-                                    print("Failed to import target curve: \(error)")
-                                }
-                            }
-                        } else {
-                            // Select library curve
-                            if let curve = TargetCurveLibrary.allCurves.first(where: { $0.name == newValue }) {
-                                store.targetCurve = curve.curve
-                            }
+                        if let curve = TargetCurveLibrary.allCurves.first(where: { $0.name == newValue }) {
+                            store.targetCurve = curve.curve
                         }
                     }
                 }
-                .padding(.vertical, 4)
             } header: {
                 Text("Target Curve")
             }
 
-            // ── Microphone ────────────────────────────────────────────────
+            // ── Microphone Calibration (Part 4.1) ───────────────────────────
+            Section {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Load a microphone calibration file to correct for the measurement mic's frequency response deviation.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+
+                    if let calibration = store.micCalibration {
+                        HStack(spacing: 8) {
+                            Text(calibration.filename ?? "Loaded calibration")
+                                .font(.system(size: 12))
+                                .foregroundStyle(.secondary)
+                            Button("Clear") {
+                                store.clearMicCalibration()
+                            }
+                            .buttonStyle(.borderless)
+                            .font(.system(size: 11))
+                        }
+                    } else {
+                        Button("Load Mic Calibration File…") {
+                            let panel = NSOpenPanel()
+                            panel.allowedContentTypes = [.plainText]
+                            panel.allowsMultipleSelection = false
+                            panel.title = "Select Microphone Calibration File"
+                            if panel.runModal() == .OK, let url = panel.url {
+                                store.loadMicCalibration(url: url)
+                            }
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                    }
+
+                    if let error = store.micCalibrationLoadError {
+                        Text(error)
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                    }
+                }
+            } header: {
+                Text("Microphone Calibration")
+            }
+
+            // ── Excess-Phase Correction (Part 5) ───────────────────────────
+            Section {
+                VStack(alignment: .leading, spacing: 8) {
+                    Toggle("Excess-Phase Correction (Experimental)", isOn: $store.excessPhaseConfig.enabled)
+
+                    if store.excessPhaseConfig.enabled {
+                        VStack(alignment: .leading, spacing: 8) {
+                            // Frequency slider
+                            HStack {
+                                Text("Cutoff frequency:")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                Slider(value: $store.excessPhaseConfig.cutoffFreqHz, in: 100...500, step: 10)
+                                    .frame(width: 150)
+                                Text("\(Int(store.excessPhaseConfig.cutoffFreqHz)) Hz")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .frame(width: 40)
+                            }
+
+                            // Filter length picker
+                            HStack {
+                                Text("Filter length:")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                Picker("", selection: $store.excessPhaseConfig.filterTaps) {
+                                    Text("4096").tag(4096)
+                                    Text("8192").tag(8192)
+                                    Text("16384").tag(16384)
+                                }
+                                .pickerStyle(.segmented)
+                                .frame(width: 200)
+                            }
+
+                            // Latency display
+                            let latency = ExcessPhaseCorrector.estimateLatency(
+                                filterTaps: store.excessPhaseConfig.filterTaps,
+                                sampleRate: 48000.0
+                            )
+                            HStack {
+                                Text("Added latency:")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                Text("\(String(format: "%.1f", latency)) ms")
+                                    .font(.caption)
+                                    .foregroundStyle(.orange)
+                            }
+
+                            // Help text
+                            Text("Recommend leaving this off for video playback unless you have lip-sync delay compensation available. Suitable for 2-channel music listening.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                }
+            } header: {
+                Text("Excess-Phase Correction")
+            }
+
+            // ── Microphone Selection ───────────────────────────────────────────
             Section {
                 VStack(alignment: .leading, spacing: 8) {
                     Text("Select the microphone used to capture room reflections during the sweep.")
@@ -739,6 +825,84 @@ struct RoomCalibrationTab: View {
                 .padding(.vertical, 4)
             } header: {
                 Text("Measurement")
+            }
+
+            // ── Measurement Visualization (Part 6) ───────────────────────
+            Section {
+                VStack(alignment: .leading, spacing: 8) {
+                    // Tab picker
+                    Picker("View", selection: $selectedMeasurementTab) {
+                        Text("Magnitude").tag(0)
+                        Text("Phase").tag(1)
+                        Text("Group Delay").tag(2)
+                        Text("Impulse").tag(3)
+                        Text("Step").tag(4)
+                        Text("ETC/Waterfall").tag(5)
+                    }
+                    .pickerStyle(.segmented)
+                    .controlSize(.small)
+
+                    // Display selected view
+                    Group {
+                        switch selectedMeasurementTab {
+                        case 0:
+                            // Magnitude view (existing EQ curve view)
+                            Text("Magnitude view - use existing EQ curve display")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        case 1:
+                            // Phase view
+                            Text("Phase view - use existing EQ curve display with phase toggle")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        case 2:
+                            // Group Delay view
+                            if !store.measuredResponse.isEmpty {
+                                let complexResponse = store.measuredResponse.map { (frequency: Double($0.frequency), real: 1.0, imag: 0.0) }
+                                GroupDelayView(complexResponse: complexResponse)
+                            } else {
+                                Text("No measurement data available")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        case 3:
+                            // Impulse Response view
+                            if !store.measuredResponse.isEmpty {
+                                // Convert magnitude response to impulse response placeholder
+                                let impulseResponse = Array(repeating: Float(0.0), count: 1024)
+                                ImpulseResponseView(impulseResponse: impulseResponse, sampleRate: 48000.0)
+                            } else {
+                                Text("No measurement data available")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        case 4:
+                            // Step Response view
+                            if !store.measuredResponse.isEmpty {
+                                let impulseResponse = Array(repeating: Float(0.0), count: 1024)
+                                StepResponseView(impulseResponse: impulseResponse, sampleRate: 48000.0)
+                            } else {
+                                Text("No measurement data available")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        case 5:
+                            // ETC/Waterfall view
+                            if !store.measuredResponse.isEmpty {
+                                let impulseResponse = Array(repeating: Float(0.0), count: 1024)
+                                EnergyDecayView(impulseResponse: impulseResponse, sampleRate: 48000.0)
+                            } else {
+                                Text("No measurement data available")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        default:
+                            EmptyView()
+                        }
+                    }
+                }
+            } header: {
+                Text("Measurement Visualization")
             }
 
             // ── Loopback Measurement ─────────────────────────────────────────

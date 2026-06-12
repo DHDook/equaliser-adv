@@ -1024,6 +1024,10 @@ final class RenderPipeline {
             return noErr
         }
 
+        // 0.75. Apply static preamp gain for EQ headroom compensation (Part 8)
+        // Applied at the very start of the signal chain, before DC blocking and EQ
+        context.applyStaticPreamp(frameCount: UInt32(workFrames))
+
         // 1. DC-offset removal — fixed 0.5 Hz high-pass applied per channel before
         // any EQ or gain stage.  Eliminates sub-Hz electrical bias that would
         // otherwise accumulate through the downstream biquad sections.

@@ -342,6 +342,79 @@ enum TargetCurveType: Int, Codable, Equatable, Sendable {
     case customREW = 2
 }
 
+// MARK: - Bass Management Configuration
+
+/// Unified bass management configuration for subwoofer integration.
+/// Replaces the separate monoBassEnabled/mainsHighPassEnabled flags with a single coherent module.
+struct BassManagementConfig: Codable, Equatable, Sendable {
+    var enabled: Bool = false
+    var crossoverHz: Float = 80.0  // Range: 40–200 Hz (allow down to 20 Hz for full-range mains)
+    var slope: BassCrossoverSlope = .lr4
+    var lowBandGainDB: Float = 0.0  // Sub trim — range ±12 dB
+    var lowBandPolarityInverted: Bool = false
+    var lowBandDelaySamples: Float = 0.0  // Fractional sample delay for subwoofer alignment
+    var lowBandLowShelfEnabled: Bool = false  // Room-gain compensation shelf
+    var lowBandLowShelfFreqHz: Float = 30.0  // Room-gain shelf frequency
+    var lowBandLowShelfGainDB: Float = 0.0  // Room-gain shelf gain
+
+    // Speaker/subwoofer distances for time alignment (Part 3)
+    var leftSpeakerDistanceM: Float = 2.5
+    var rightSpeakerDistanceM: Float = 2.5
+    var subwooferDistanceM: Float = 2.5
+
+    static let `default` = BassManagementConfig()
+
+    private enum CodingKeys: String, CodingKey {
+        case enabled, crossoverHz, slope, lowBandGainDB, lowBandPolarityInverted
+        case lowBandDelaySamples, lowBandLowShelfEnabled, lowBandLowShelfFreqHz, lowBandLowShelfGainDB
+        case leftSpeakerDistanceM, rightSpeakerDistanceM, subwooferDistanceM
+    }
+
+    init(
+        enabled: Bool = false,
+        crossoverHz: Float = 80.0,
+        slope: BassCrossoverSlope = .lr4,
+        lowBandGainDB: Float = 0.0,
+        lowBandPolarityInverted: Bool = false,
+        lowBandDelaySamples: Float = 0.0,
+        lowBandLowShelfEnabled: Bool = false,
+        lowBandLowShelfFreqHz: Float = 30.0,
+        lowBandLowShelfGainDB: Float = 0.0,
+        leftSpeakerDistanceM: Float = 2.5,
+        rightSpeakerDistanceM: Float = 2.5,
+        subwooferDistanceM: Float = 2.5
+    ) {
+        self.enabled = enabled
+        self.crossoverHz = crossoverHz
+        self.slope = slope
+        self.lowBandGainDB = lowBandGainDB
+        self.lowBandPolarityInverted = lowBandPolarityInverted
+        self.lowBandDelaySamples = lowBandDelaySamples
+        self.lowBandLowShelfEnabled = lowBandLowShelfEnabled
+        self.lowBandLowShelfFreqHz = lowBandLowShelfFreqHz
+        self.lowBandLowShelfGainDB = lowBandLowShelfGainDB
+        self.leftSpeakerDistanceM = leftSpeakerDistanceM
+        self.rightSpeakerDistanceM = rightSpeakerDistanceM
+        self.subwooferDistanceM = subwooferDistanceM
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        enabled = try c.decodeIfPresent(Bool.self, forKey: .enabled) ?? false
+        crossoverHz = try c.decodeIfPresent(Float.self, forKey: .crossoverHz) ?? 80.0
+        slope = try c.decodeIfPresent(BassCrossoverSlope.self, forKey: .slope) ?? .lr4
+        lowBandGainDB = try c.decodeIfPresent(Float.self, forKey: .lowBandGainDB) ?? 0.0
+        lowBandPolarityInverted = try c.decodeIfPresent(Bool.self, forKey: .lowBandPolarityInverted) ?? false
+        lowBandDelaySamples = try c.decodeIfPresent(Float.self, forKey: .lowBandDelaySamples) ?? 0.0
+        lowBandLowShelfEnabled = try c.decodeIfPresent(Bool.self, forKey: .lowBandLowShelfEnabled) ?? false
+        lowBandLowShelfFreqHz = try c.decodeIfPresent(Float.self, forKey: .lowBandLowShelfFreqHz) ?? 30.0
+        lowBandLowShelfGainDB = try c.decodeIfPresent(Float.self, forKey: .lowBandLowShelfGainDB) ?? 0.0
+        leftSpeakerDistanceM = try c.decodeIfPresent(Float.self, forKey: .leftSpeakerDistanceM) ?? 2.5
+        rightSpeakerDistanceM = try c.decodeIfPresent(Float.self, forKey: .rightSpeakerDistanceM) ?? 2.5
+        subwooferDistanceM = try c.decodeIfPresent(Float.self, forKey: .subwooferDistanceM) ?? 2.5
+    }
+}
+
 // MARK: - Advanced Processing Configuration
 
 /// Extended processing parameters covering spatial, spectral, system, and LTI features.
@@ -484,7 +557,9 @@ struct AdvancedProcessingConfig: Codable, Equatable, Sendable {
     var autoHeadroomSpeed:        AutoHeadroomSpeed = .medium
 
     // ── E. Inter-Channel Time Delay ───────────────────────────────────
-    var stereoTimeDelayMS: Float = 0.0
+    /// Signed delay in milliseconds: positive = delay R relative to L, negative = delay L relative to R.
+    /// Range: ±20 ms (≈6.8 m / 22.4 ft of path difference at 343 m/s).
+    var interChannelDelayMs: Float = 0.0
 
     // ── F. DC Offset Filter ───────────────────────────────────────────
     var dcOffsetFilterEnabled: Bool = false
@@ -583,14 +658,24 @@ struct AdvancedProcessingConfig: Codable, Equatable, Sendable {
     /// Target curve type: flat, house curve, or custom imported from REW.
     var targetCurveType: TargetCurveType = .flat
 
+    /// Bass Management — unified subwoofer integration module.
+    var bassManagement: BassManagementConfig = BassManagementConfig()
+
+    /// Excess-Phase Correction — linear-phase FIR filter flattening group delay in modal region.
+    var excessPhaseConfig: ExcessPhaseConfig = ExcessPhaseConfig()
+
     /// Mono Bass Summing — sums L+R below crossover frequency for subwoofer output.
+    /// DEPRECATED: Migrated to bassManagement.enabled. Kept for backward compatibility only.
     var monoBassEnabled: Bool = false
     /// Mono bass crossover frequency in Hz. Range: 40 – 200 Hz. Default: 80 Hz.
+    /// DEPRECATED: Migrated to bassManagement.crossoverHz. Kept for backward compatibility only.
     var monoBassCrossover: Float = 80.0
 
     /// Mains High-Pass Filter — removes sub-bass from main speakers when using subwoofer.
+    /// DEPRECATED: Migrated to bassManagement.enabled. Kept for backward compatibility only.
     var mainsHighPassEnabled: Bool = false
     /// Mains high-pass crossover frequency in Hz. Range: 40 – 200 Hz. Default: 80 Hz.
+    /// DEPRECATED: Migrated to bassManagement.crossoverHz. Kept for backward compatibility only.
     var mainsHighPassFrequency: Float = 80.0
 
     /// Volume-Dependent Loudness — adjusts loudness contour based on system volume.
@@ -618,7 +703,7 @@ struct AdvancedProcessingConfig: Codable, Equatable, Sendable {
         case autoHeadroomTargetGRDB
         case autoHeadroomMaxReductionDB
         case autoHeadroomSpeed
-        case stereoTimeDelayMS
+        case interChannelDelayMs
         case dcOffsetFilterEnabled
         case deltaSoloActive
         case latencyMode
@@ -636,6 +721,8 @@ struct AdvancedProcessingConfig: Codable, Equatable, Sendable {
         case linearPhaseEQEnabled
         case roomCorrectionEnabled
         case targetCurveType
+        case bassManagement
+        case excessPhaseConfig
         case monoBassEnabled, monoBassCrossover
         case mainsHighPassEnabled, mainsHighPassFrequency
         case volumeDependentLoudnessEnabled, loudnessReferencePhon, loudnessReferenceVolume
@@ -666,7 +753,7 @@ struct AdvancedProcessingConfig: Codable, Equatable, Sendable {
         autoHeadroomTargetGRDB:       Float             = 3.0,
         autoHeadroomMaxReductionDB:   Float             = 6.0,
         autoHeadroomSpeed:            AutoHeadroomSpeed = .medium,
-        stereoTimeDelayMS: Float = 0.0,
+        interChannelDelayMs: Float = 0.0,
         dcOffsetFilterEnabled: Bool = false,
         deltaSoloActive: Bool = false,
         latencyMode: LatencyMode = .music,
@@ -701,6 +788,8 @@ struct AdvancedProcessingConfig: Codable, Equatable, Sendable {
         linearPhaseEQEnabled: Bool = false,
         roomCorrectionEnabled: Bool = false,
         targetCurveType: TargetCurveType = .flat,
+        bassManagement: BassManagementConfig = BassManagementConfig(),
+        excessPhaseConfig: ExcessPhaseConfig = ExcessPhaseConfig(),
         monoBassEnabled: Bool = false,
         monoBassCrossover: Float = 80.0,
         mainsHighPassEnabled: Bool = false,
@@ -723,7 +812,7 @@ struct AdvancedProcessingConfig: Codable, Equatable, Sendable {
         self.autoHeadroomTargetGRDB           = autoHeadroomTargetGRDB
         self.autoHeadroomMaxReductionDB       = autoHeadroomMaxReductionDB
         self.autoHeadroomSpeed                = autoHeadroomSpeed
-        self.stereoTimeDelayMS                = stereoTimeDelayMS
+        self.interChannelDelayMs              = interChannelDelayMs
         self.dcOffsetFilterEnabled            = dcOffsetFilterEnabled
         self.deltaSoloActive                  = deltaSoloActive
         self.latencyMode                      = latencyMode
@@ -758,6 +847,8 @@ struct AdvancedProcessingConfig: Codable, Equatable, Sendable {
         self.linearPhaseEQEnabled             = linearPhaseEQEnabled
         self.roomCorrectionEnabled            = roomCorrectionEnabled
         self.targetCurveType                  = targetCurveType
+        self.bassManagement                   = bassManagement
+        self.excessPhaseConfig               = excessPhaseConfig
         self.monoBassEnabled                  = monoBassEnabled
         self.monoBassCrossover                = monoBassCrossover
         self.mainsHighPassEnabled             = mainsHighPassEnabled
@@ -782,7 +873,7 @@ struct AdvancedProcessingConfig: Codable, Equatable, Sendable {
         autoHeadroomTargetGRDB           = try c.decodeIfPresent(Float.self,                 forKey: .autoHeadroomTargetGRDB)           ?? 3.0
         autoHeadroomMaxReductionDB       = try c.decodeIfPresent(Float.self,                 forKey: .autoHeadroomMaxReductionDB)       ?? 6.0
         autoHeadroomSpeed                = try c.decodeIfPresent(AutoHeadroomSpeed.self,     forKey: .autoHeadroomSpeed)                ?? .medium
-        stereoTimeDelayMS                = try c.decodeIfPresent(Float.self,                 forKey: .stereoTimeDelayMS)                ?? 0.0
+        interChannelDelayMs              = try c.decodeIfPresent(Float.self,                 forKey: .interChannelDelayMs)              ?? 0.0
         dcOffsetFilterEnabled            = try c.decodeIfPresent(Bool.self,                  forKey: .dcOffsetFilterEnabled)            ?? false
         deltaSoloActive                  = try c.decodeIfPresent(Bool.self,                  forKey: .deltaSoloActive)                  ?? false
         latencyMode                      = try c.decodeIfPresent(LatencyMode.self,           forKey: .latencyMode)                      ?? .music
@@ -817,10 +908,31 @@ struct AdvancedProcessingConfig: Codable, Equatable, Sendable {
         linearPhaseEQEnabled             = try c.decodeIfPresent(Bool.self,                  forKey: .linearPhaseEQEnabled)             ?? false
         roomCorrectionEnabled            = try c.decodeIfPresent(Bool.self,                  forKey: .roomCorrectionEnabled)            ?? false
         targetCurveType                  = try c.decodeIfPresent(TargetCurveType.self,       forKey: .targetCurveType)                  ?? .flat
-        monoBassEnabled                  = try c.decodeIfPresent(Bool.self,                  forKey: .monoBassEnabled)                  ?? false
-        monoBassCrossover                = try c.decodeIfPresent(Float.self,                 forKey: .monoBassCrossover)                ?? 80.0
-        mainsHighPassEnabled             = try c.decodeIfPresent(Bool.self,                  forKey: .mainsHighPassEnabled)             ?? false
-        mainsHighPassFrequency           = try c.decodeIfPresent(Float.self,                 forKey: .mainsHighPassFrequency)           ?? 80.0
+
+        // Decode bassManagement first, then migrate legacy fields if present
+        bassManagement                   = try c.decodeIfPresent(BassManagementConfig.self, forKey: .bassManagement) ?? BassManagementConfig()
+        excessPhaseConfig               = try c.decodeIfPresent(ExcessPhaseConfig.self,    forKey: .excessPhaseConfig) ?? ExcessPhaseConfig()
+
+        // Decode legacy fields for backward compatibility
+        let legacyMonoBassEnabled        = try c.decodeIfPresent(Bool.self,                  forKey: .monoBassEnabled)                  ?? false
+        let legacyMonoBassCrossover      = try c.decodeIfPresent(Float.self,                 forKey: .monoBassCrossover)                ?? 80.0
+        let legacyMainsHighPassEnabled   = try c.decodeIfPresent(Bool.self,                  forKey: .mainsHighPassEnabled)             ?? false
+        let legacyMainsHighPassFrequency = try c.decodeIfPresent(Float.self,                 forKey: .mainsHighPassFrequency)           ?? 80.0
+
+        // Migration: if legacy fields are present and bassManagement is at default, migrate them
+        if (legacyMonoBassEnabled || legacyMainsHighPassEnabled) && bassManagement.enabled == false {
+            bassManagement.enabled = true
+            // Prefer monoBassCrossover if both were set, otherwise use mainsHighPassFrequency
+            bassManagement.crossoverHz = legacyMonoBassEnabled ? legacyMonoBassCrossover : legacyMainsHighPassFrequency
+            bassManagement.slope = .lr4  // Default slope for migrated presets
+        }
+
+        // Store legacy fields for decode-only (not used by DynamicsProcessor)
+        monoBassEnabled                  = legacyMonoBassEnabled
+        monoBassCrossover                = legacyMonoBassCrossover
+        mainsHighPassEnabled             = legacyMainsHighPassEnabled
+        mainsHighPassFrequency           = legacyMainsHighPassFrequency
+
         volumeDependentLoudnessEnabled   = try c.decodeIfPresent(Bool.self,                  forKey: .volumeDependentLoudnessEnabled)   ?? false
         loudnessReferencePhon            = try c.decodeIfPresent(Float.self,                 forKey: .loudnessReferencePhon)            ?? 83.0
         loudnessReferenceVolume          = try c.decodeIfPresent(Float.self,                 forKey: .loudnessReferenceVolume)          ?? 0.85
@@ -842,7 +954,7 @@ struct AdvancedProcessingConfig: Codable, Equatable, Sendable {
         try c.encode(autoHeadroomTargetGRDB,             forKey: .autoHeadroomTargetGRDB)
         try c.encode(autoHeadroomMaxReductionDB,         forKey: .autoHeadroomMaxReductionDB)
         try c.encode(autoHeadroomSpeed,                  forKey: .autoHeadroomSpeed)
-        try c.encode(stereoTimeDelayMS,                  forKey: .stereoTimeDelayMS)
+        try c.encode(interChannelDelayMs,                forKey: .interChannelDelayMs)
         try c.encode(dcOffsetFilterEnabled,              forKey: .dcOffsetFilterEnabled)
         try c.encode(deltaSoloActive,                    forKey: .deltaSoloActive)
         try c.encode(latencyMode,                        forKey: .latencyMode)
@@ -877,10 +989,10 @@ struct AdvancedProcessingConfig: Codable, Equatable, Sendable {
         try c.encode(linearPhaseEQEnabled,               forKey: .linearPhaseEQEnabled)
         try c.encode(roomCorrectionEnabled,              forKey: .roomCorrectionEnabled)
         try c.encode(targetCurveType,                    forKey: .targetCurveType)
-        try c.encode(monoBassEnabled,                    forKey: .monoBassEnabled)
-        try c.encode(monoBassCrossover,                  forKey: .monoBassCrossover)
-        try c.encode(mainsHighPassEnabled,               forKey: .mainsHighPassEnabled)
-        try c.encode(mainsHighPassFrequency,             forKey: .mainsHighPassFrequency)
+        try c.encode(bassManagement,                     forKey: .bassManagement)
+        try c.encode(excessPhaseConfig,                  forKey: .excessPhaseConfig)
+        // Legacy fields (monoBassEnabled, monoBassCrossover, mainsHighPassEnabled, mainsHighPassFrequency)
+        // are NOT encoded - they are decode-only for backward compatibility
         try c.encode(volumeDependentLoudnessEnabled,     forKey: .volumeDependentLoudnessEnabled)
         try c.encode(loudnessReferencePhon,              forKey: .loudnessReferencePhon)
         try c.encode(loudnessReferenceVolume,            forKey: .loudnessReferenceVolume)

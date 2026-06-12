@@ -6,6 +6,7 @@ enum REWImportError: LocalizedError {
     case readFailed(Error)
     case invalidFormat(String)
     case noFiltersFound
+    case noMeasurementData
 
     var errorDescription: String? {
         switch self {
@@ -15,6 +16,8 @@ enum REWImportError: LocalizedError {
             return "Invalid REW format: \(message)"
         case .noFiltersFound:
             return "No filter settings found in file"
+        case .noMeasurementData:
+            return "No measurement data found in file"
         }
     }
 }
@@ -22,6 +25,12 @@ enum REWImportError: LocalizedError {
 /// Result of an REW import operation.
 struct REWImportResult {
     let bands: [PresetBand]
+    let warnings: [String]
+}
+
+/// Result of an REW measurement import operation (Part 4.3).
+struct REWMeasurementImportResult {
+    let complexResponse: [EqualiserStore.SeatMeasurement.ComplexPoint]
     let warnings: [String]
 }
 
@@ -51,7 +60,78 @@ enum REWImporter {
         return try parseREWText(content, filename: url.lastPathComponent)
     }
 
+    /// Imports REW measurement data from a file URL (Part 4.3).
+    /// - Parameter url: The URL of the REW measurement .txt file.
+    /// - Returns: An import result containing the complex response and any warnings.
+    static func importMeasurement(from url: URL) throws -> REWMeasurementImportResult {
+        let content: String
+        do {
+            content = try String(contentsOf: url, encoding: .utf8)
+        } catch {
+            throw REWImportError.readFailed(error)
+        }
+        return try parseREWMeasurement(content, filename: url.lastPathComponent)
+    }
+
     // MARK: - Parsing
+
+    private static func parseREWMeasurement(_ text: String, filename: String) throws -> REWMeasurementImportResult {
+        var warnings: [String] = []
+        var complexResponse: [EqualiserStore.SeatMeasurement.ComplexPoint] = []
+        var hasPhaseData = false
+
+        for line in text.components(separatedBy: .newlines) {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+
+            // Skip comment lines and empty lines
+            if trimmed.isEmpty || trimmed.hasPrefix("*") || trimmed.hasPrefix("#") {
+                continue
+            }
+
+            // Parse data line: Frequency(Hz)  SPL(dB)  Phase(degrees)
+            let components = trimmed.components(separatedBy: .whitespaces).filter { !$0.isEmpty }
+            guard components.count >= 2 else { continue }
+
+            guard let frequency = Double(components[0]),
+                  let spl = Double(components[1]) else { continue }
+
+            guard frequency > 0 else { continue }
+
+            // Parse phase if available (3rd column)
+            var phaseDegrees: Double = 0.0
+            if components.count >= 3 {
+                if let phase = Double(components[2]) {
+                    phaseDegrees = phase
+                    hasPhaseData = true
+                }
+            }
+
+            // Convert SPL and phase to complex representation
+            // real = 10^(SPL/20) * cos(phase)
+            // imag = 10^(SPL/20) * sin(phase)
+            let magnitude = pow(10.0, spl / 20.0)
+            let phaseRadians = phaseDegrees * .pi / 180.0
+            let real = magnitude * cos(phaseRadians)
+            let imag = hasPhaseData ? magnitude * sin(phaseRadians) : 0.0
+
+            complexResponse.append(EqualiserStore.SeatMeasurement.ComplexPoint(
+                frequency: frequency,
+                real: real,
+                imag: imag
+            ))
+        }
+
+        guard !complexResponse.isEmpty else {
+            throw REWImportError.noMeasurementData
+        }
+
+        if !hasPhaseData {
+            warnings.append("Measurement file contains magnitude-only data (no phase information). Phase will be assumed to be zero.")
+        }
+
+        logger.info("Imported \(complexResponse.count) measurement points from REW file '\(filename)'")
+        return REWMeasurementImportResult(complexResponse: complexResponse, warnings: warnings)
+    }
 
     private static func parseREWText(_ text: String, filename: String) throws -> REWImportResult {
         var warnings: [String] = []

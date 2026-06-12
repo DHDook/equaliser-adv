@@ -210,6 +210,43 @@ final class EQCoefficientStager {
         )
     }
 
+    // MARK: - Excess-Phase Correction (Part 5.4)
+
+    /// Refreshes the excess-phase correction impulse response in the convolution engine
+    /// when excess-phase correction is enabled and measurement data is available.
+    func refreshExcessPhaseIRIfNeeded(measuredResponse: [(frequency: Double, real: Double, imag: Double)]? = nil,
+                                     minPhaseResponse: [(frequency: Double, real: Double, imag: Double)]? = nil) {
+        guard let pipeline = renderPipeline,
+              let ctx = pipeline.callbackContext else { return }
+
+        // Check if excess-phase correction is enabled in the configuration
+        let excessPhaseConfig = eqConfiguration.dynamicsConfig.advanced.excessPhaseConfig
+        guard excessPhaseConfig.enabled else {
+            // Disable convolution if excess-phase correction is disabled
+            ctx.setConvolutionEnabled(false)
+            return
+        }
+
+        // Compute excess-phase correction impulse response if measurement data is available
+        guard let measured = measuredResponse,
+              let minPhase = minPhaseResponse else {
+            logger.warning("Excess-phase correction enabled but measurement data not available")
+            return
+        }
+
+        let ir = ExcessPhaseCorrector.computeCorrectionFilter(
+            measuredResponse: measured,
+            minPhaseResponse: minPhase,
+            config: excessPhaseConfig,
+            sampleRate: currentSampleRate
+        )
+
+        // Update convolution engine with the excess-phase IR (same for both channels)
+        ctx.updateConvolutionIR(left: ir, right: ir)
+        ctx.setConvolutionEnabled(true)
+        logger.info("Excess-phase correction IR updated: \(ir.count) taps, cutoff: \(excessPhaseConfig.cutoffFreqHz) Hz")
+    }
+
     // MARK: - Private Coefficient Helpers
 
     /// Stages coefficients for a single band (incremental update path).

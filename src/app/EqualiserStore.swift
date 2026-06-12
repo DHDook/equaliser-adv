@@ -111,6 +111,91 @@ final class EqualiserStore: ObservableObject {
     @Published var firCorrectionTapCount: Int = 4096
     @Published var targetCurve: [(frequency: Double, gainDB: Double)] = TargetCurveLibrary.flat
     @Published var selectedTargetCurveName: String = "Flat"
+    @Published var micCalibration: MicCalibration? = nil
+    @Published var micCalibrationLoadError: String? = nil
+    @Published var excessPhaseConfig: ExcessPhaseConfig = ExcessPhaseConfig()
+    @Published var eqHeadroomCompensationEnabled: Bool = true
+    @Published var staticPreampDB: Float = 0.0
+
+    // MARK: - Snapshot Comparison (Part 9.1)
+
+    /// Snapshot of EQ configuration for A/B/C/D comparison
+    struct EQSnapshot: Codable {
+        var leftBands: [EQBandConfiguration]
+        var rightBands: [EQBandConfiguration]
+        var activeBandCount: Int
+        var channelMode: ChannelMode
+        var inputGain: Float
+        var outputGain: Float
+        var globalBypass: Bool
+        var timestamp: Date
+    }
+
+    /// Stored snapshots for A/B/C/D comparison
+    @Published var snapshots: [String: EQSnapshot] = [:]
+    @Published var selectedSnapshotKey: String? = nil
+
+    /// Saves the current EQ configuration to a snapshot slot (A, B, C, or D)
+    func saveSnapshot(key: String) {
+        let snapshot = EQSnapshot(
+            leftBands: Array(eqConfiguration.leftState.userEQ.bands),
+            rightBands: Array(eqConfiguration.rightState.userEQ.bands),
+            activeBandCount: eqConfiguration.activeBandCount,
+            channelMode: eqConfiguration.channelMode,
+            inputGain: eqConfiguration.inputGain,
+            outputGain: eqConfiguration.outputGain,
+            globalBypass: eqConfiguration.globalBypass,
+            timestamp: Date()
+        )
+        snapshots[key] = snapshot
+        logger.info("Saved EQ snapshot to slot: \(key)")
+    }
+
+    /// Restores the EQ configuration from a snapshot slot
+    func restoreSnapshot(key: String) {
+        guard let snapshot = snapshots[key] else {
+            logger.warning("No snapshot found for slot: \(key)")
+            return
+        }
+
+        // Restore EQ bands by using update methods
+        for (index, band) in snapshot.leftBands.enumerated() {
+            eqConfiguration.updateBandGain(index: index, gain: band.gain, channel: .left)
+            eqConfiguration.updateBandQ(index: index, q: band.q, channel: .left)
+            eqConfiguration.updateBandFrequency(index: index, frequency: band.frequency, channel: .left)
+            eqConfiguration.updateBandBypass(index: index, bypass: band.bypass, channel: .left)
+            eqConfiguration.updateBandFilterType(index: index, filterType: band.filterType, channel: .left)
+            eqConfiguration.updateBandSlope(index: index, slope: band.slope, channel: .left)
+        }
+        for (index, band) in snapshot.rightBands.enumerated() {
+            eqConfiguration.updateBandGain(index: index, gain: band.gain, channel: .right)
+            eqConfiguration.updateBandQ(index: index, q: band.q, channel: .right)
+            eqConfiguration.updateBandFrequency(index: index, frequency: band.frequency, channel: .right)
+            eqConfiguration.updateBandBypass(index: index, bypass: band.bypass, channel: .right)
+            eqConfiguration.updateBandFilterType(index: index, filterType: band.filterType, channel: .right)
+            eqConfiguration.updateBandSlope(index: index, slope: band.slope, channel: .right)
+        }
+        eqConfiguration.setActiveBandCount(snapshot.activeBandCount)
+        eqConfiguration.channelMode = snapshot.channelMode
+        eqConfiguration.inputGain = snapshot.inputGain
+        eqConfiguration.outputGain = snapshot.outputGain
+        eqConfiguration.globalBypass = snapshot.globalBypass
+
+        // Reapply configuration to pipeline
+        routingCoordinator.reapplyConfiguration()
+
+        selectedSnapshotKey = key
+        logger.info("Restored EQ snapshot from slot: \(key)")
+    }
+
+    /// Clears a snapshot slot
+    func clearSnapshot(key: String) {
+        snapshots.removeValue(forKey: key)
+        if selectedSnapshotKey == key {
+            selectedSnapshotKey = nil
+        }
+        logger.info("Cleared EQ snapshot slot: \(key)")
+    }
 
     // MARK: - Forwarded Properties from RoutingCoordinator
     
@@ -367,9 +452,30 @@ final class EqualiserStore: ObservableObject {
     @Published var roomCorrectionBandCount: Int = 0
     @Published var customREWTargetCurve: [(frequency: Double, gainDB: Double)]? = nil
 
-    /// Accumulated measurement curves for multi-seat averaging.
-    /// Each element is one full-range frequency response measurement.
-    @Published var seatMeasurements: [[(frequency: Double, gainDB: Double)]] = []
+    /// Accumulated measurement curves for multi-seat averaging (Part 4.2).
+    /// Each element is one full-range frequency response measurement with complex data.
+    @Published var seatMeasurements: [SeatMeasurement] = []
+
+    /// Seat measurement with complex frequency response and weighting (Part 4.2).
+    struct SeatMeasurement: Codable, Sendable {
+        struct ComplexPoint: Codable, Sendable {
+            let frequency: Double
+            let real: Double
+            let imag: Double
+        }
+
+        var complexResponse: [ComplexPoint]
+        var weight: Double = 1.0
+
+        /// Computed magnitude curve for backward compatibility.
+        var magnitudeCurve: [(frequency: Double, gainDB: Double)] {
+            complexResponse.map { point in
+                let magnitude = sqrt(point.real * point.real + point.imag * point.imag)
+                let gainDB = magnitude > 0 ? 20.0 * log10(magnitude) : -120.0
+                return (point.frequency, gainDB)
+            }
+        }
+    }
 
     // MARK: - Advanced Live Metrics (audio thread → main thread)
 
@@ -715,7 +821,7 @@ final class EqualiserStore: ObservableObject {
 
                 Task { @MainActor in
                     let ir = analyser.computeImpulseResponse(referenceSweep: capturedSweep)
-                    let response = analyser.computeFrequencyResponse(ir: ir)
+                    let response = analyser.computeFrequencyResponse(ir: ir, micCalibration: micCalibration)
 
                     self.measuredResponse = response
                     self.measurementState = .done
@@ -824,7 +930,7 @@ final class EqualiserStore: ObservableObject {
         sweepAnalyser?.stopRecording()
         guard let analyser = sweepAnalyser else { return }
         let ir = analyser.computeImpulseResponse(referenceSweep: analyser.sweepSignal)
-        let curve = analyser.computeFrequencyResponse(ir: ir)
+        let curve = analyser.computeFrequencyResponse(ir: ir, micCalibration: micCalibration)
         if seatIndex == 0 || pendingMeasuredCurve == nil {
             pendingMeasuredCurve = curve
         } else {
@@ -833,10 +939,17 @@ final class EqualiserStore: ObservableObject {
         }
     }
 
-    /// Adds a single-seat measurement to the multi-seat collection.
+    /// Adds a single-seat measurement to the multi-seat collection (Part 4.2).
     func addSeatMeasurement() {
         guard let curve = pendingMeasuredCurve else { return }
-        seatMeasurements.append(curve)
+        // For now, convert magnitude-only to complex with zero phase (legacy path)
+        // TODO: Update to use complex data from SweepAnalyser
+        let complexResponse = curve.map { point in
+            let magnitude = pow(10.0, point.gainDB / 20.0)
+            return SeatMeasurement.ComplexPoint(frequency: point.frequency, real: magnitude, imag: 0.0) // Zero phase for legacy
+        }
+        let weight = seatMeasurements.isEmpty ? 1.5 : 1.0 // Primary seat gets higher weight
+        seatMeasurements.append(SeatMeasurement(complexResponse: complexResponse, weight: weight))
         pendingMeasuredCurve = nil
     }
 
@@ -845,23 +958,61 @@ final class EqualiserStore: ObservableObject {
         seatMeasurements.removeAll()
     }
 
-    /// Computes complex average of all seat measurements and stores in pendingMeasuredCurve.
-    func applyMultiSeatCalibration() {
-        guard !seatMeasurements.isEmpty else { return }
-        let first = seatMeasurements[0]
-        var complexSum: [(re: Double, im: Double)] = first.map { _ in (0.0, 0.0) }
-        for measurement in seatMeasurements {
-            for (i, point) in measurement.enumerated() {
-                let gain = pow(10.0, point.gainDB / 20.0)
-                let phase = 0.0 // Assume zero phase for magnitude-only measurements
-                complexSum[i].re += gain * cos(phase)
-                complexSum[i].im += gain * sin(phase)
+    /// Updates the weight for a specific seat measurement (Part 4.2).
+    func updateSeatWeight(at index: Int, weight: Double) {
+        guard index >= 0 && index < seatMeasurements.count else { return }
+        seatMeasurements[index].weight = max(0.25, min(2.0, weight))
+    }
+
+    /// Imports a REW measurement file as a seat measurement (Part 4.3).
+    func importREWMeasurement(url: URL) {
+        Task.detached(priority: .userInitiated) { [self] in
+            do {
+                let result = try REWImporter.importMeasurement(from: url)
+                await MainActor.run { [self] in
+                    let weight = self.seatMeasurements.isEmpty ? 1.5 : 1.0 // Primary seat gets higher weight
+                    let seatMeasurement = SeatMeasurement(complexResponse: result.complexResponse, weight: weight)
+                    self.seatMeasurements.append(seatMeasurement)
+                    // Show warnings if any
+                    if !result.warnings.isEmpty {
+                        self.measurementError = result.warnings.joined(separator: "\n")
+                    }
+                }
+            } catch {
+                await MainActor.run { [self] in
+                    self.measurementError = error.localizedDescription
+                }
             }
         }
-        let count = Double(seatMeasurements.count)
-        pendingMeasuredCurve = first.enumerated().map { i, point in
-            let avgRe = complexSum[i].re / count
-            let avgIm = complexSum[i].im / count
+    }
+
+    /// Computes complex average of all seat measurements and stores in pendingMeasuredCurve (Part 4.2).
+    func applyMultiSeatCalibration() {
+        guard !seatMeasurements.isEmpty else { return }
+        pendingMeasuredCurve = averageComplexResponses(seatMeasurements)
+    }
+
+    /// Computes weighted complex average of seat measurements (Part 4.2).
+    private func averageComplexResponses(_ seats: [SeatMeasurement]) -> [(frequency: Double, gainDB: Double)] {
+        guard !seats.isEmpty else { return [] }
+
+        let first = seats[0]
+        var weightedSum: [(re: Double, im: Double)] = first.complexResponse.map { _ in (0.0, 0.0) }
+        var totalWeight: Double = 0.0
+
+        for seat in seats {
+            let weight = seat.weight
+            totalWeight += weight
+            for (i, point) in seat.complexResponse.enumerated() {
+                weightedSum[i].re += weight * point.real
+                weightedSum[i].im += weight * point.imag
+            }
+        }
+
+        // Convert weighted complex average back to magnitude in dB
+        return first.complexResponse.enumerated().map { i, point in
+            let avgRe = weightedSum[i].re / totalWeight
+            let avgIm = weightedSum[i].im / totalWeight
             let avgMag = sqrt(avgRe * avgRe + avgIm * avgIm)
             let avgGainDB = avgMag > 0 ? 20.0 * log10(avgMag) : -120.0
             return (point.frequency, avgGainDB)
@@ -1181,6 +1332,29 @@ final class EqualiserStore: ObservableObject {
         convolutionConfig.enabled = enabled
         routingCoordinator.pipelineManager.renderPipeline?.callbackContext?
             .setConvolutionEnabled(enabled && convolutionConfig.irDisplayName != nil)
+    }
+
+    // MARK: - Microphone Calibration (Part 4.1)
+
+    func loadMicCalibration(url: URL) {
+        micCalibrationLoadError = nil
+        Task.detached(priority: .userInitiated) {
+            do {
+                let calibration = try MicCalibrationLoader.parse(from: url)
+                await MainActor.run {
+                    self.micCalibration = calibration
+                }
+            } catch {
+                await MainActor.run {
+                    self.micCalibrationLoadError = error.localizedDescription
+                }
+            }
+        }
+    }
+
+    func clearMicCalibration() {
+        micCalibration = nil
+        micCalibrationLoadError = nil
     }
 
     /// Call from routingStatus .active case (pipeline restart) alongside

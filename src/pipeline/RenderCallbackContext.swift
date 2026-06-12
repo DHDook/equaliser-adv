@@ -106,6 +106,14 @@ final class RenderCallbackContext: @unchecked Sendable {
     /// Written by main thread, read by audio thread.
     private let targetBoostGainAtomic: ManagedAtomic<Int32> = ManagedAtomic(1065353216) // Float 1.0 as Int32 bits (0x3F800000)
 
+    /// Target static preamp gain for EQ headroom compensation (stored as Int32 bit pattern of Float).
+    /// Written by main thread, read by audio thread.
+    /// Applied at the very start of the signal chain, before DC blocking and EQ.
+    private let targetStaticPreampGainAtomic: ManagedAtomic<Int32> = ManagedAtomic(1065353216) // Float 1.0 as Int32 bits (0x3F800000)
+
+    /// Current static preamp gain (audio thread only).
+    nonisolated(unsafe) var staticPreampGainLinear: Float = 1.0
+
     /// Target volume gain for shared memory mode (stored as Int32 bit pattern of Float).
     /// 0.0 when muted or volume at 0%, 1.0 at normal volumes.
     /// Written by main thread, read by audio thread.
@@ -390,6 +398,23 @@ final class RenderCallbackContext: @unchecked Sendable {
 
     func triggerSweepCompletion() {
         sweepCompletionCallback?()
+    }
+
+    // MARK: - Static Preamp Gain API (Part 8)
+
+    /// Sets the static preamp gain for EQ headroom compensation.
+    /// Called from the main thread when EQ/correction settings change.
+    /// - Parameter gainDB: Static preamp gain in dB (always ≤ 0, never positive)
+    func setStaticPreampGain(gainDB: Float) {
+        let linearGain = pow(10.0, gainDB / 20.0)
+        let bitPattern = Int32(bitPattern: linearGain.bitPattern)
+        targetStaticPreampGainAtomic.store(bitPattern, ordering: .relaxed)
+    }
+
+    var staticPreampGainDB: Float {
+        let bitPattern = UInt32(bitPattern: targetStaticPreampGainAtomic.load(ordering: .relaxed))
+        let linearGain = Float(bitPattern: bitPattern)
+        return 20.0 * log10(linearGain)
     }
 
     // MARK: - Gain Read API (Audio Thread or Diagnostics)
@@ -833,6 +858,29 @@ final class RenderCallbackContext: @unchecked Sendable {
     }
 
     // MARK: - DC Offset Removal
+
+    /// Applies the static preamp gain for EQ headroom compensation.
+    /// Applied at the very start of the signal chain, before DC blocking and EQ.
+    /// - Parameter frameCount: Number of frames to process.
+    @inline(__always)
+    func applyStaticPreamp(frameCount: UInt32) {
+        // Ramp to target gain (similar to other gains)
+        let targetBitPattern = targetStaticPreampGainAtomic.load(ordering: .relaxed)
+        let targetGain = Float(bitPattern: UInt32(bitPattern: targetBitPattern))
+
+        // Simple ramp (could be smoothed with time constant if needed)
+        staticPreampGainLinear = targetGain
+
+        let count = Int(frameCount)
+        var gain = staticPreampGainLinear
+
+        for ch in 0 ..< Int(channelCount) {
+            let buf = processingBuffers[ch]
+            for i in 0..<count {
+                buf[i] *= gain
+            }
+        }
+    }
 
     /// Applies the 0.5 Hz DC-blocking high-pass filter to every channel's processing buffer.
     ///

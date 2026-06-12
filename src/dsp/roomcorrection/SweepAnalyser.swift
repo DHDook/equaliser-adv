@@ -169,9 +169,25 @@ final class SweepAnalyser {
     }
 
     /// Computes the frequency response from the impulse response.
-    /// - Parameter ir: Impulse response
+    /// - Parameters:
+    ///   - ir: Impulse response
+    ///   - micCalibration: Optional microphone calibration data to apply
     /// - Returns: Frequency response data (frequency in Hz, gain in dB) covering 20 Hz–20 kHz
-    func computeFrequencyResponse(ir: [Float]) -> [(frequency: Double, gainDB: Double)] {
+    func computeFrequencyResponse(ir: [Float], micCalibration: MicCalibration? = nil) -> [(frequency: Double, gainDB: Double)] {
+        let complexResponse = computeComplexFrequencyResponse(ir: ir, micCalibration: micCalibration)
+        return complexResponse.map { point in
+            let magnitude = sqrt(point.real * point.real + point.imag * point.imag)
+            let gainDB = magnitude > 0 ? 20.0 * log10(magnitude) : -120.0
+            return (point.frequency, gainDB)
+        }
+    }
+
+    /// Computes the complex frequency response from the impulse response.
+    /// - Parameters:
+    ///   - ir: Impulse response
+    ///   - micCalibration: Optional microphone calibration data to apply
+    /// - Returns: Complex frequency response data (frequency in Hz, real, imag) covering 20 Hz–20 kHz
+    func computeComplexFrequencyResponse(ir: [Float], micCalibration: MicCalibration? = nil) -> [(frequency: Double, real: Double, imag: Double)] {
         // FFT to get frequency response
         let fftSize = nextPowerOfTwo(ir.count)
         let fftEngine = FFTEngine(fftSize: fftSize)
@@ -184,21 +200,38 @@ final class SweepAnalyser {
 
         let fftResult = fftEngine.forwardFFT(input: paddedIR)
 
-        // Compute magnitude response
-        var response: [(frequency: Double, gainDB: Double)] = []
+        // Compute complex response
+        var response: [(frequency: Double, real: Double, imag: Double)] = []
         let halfSize = fftSize / 2
 
         for i in 0..<halfSize {
             let real = fftResult.real[i]
             let imag = fftResult.imag[i]
             let magnitude = sqrt(Double(real * real + imag * imag))
-            let magnitudeDB = magnitude > 0 ? 20.0 * log10(magnitude) : -100.0
+            var magnitudeDB = magnitude > 0 ? 20.0 * log10(magnitude) : -100.0
 
             let frequency = Double(i) * sampleRate / Double(fftSize)
 
-            // Only include 20 Hz–20 kHz range
-            if frequency >= 20.0 && frequency <= 20000.0 {
-                response.append((frequency, magnitudeDB))
+            // Apply microphone calibration correction if available
+            if let calibration = micCalibration {
+                let deviation = calibration.deviationAtFrequency(frequency)
+                magnitudeDB -= deviation
+                // Reconstruct magnitude from corrected dB
+                let correctedMagnitude = pow(10.0, magnitudeDB / 20.0)
+                // Preserve original phase, apply corrected magnitude
+                let phase = atan2(Double(imag), Double(real))
+                let correctedReal = correctedMagnitude * cos(phase)
+                let correctedImag = correctedMagnitude * sin(phase)
+
+                // Only include 20 Hz–20 kHz range
+                if frequency >= 20.0 && frequency <= 20000.0 {
+                    response.append((frequency, correctedReal, correctedImag))
+                }
+            } else {
+                // Only include 20 Hz–20 kHz range
+                if frequency >= 20.0 && frequency <= 20000.0 {
+                    response.append((frequency, Double(real), Double(imag)))
+                }
             }
         }
 

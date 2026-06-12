@@ -29,6 +29,18 @@ struct EQLayerState: Codable, Sendable {
         )
     }
 
+    /// Creates a subwoofer EQ layer with the specified number of bands.
+    /// - Parameter bandCount: Number of active bands (default 4 for sub EQ).
+    /// - Returns: A new EQLayerState configured as subwoofer EQ.
+    static func subEQ(bandCount: Int = 4) -> EQLayerState {
+        EQLayerState(
+            label: "Subwoofer EQ",
+            bands: EQConfiguration.defaultBands(),
+            activeBandCount: bandCount,
+            bypass: false
+        )
+    }
+
     /// Creates an empty layer (passthrough, no bands).
     /// - Parameter label: Optional label for the layer.
     /// - Returns: A new EQLayerState with no active bands.

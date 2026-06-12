@@ -5,6 +5,12 @@
 
 import Foundation
 
+struct TargetCurve: Sendable {
+    let name: String
+    let curve: [(frequency: Double, gainDB: Double)]
+    let appliesToSubBandOnly: Bool
+}
+
 enum TargetCurveLibrary {
 
     /// Flat 0 dB reference. Use when no preference is set.
@@ -36,10 +42,36 @@ enum TargetCurveLibrary {
         (4000, 0.0), (8000, 0.5), (12000, 1.0), (16000, 1.5), (20000, 2.0)
     ]
 
-    static let allCurves: [(name: String, curve: [(frequency: Double, gainDB: Double)])] = [
-        ("Flat",         flat),
-        ("Harman room",  harmanRoom),
-        ("B&K house",    bkHouse),
-        ("Home theater", homeTheater)
+    /// X-Curve (SMPTE/ISO 2969 cinema reference): flat from 20 Hz–2 kHz,
+    /// gentle roll-off above 2 kHz (−3 dB/octave from 2 kHz to 10 kHz region).
+    static let xCurve: [(frequency: Double, gainDB: Double)] = [
+        (20, 0), (40, 0), (63, 0), (80, 0), (100, 0), (125, 0),
+        (160, 0), (200, 0), (250, 0), (315, 0), (400, 0), (500, 0),
+        (630, 0), (800, 0), (1000, 0), (1250, 0), (1600, 0),
+        (2000, 0), (2500, -1.5), (3150, -3.0), (4000, -4.5), (5000, -6.0),
+        (6300, -7.5), (8000, -9.0), (10000, -10.5), (12500, -12.0), (16000, -13.5),
+        (20000, -15.0)
     ]
+
+    /// Sub-Only Target: curve defined and meaningful only below ~300 Hz.
+    /// Flat with a small "room gain" rise toward 20 Hz (+3 dB at 20 Hz tapering to 0 dB at 80 Hz).
+    /// Intended for use when correction is being computed/applied to the Part 2 sub band specifically.
+    static let subOnly: [(frequency: Double, gainDB: Double)] = [
+        (20, 3.0), (30, 2.5), (40, 2.0), (50, 1.5), (63, 1.0), (80, 0.0),
+        (100, 0.0), (125, 0.0), (160, 0.0), (200, 0.0), (250, 0.0), (315, 0.0)
+    ]
+
+    static let allCurves: [TargetCurve] = [
+        TargetCurve(name: "Flat", curve: flat, appliesToSubBandOnly: false),
+        TargetCurve(name: "Harman room", curve: harmanRoom, appliesToSubBandOnly: false),
+        TargetCurve(name: "B&K house", curve: bkHouse, appliesToSubBandOnly: false),
+        TargetCurve(name: "Home theater", curve: homeTheater, appliesToSubBandOnly: false),
+        TargetCurve(name: "X-Curve (cinema)", curve: xCurve, appliesToSubBandOnly: false),
+        TargetCurve(name: "Sub-only", curve: subOnly, appliesToSubBandOnly: true)
+    ]
+
+    /// Helper to get curve by name (for backward compatibility).
+    static func curve(named name: String) -> [(frequency: Double, gainDB: Double)]? {
+        return allCurves.first(where: { $0.name == name })?.curve
+    }
 }

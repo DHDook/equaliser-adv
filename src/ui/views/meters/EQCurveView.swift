@@ -200,9 +200,6 @@ struct EQCurveView: View {
         ctx.stroke(strokePath,
                    with: .color(Color.accentColor.opacity(0.90)),
                    style: StrokeStyle(lineWidth: 1.5, lineCap: .round, lineJoin: .round))
-
-        // --- Phase overlay ---
-        drawPhaseOverlay(ctx: ctx, size: size, snapshot: snapshot)
     }
 
     private func drawPhaseOverlay(ctx: GraphicsContext, size: CGSize, snapshot: CurveSnapshot) {

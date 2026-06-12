@@ -702,7 +702,7 @@ struct DynamicsView: View {
                 .disabled(!store.dynamicsConfig.limiter.isEnabled)
                 .opacity(!store.dynamicsConfig.limiter.isEnabled ? 0.4 : 1.0)
 
-            Toggle("Auto-Headroom", isOn: autoHeadroomEnabledBinding)
+            Toggle("Dynamic Gain Rider", isOn: autoHeadroomEnabledBinding)
                 .toggleStyle(.switch)
                 .controlSize(.regular)
                 .font(.system(size: 13))
@@ -749,7 +749,29 @@ struct DynamicsView: View {
                           || !store.dynamicsConfig.limiter.isEnabled) ? 0.4 : 1.0)
             }
 
-            // Live auto-headroom gain indicator
+            // Part 8: EQ Headroom Compensation (static preamp)
+            Divider()
+                .padding(.vertical, 4)
+
+            Toggle("EQ Headroom Compensation", isOn: $store.eqHeadroomCompensationEnabled)
+                .toggleStyle(.switch)
+                .controlSize(.regular)
+                .font(.system(size: 13))
+
+            HStack(spacing: 8) {
+                Text("Static Preamp")
+                    .font(.system(size: 13))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 80, alignment: .leading)
+                Text("\(String(format: "%.1f", store.staticPreampDB)) dB applied")
+                    .font(.system(size: 13))
+                    .foregroundStyle(.secondary)
+                Spacer()
+            }
+            .disabled(!store.eqHeadroomCompensationEnabled)
+            .opacity(!store.eqHeadroomCompensationEnabled ? 0.4 : 1.0)
+
+            // Live dynamic gain rider indicator
             HStack(spacing: 8) {
                 Text("Rider Gain")
                     .font(.system(size: 13))
@@ -791,9 +813,9 @@ struct DynamicsView: View {
             DynamicsSliderRow(
                 label: "L/R Delay",
                 value: timeDelayBinding,
-                range: 0.0...20.0,
+                range: -20.0...20.0,
                 step: 0.1,
-                formatValue: { String(format: "%.1f ms", $0) }
+                formatValue: { String(format: "%+.1f ms", $0) }
             )
         } header: {
             Text("Stereo Matrix")
@@ -1022,10 +1044,171 @@ struct DynamicsView: View {
     private var bassManagementSection: some View {
         Section {
             ltiSubBassSection
-            ltiMonoBassSection
-            ltiMainsHighPassSection
+            ltiBassManagementUnifiedSection
         } header: {
             Text("Bass Management")
+        }
+    }
+
+    // MARK: - LTI: Unified Bass Management Section
+
+    private var ltiBassManagementUnifiedSection: some View {
+        Section {
+            Toggle("Enabled", isOn: bassManagementEnabledBinding)
+                .toggleStyle(.switch)
+                .controlSize(.regular)
+                .font(.system(size: 13))
+
+            DynamicsSliderRow(
+                label: "Crossover",
+                value: bassManagementCrossoverBinding,
+                range: 40.0...200.0,
+                step: 1.0,
+                formatValue: { String(format: "%.0f Hz", $0) },
+                isDisabled: !store.dynamicsConfig.advanced.bassManagement.enabled
+            )
+
+            HStack(spacing: 8) {
+                Text("Slope")
+                    .font(.system(size: 13))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 72, alignment: .leading)
+                Picker("", selection: bassManagementSlopeBinding) {
+                    Text("LR2 (12 dB/oct)").tag(BassCrossoverSlope.lr2)
+                    Text("LR4 (24 dB/oct)").tag(BassCrossoverSlope.lr4)
+                    Text("LR8 (48 dB/oct)").tag(BassCrossoverSlope.lr8)
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+            }
+            .disabled(!store.dynamicsConfig.advanced.bassManagement.enabled)
+            .opacity(!store.dynamicsConfig.advanced.bassManagement.enabled ? 0.4 : 1.0)
+
+            DynamicsSliderRow(
+                label: "Low Band Gain",
+                value: bassManagementLowBandGainBinding,
+                range: -12.0...12.0,
+                step: 0.5,
+                formatValue: { String(format: "%+.1f dB", $0) },
+                isDisabled: !store.dynamicsConfig.advanced.bassManagement.enabled
+            )
+
+            HStack(spacing: 8) {
+                Text("Polarity")
+                    .font(.system(size: 13))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 72, alignment: .leading)
+                Picker("", selection: bassManagementPolarityBinding) {
+                    Text("Normal").tag(false)
+                    Text("Inverted").tag(true)
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+            }
+            .disabled(!store.dynamicsConfig.advanced.bassManagement.enabled)
+            .opacity(!store.dynamicsConfig.advanced.bassManagement.enabled ? 0.4 : 1.0)
+
+            Toggle("Room Gain Compensation", isOn: bassManagementLowShelfEnabledBinding)
+                .toggleStyle(.switch)
+                .controlSize(.regular)
+                .font(.system(size: 13))
+                .disabled(!store.dynamicsConfig.advanced.bassManagement.enabled)
+
+            DynamicsSliderRow(
+                label: "Room Gain Freq",
+                value: bassManagementLowShelfFreqBinding,
+                range: 20.0...100.0,
+                step: 1.0,
+                formatValue: { String(format: "%.0f Hz", $0) },
+                isDisabled: !store.dynamicsConfig.advanced.bassManagement.enabled || !store.dynamicsConfig.advanced.bassManagement.lowBandLowShelfEnabled
+            )
+
+            DynamicsSliderRow(
+                label: "Room Gain",
+                value: bassManagementLowShelfGainBinding,
+                range: -12.0...12.0,
+                step: 0.5,
+                formatValue: { String(format: "%+.1f dB", $0) },
+                isDisabled: !store.dynamicsConfig.advanced.bassManagement.enabled || !store.dynamicsConfig.advanced.bassManagement.lowBandLowShelfEnabled
+            )
+
+            DynamicsSliderRow(
+                label: "Sub Delay",
+                value: bassManagementDelayMsBinding,
+                range: 0.0...100.0,
+                step: 0.1,
+                formatValue: { String(format: "%.1f ms", $0) },
+                isDisabled: !store.dynamicsConfig.advanced.bassManagement.enabled
+            )
+
+            // Speaker/Sub distance entry (Part 3.2)
+            Divider()
+                .padding(.vertical, 4)
+
+            HStack(spacing: 8) {
+                Text("Left Speaker")
+                    .font(.system(size: 13))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 120, alignment: .leading)
+                TextField("m", value: bassManagementLeftDistanceBinding, format: .number)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 60)
+                Text("m")
+                    .font(.system(size: 13))
+                    .foregroundStyle(.secondary)
+                Text("≈ \(String(format: "%.1f", store.dynamicsConfig.advanced.bassManagement.leftSpeakerDistanceM / 343.0 * 1000.0)) ms")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.tertiary)
+                    .frame(width: 50, alignment: .trailing)
+            }
+            .disabled(!store.dynamicsConfig.advanced.bassManagement.enabled)
+
+            HStack(spacing: 8) {
+                Text("Right Speaker")
+                    .font(.system(size: 13))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 120, alignment: .leading)
+                TextField("m", value: bassManagementRightDistanceBinding, format: .number)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 60)
+                Text("m")
+                    .font(.system(size: 13))
+                    .foregroundStyle(.secondary)
+                Text("≈ \(String(format: "%.1f", store.dynamicsConfig.advanced.bassManagement.rightSpeakerDistanceM / 343.0 * 1000.0)) ms")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.tertiary)
+                    .frame(width: 50, alignment: .trailing)
+            }
+            .disabled(!store.dynamicsConfig.advanced.bassManagement.enabled)
+
+            HStack(spacing: 8) {
+                Text("Subwoofer")
+                    .font(.system(size: 13))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 120, alignment: .leading)
+                TextField("m", value: bassManagementSubDistanceBinding, format: .number)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 60)
+                Text("m")
+                    .font(.system(size: 13))
+                    .foregroundStyle(.secondary)
+                Text("≈ \(String(format: "%.1f", store.dynamicsConfig.advanced.bassManagement.subwooferDistanceM / 343.0 * 1000.0)) ms")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.tertiary)
+                    .frame(width: 50, alignment: .trailing)
+            }
+            .disabled(!store.dynamicsConfig.advanced.bassManagement.enabled)
+
+            Button("Calculate Delays from Distances") {
+                calculateDelaysFromDistances()
+            }
+            .buttonStyle(.bordered)
+            .font(.system(size: 12))
+            .disabled(!store.dynamicsConfig.advanced.bassManagement.enabled)
+        } footer: {
+            Text("Linkwitz-Riley crossover for subwoofer integration. Sums L+R below crossover and recombines with high-pass mains.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
     }
 
@@ -1050,54 +1233,6 @@ struct DynamicsView: View {
             Text("Sub-Bass Phase Alignment")
         } footer: {
             Text("Applies allpass filter to align sub-bass phase with mains.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        }
-    }
-
-    // MARK: - LTI: Mono Bass Summing Section
-
-    private var ltiMonoBassSection: some View {
-        Section {
-            Toggle("Enabled", isOn: ltiMonoBassEnabledBinding)
-                .toggleStyle(.switch)
-                .controlSize(.regular)
-                .font(.system(size: 13))
-
-            DynamicsSliderRow(
-                label: "Crossover",
-                value: ltiMonoBassCrossoverBinding,
-                range: 40.0...200.0,
-                step: 1.0,
-                formatValue: { String(format: "%.0f Hz", $0) },
-                isDisabled: !store.dynamicsConfig.advanced.monoBassEnabled
-            )
-        } footer: {
-            Text("Sums L+R below crossover frequency for subwoofer output.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        }
-    }
-
-    // MARK: - LTI: Mains High-Pass Section
-
-    private var ltiMainsHighPassSection: some View {
-        Section {
-            Toggle("Enabled", isOn: ltiMainsHighPassEnabledBinding)
-                .toggleStyle(.switch)
-                .controlSize(.regular)
-                .font(.system(size: 13))
-
-            DynamicsSliderRow(
-                label: "Crossover",
-                value: ltiMainsHighPassFrequencyBinding,
-                range: 40.0...200.0,
-                step: 1.0,
-                formatValue: { String(format: "%.0f Hz", $0) },
-                isDisabled: !store.dynamicsConfig.advanced.mainsHighPassEnabled
-            )
-        } footer: {
-            Text("Removes sub-bass from main speakers when using subwoofer.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -1448,8 +1583,8 @@ struct DynamicsView: View {
     }
     private var timeDelayBinding: Binding<Double> {
         Binding(
-            get: { Double(store.dynamicsConfig.advanced.stereoTimeDelayMS) },
-            set: { val in var adv = store.dynamicsConfig.advanced; adv.stereoTimeDelayMS = Float(val); store.updateAdvancedProcessing(adv) }
+            get: { Double(store.dynamicsConfig.advanced.interChannelDelayMs) },
+            set: { val in var adv = store.dynamicsConfig.advanced; adv.interChannelDelayMs = Float(val); store.updateAdvancedProcessing(adv) }
         )
     }
     private var loudnessContourBinding: Binding<Bool> {
@@ -1793,40 +1928,120 @@ struct DynamicsView: View {
             set: { val in
                 var adv = store.dynamicsConfig.advanced
                 adv.subBassAlignmentFrequencyHz = Float(val)
-                adv.monoBassCrossover = Float(val)  // Sync with mono bass crossover
+                adv.bassManagement.crossoverHz = Float(val)  // Sync with bass management crossover
                 store.updateAdvancedProcessing(adv)
             }
         )
     }
-    private var ltiMonoBassEnabledBinding: Binding<Bool> {
+    private var bassManagementEnabledBinding: Binding<Bool> {
         Binding(
-            get: { store.dynamicsConfig.advanced.monoBassEnabled },
-            set: { val in var adv = store.dynamicsConfig.advanced; adv.monoBassEnabled = val; store.updateAdvancedProcessing(adv) }
+            get: { store.dynamicsConfig.advanced.bassManagement.enabled },
+            set: { val in var adv = store.dynamicsConfig.advanced; adv.bassManagement.enabled = val; store.updateAdvancedProcessing(adv) }
         )
     }
-    private var ltiMonoBassCrossoverBinding: Binding<Double> {
+    private var bassManagementCrossoverBinding: Binding<Double> {
         Binding(
-            get: { Double(store.dynamicsConfig.advanced.monoBassCrossover) },
+            get: { Double(store.dynamicsConfig.advanced.bassManagement.crossoverHz) },
             set: { val in
                 var adv = store.dynamicsConfig.advanced
-                adv.monoBassCrossover = Float(val)
+                adv.bassManagement.crossoverHz = Float(val)
                 adv.subBassAlignmentFrequencyHz = Float(val)  // Sync with sub-bass phase alignment
                 store.updateAdvancedProcessing(adv)
             }
         )
     }
-    private var ltiMainsHighPassEnabledBinding: Binding<Bool> {
+    private var bassManagementSlopeBinding: Binding<BassCrossoverSlope> {
         Binding(
-            get: { store.dynamicsConfig.advanced.mainsHighPassEnabled },
-            set: { val in var adv = store.dynamicsConfig.advanced; adv.mainsHighPassEnabled = val; store.updateAdvancedProcessing(adv) }
+            get: { store.dynamicsConfig.advanced.bassManagement.slope },
+            set: { val in var adv = store.dynamicsConfig.advanced; adv.bassManagement.slope = val; store.updateAdvancedProcessing(adv) }
         )
     }
-    private var ltiMainsHighPassFrequencyBinding: Binding<Double> {
+    private var bassManagementLowBandGainBinding: Binding<Double> {
         Binding(
-            get: { Double(store.dynamicsConfig.advanced.mainsHighPassFrequency) },
-            set: { val in var adv = store.dynamicsConfig.advanced; adv.mainsHighPassFrequency = Float(val); store.updateAdvancedProcessing(adv) }
+            get: { Double(store.dynamicsConfig.advanced.bassManagement.lowBandGainDB) },
+            set: { val in var adv = store.dynamicsConfig.advanced; adv.bassManagement.lowBandGainDB = Float(val); store.updateAdvancedProcessing(adv) }
         )
     }
+    private var bassManagementPolarityBinding: Binding<Bool> {
+        Binding(
+            get: { store.dynamicsConfig.advanced.bassManagement.lowBandPolarityInverted },
+            set: { val in var adv = store.dynamicsConfig.advanced; adv.bassManagement.lowBandPolarityInverted = val; store.updateAdvancedProcessing(adv) }
+        )
+    }
+    private var bassManagementLowShelfEnabledBinding: Binding<Bool> {
+        Binding(
+            get: { store.dynamicsConfig.advanced.bassManagement.lowBandLowShelfEnabled },
+            set: { val in var adv = store.dynamicsConfig.advanced; adv.bassManagement.lowBandLowShelfEnabled = val; store.updateAdvancedProcessing(adv) }
+        )
+    }
+    private var bassManagementLowShelfFreqBinding: Binding<Double> {
+        Binding(
+            get: { Double(store.dynamicsConfig.advanced.bassManagement.lowBandLowShelfFreqHz) },
+            set: { val in var adv = store.dynamicsConfig.advanced; adv.bassManagement.lowBandLowShelfFreqHz = Float(val); store.updateAdvancedProcessing(adv) }
+        )
+    }
+    private var bassManagementLowShelfGainBinding: Binding<Double> {
+        Binding(
+            get: { Double(store.dynamicsConfig.advanced.bassManagement.lowBandLowShelfGainDB) },
+            set: { val in var adv = store.dynamicsConfig.advanced; adv.bassManagement.lowBandLowShelfGainDB = Float(val); store.updateAdvancedProcessing(adv) }
+        )
+    }
+    private var bassManagementDelayMsBinding: Binding<Double> {
+        Binding(
+            get: { Double(store.dynamicsConfig.advanced.bassManagement.lowBandDelaySamples) / 48000.0 * 1000.0 },  // Convert samples to ms (assuming 48kHz)
+            set: { val in
+                var adv = store.dynamicsConfig.advanced
+                // Convert ms to samples (assuming 48kHz for now - will be updated in Part 3)
+                adv.bassManagement.lowBandDelaySamples = Float(val) / 1000.0 * 48000.0
+                store.updateAdvancedProcessing(adv)
+            }
+        )
+    }
+    private var bassManagementLeftDistanceBinding: Binding<Double> {
+        Binding(
+            get: { Double(store.dynamicsConfig.advanced.bassManagement.leftSpeakerDistanceM) },
+            set: { val in var adv = store.dynamicsConfig.advanced; adv.bassManagement.leftSpeakerDistanceM = Float(val); store.updateAdvancedProcessing(adv) }
+        )
+    }
+    private var bassManagementRightDistanceBinding: Binding<Double> {
+        Binding(
+            get: { Double(store.dynamicsConfig.advanced.bassManagement.rightSpeakerDistanceM) },
+            set: { val in var adv = store.dynamicsConfig.advanced; adv.bassManagement.rightSpeakerDistanceM = Float(val); store.updateAdvancedProcessing(adv) }
+        )
+    }
+    private var bassManagementSubDistanceBinding: Binding<Double> {
+        Binding(
+            get: { Double(store.dynamicsConfig.advanced.bassManagement.subwooferDistanceM) },
+            set: { val in var adv = store.dynamicsConfig.advanced; adv.bassManagement.subwooferDistanceM = Float(val); store.updateAdvancedProcessing(adv) }
+        )
+    }
+
+    // MARK: - Distance-Based Alignment (Part 3.3)
+
+    private func calculateDelaysFromDistances() {
+        let speedOfSound: Float = 343.0  // m/s at 20°C
+        let leftDist = store.dynamicsConfig.advanced.bassManagement.leftSpeakerDistanceM
+        let rightDist = store.dynamicsConfig.advanced.bassManagement.rightSpeakerDistanceM
+        let subDist = store.dynamicsConfig.advanced.bassManagement.subwooferDistanceM
+
+        // Calculate inter-channel delay (positive = delay R relative to L)
+        let interChannelDelayMs = (rightDist - leftDist) / speedOfSound * 1000.0
+
+        // Calculate subwoofer delay relative to speaker average
+        let speakerAvgDist = (leftDist + rightDist) / 2.0
+        let subDelayMs = (subDist - speakerAvgDist) / speedOfSound * 1000.0
+
+        // Convert sub delay to samples (use current sample rate from store if available)
+        let sampleRate: Float = 48000.0  // Default to 48kHz - should get from audio pipeline
+        let subDelaySamples = subDelayMs / 1000.0 * sampleRate
+
+        // Update config
+        var adv = store.dynamicsConfig.advanced
+        adv.interChannelDelayMs = interChannelDelayMs
+        adv.bassManagement.lowBandDelaySamples = subDelaySamples
+        store.updateAdvancedProcessing(adv)
+    }
+
     private var convolutionEnabledBinding: Binding<Bool> {
         Binding(
             get: { store.convolutionConfig.enabled },
