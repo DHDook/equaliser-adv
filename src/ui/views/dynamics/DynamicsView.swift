@@ -2161,8 +2161,6 @@ struct DynamicsInlineView: View {
                 Divider()
                 column5
                 Divider()
-                column5b
-                Divider()
                 column6
             }
         }
@@ -2345,14 +2343,6 @@ struct DynamicsInlineView: View {
             InlineDRFactorView(bridge: inlineMeterBridge)
             InlineBitStreamView(bridge: inlineMeterBridge)
             InlineBitRateView()
-        }
-        .frame(minWidth: 110)
-    }
-
-    // MARK: - Column 5b: True Peak Meter
-
-    private var column5b: some View {
-        VStack(alignment: .leading, spacing: 4) {
             InlineTruePeakView(bridge: inlineMeterBridge)
         }
         .frame(minWidth: 110)
