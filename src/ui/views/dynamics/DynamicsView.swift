@@ -2218,6 +2218,8 @@ struct DynamicsInlineView: View {
                         Divider()
                         definitionEntry(title: "Sync Buffer", body: "Synchronises processing buffer to latency mode, preventing dropouts at low latency settings.")
                         Divider()
+                        definitionEntry(title: "Pipeline Latency", body: "If using with video, your AV receiver or display's audio delay/lip-sync setting may need adjustment by the algorithmic latency amount.")
+                        Divider()
                         definitionEntry(title: "Symmetry Balance", body: "Gain-matrix correction for asymmetric listening positions. Aligns L/R loudness at the ear.")
                         Divider()
                         definitionEntry(title: "Panning Gain Matrix", body: "Bilinear crossfeed matrix blending a proportion of each channel into the opposite channel.")
@@ -2337,11 +2339,11 @@ struct DynamicsInlineView: View {
         VStack(alignment: .leading, spacing: 4) {
             InlinePhaseCorrelationView()
             InlineCrestFactorView(bridge: inlineMeterBridge)
-            InlineTruePeakView(bridge: inlineMeterBridge)
             InlineIspLatchView(bridge: inlineMeterBridge)
             InlineDRFactorView(bridge: inlineMeterBridge)
             InlineBitStreamView(bridge: inlineMeterBridge)
             InlineBitRateView()
+            InlineTruePeakView(bridge: inlineMeterBridge)
         }
         .frame(minWidth: 110)
     }
@@ -2349,7 +2351,14 @@ struct DynamicsInlineView: View {
     // MARK: - Column 6: Stereo Goniometer
 
     private var column6: some View {
-        StereoGoniometerView(engine: store.goniometerEngine, isBypassed: store.isBypassed)
+        VStack(spacing: 8) {
+            StereoGoniometerView(engine: store.goniometerEngine, isBypassed: store.isBypassed)
+            LatencyReadoutView(
+                totalLatencyMs: 0.0,
+                alignmentDelayMs: 0.0,
+                sampleRate: 48000.0
+            )
+        }
     }
 
 

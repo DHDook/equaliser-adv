@@ -63,14 +63,6 @@ struct EQWindowView: View {
                         onOutputGainChange: { store.updateOutputGain($0) }
                     )
 
-                    LatencyReadoutView(
-                        totalLatencyMs: 0.0,
-                        alignmentDelayMs: 0.0,
-                        sampleRate: 48000.0
-                    )
-
-                    TruePeakMeterView(truePeakDB: -90.0, isOversampled: false)
-
                     ChannelBalanceSlider(
                         balance: Binding(
                             get: { store.dynamicsConfig.channelBalance },

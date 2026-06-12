@@ -34,13 +34,6 @@ struct LatencyReadoutView: View {
                         .foregroundStyle(.primary)
                 }
             }
-
-            Divider()
-
-            Text("If using with video, your AV receiver or display's audio delay/lip-sync setting may need adjustment by the algorithmic latency amount.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
         }
         .padding()
         .background(Color(NSColor.controlBackgroundColor))
