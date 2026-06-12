@@ -13,7 +13,10 @@ struct LatencyReadoutView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Pipeline Latency")
-                .font(.headline)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
 
             HStack {
                 Text("Algorithmic:")
