@@ -1,5 +1,12 @@
 import Foundation
 
+/// Crossover filter type for bass management.
+enum CrossoverType: Int, Codable, Equatable, Sendable {
+    case linkwitzRiley = 0
+    case butterworth = 1
+    case bessel = 2
+}
+
 /// Pure coefficient calculation using RBJ Audio EQ Cookbook formulas.
 ///
 /// All functions are pure — no state, no side effects, no allocations.
@@ -19,6 +26,20 @@ enum BiquadMath {
 
     /// Reference design rate for high-resolution decoupling (prevents pole crowding > 96 kHz).
     static let highResReferenceSampleRateHz: Double = 48_000
+
+    /// Q values for Butterworth crossovers (all sections have Q = 0.7071 / sqrt(2)).
+    static let butterworthQValues: [BassCrossoverSlope: [Double]] = [
+        .lr2: [0.7071],
+        .lr4: [0.7071, 0.7071],
+        .lr8: [0.7071, 0.7071, 0.7071, 0.7071]
+    ]
+
+    /// Q values for Bessel crossovers (approximate values for 2nd, 4th, 8th order).
+    static let besselQValues: [BassCrossoverSlope: [Double]] = [
+        .lr2: [0.5773],
+        .lr4: [0.5773, 0.6882],
+        .lr8: [0.5773, 0.6882, 0.7231, 0.7356]
+    ]
 
     /// Returns the sample rate used for biquad coefficient design.
     static func designSampleRate(actualRate: Double, coefficientDecouplingEnabled: Bool) -> Double {

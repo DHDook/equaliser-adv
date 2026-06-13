@@ -1,13 +1,13 @@
-// LinkwitzRileyCrossover.swift
-// Linkwitz-Riley crossover processor for bass management.
+// BassManagementCrossover.swift
+// Crossover processor for bass management (Linkwitz-Riley, Butterworth, Bessel).
 
 import Foundation
 
-/// Linkwitz-Riley crossover processor for bass management.
+/// Crossover processor for bass management.
 ///
-/// Builds cascaded Butterworth biquad sections to create true Linkwitz-Riley
-/// crossovers (LR2, LR4, LR8). Each section uses Q = 1/√2 ≈ 0.70710678.
-struct LinkwitzRileyCrossover {
+/// Supports Linkwitz-Riley, Butterworth, and Bessel crossover types.
+/// Builds cascaded biquad sections based on the selected type and slope.
+struct BassManagementCrossover {
     /// Low-pass filter coefficients for each cascaded section (Float for audio processing).
     var lowPassSections: [(b0: Float, b1: Float, b2: Float, na1: Float, na2: Float)] = []
     /// High-pass filter coefficients for each cascaded section (Float for audio processing).
@@ -22,20 +22,31 @@ struct LinkwitzRileyCrossover {
     ///   - crossoverHz: Crossover frequency in Hz
     ///   - slope: Crossover slope (LR2, LR4, or LR8)
     ///   - sampleRate: Sample rate in Hz
-    init(crossoverHz: Float, slope: BassCrossoverSlope, sampleRate: Double) {
+    ///   - crossoverType: Crossover type (Linkwitz-Riley, Butterworth, or Bessel)
+    init(crossoverHz: Float, slope: BassCrossoverSlope, sampleRate: Double, crossoverType: CrossoverType = .linkwitzRiley) {
         sectionCount = slope.cascadedStageCount
         stateSizePerChannel = sectionCount * 2 * 2  // sections * 2 state vars * 2 paths (LP + HP)
 
         let qValues: [Double]
-        switch slope {
-        case .lr2:
-            qValues = [0.5]                                   // critically-damped (1st-order Butterworth)^2
-        case .lr4:
-            qValues = [0.7071067811865476, 0.7071067811865476] // (2nd-order Butterworth)^2
-        case .lr8:
-            // (4th-order Butterworth)^2: each of the 4th-order's two Q values used twice.
-            let pair = FilterSlope.db24.butterworthQValues  // [1.3065629648763766, 0.5411961001063831]
-            qValues = pair + pair
+        switch crossoverType {
+        case .linkwitzRiley:
+            // Linkwitz-Riley: cascaded Butterworth sections with specific Q values
+            switch slope {
+            case .lr2:
+                qValues = [0.5]                                   // critically-damped (1st-order Butterworth)^2
+            case .lr4:
+                qValues = [0.7071067811865476, 0.7071067811865476] // (2nd-order Butterworth)^2
+            case .lr8:
+                // (4th-order Butterworth)^2: each of the 4th-order's two Q values used twice.
+                let pair = FilterSlope.db24.butterworthQValues  // [1.3065629648763766, 0.5411961001063831]
+                qValues = pair + pair
+            }
+        case .butterworth:
+            // Butterworth: all sections have Q = 0.7071
+            qValues = BiquadMath.butterworthQValues[slope] ?? [0.7071]
+        case .bessel:
+            // Bessel: approximate Q values for optimal transient response
+            qValues = BiquadMath.besselQValues[slope] ?? [0.5773]
         }
 
         // Build cascaded sections

@@ -107,11 +107,17 @@ struct CompressorConfig: Codable, Equatable, Sendable {
     /// Soft-knee transition width in dB. 0 = hard knee, 20 = maximum soft-knee.
     /// Default: 6.0 dB.
     var kneeWidthDB:    Float = 6.0
+    /// Program-dependent release time adaptation.
+    /// When enabled, release time automatically adjusts based on signal dynamics.
+    var programDependentRelease: Bool = false
+    /// Sidechain high-pass filter frequency in Hz.
+    /// When > 0, the compressor sidechain is filtered to ignore low frequencies.
+    var sidechainHighPassHz: Float = 0.0
 
     static let `default` = CompressorConfig()
 
     private enum CodingKeys: String, CodingKey {
-        case isEnabled, thresholdDB, ratio, attackMs, releaseMs, makeupGainDB, kneeWidthDB
+        case isEnabled, thresholdDB, ratio, attackMs, releaseMs, makeupGainDB, kneeWidthDB, programDependentRelease, sidechainHighPassHz
     }
 
     init(
@@ -121,7 +127,9 @@ struct CompressorConfig: Codable, Equatable, Sendable {
         attackMs: Float = 25.0,
         releaseMs: Float = 150.0,
         makeupGainDB: Float = 2.5,
-        kneeWidthDB: Float = 6.0
+        kneeWidthDB: Float = 6.0,
+        programDependentRelease: Bool = false,
+        sidechainHighPassHz: Float = 0.0
     ) {
         self.isEnabled    = isEnabled
         self.thresholdDB  = thresholdDB
@@ -130,6 +138,8 @@ struct CompressorConfig: Codable, Equatable, Sendable {
         self.releaseMs    = releaseMs
         self.makeupGainDB = makeupGainDB
         self.kneeWidthDB  = kneeWidthDB
+        self.programDependentRelease = programDependentRelease
+        self.sidechainHighPassHz = sidechainHighPassHz
     }
 
     init(from decoder: Decoder) throws {
@@ -141,6 +151,8 @@ struct CompressorConfig: Codable, Equatable, Sendable {
         releaseMs    = try c.decodeIfPresent(Float.self, forKey: .releaseMs)    ?? 150.0
         makeupGainDB = try c.decodeIfPresent(Float.self, forKey: .makeupGainDB) ?? 2.5
         kneeWidthDB  = try c.decodeIfPresent(Float.self, forKey: .kneeWidthDB)  ?? 6.0
+        programDependentRelease = try c.decodeIfPresent(Bool.self, forKey: .programDependentRelease) ?? false
+        sidechainHighPassHz = try c.decodeIfPresent(Float.self, forKey: .sidechainHighPassHz) ?? 0.0
     }
 }
 
@@ -342,14 +354,28 @@ enum TargetCurveType: Int, Codable, Equatable, Sendable {
     case customREW = 2
 }
 
+// MARK: - Subwoofer EQ Band
+
+/// Single parametric EQ band for the subwoofer low-band signal.
+struct SubEQBand: Codable, Equatable, Sendable {
+    var frequency: Float   // Hz, 20–500
+    var q: Float           // 0.4–8.0
+    var gain: Float        // dB, –18…+6
+    var bypass: Bool = false
+}
+
 // MARK: - Bass Management Configuration
 
 /// Unified bass management configuration for subwoofer integration.
 /// Replaces the separate monoBassEnabled/mainsHighPassEnabled flags with a single coherent module.
 struct BassManagementConfig: Codable, Equatable, Sendable {
+    static let maxSubEQBands = 8
     var enabled: Bool = false
     var crossoverHz: Float = 80.0  // Range: 40–200 Hz (allow down to 20 Hz for full-range mains)
     var slope: BassCrossoverSlope = .lr4
+    var crossoverType: CrossoverType = .linkwitzRiley
+    var asymmetricCrossoverEnabled: Bool = false  // Enable separate mains HP frequency
+    var mainsHighPassHz: Float = 80.0  // Mains high-pass frequency when asymmetric mode is enabled
     var lowBandGainDB: Float = 0.0  // Sub trim — range ±12 dB
     var lowBandPolarityInverted: Bool = false
     var lowBandDelaySamples: Float = 0.0  // Fractional sample delay for subwoofer alignment
@@ -362,18 +388,25 @@ struct BassManagementConfig: Codable, Equatable, Sendable {
     var rightSpeakerDistanceM: Float = 2.5
     var subwooferDistanceM: Float = 2.5
 
+    // Subwoofer EQ bands (Part 1)
+    var subEQBands: [SubEQBand] = []
+
     static let `default` = BassManagementConfig()
 
     private enum CodingKeys: String, CodingKey {
-        case enabled, crossoverHz, slope, lowBandGainDB, lowBandPolarityInverted
+        case enabled, crossoverHz, slope, crossoverType, asymmetricCrossoverEnabled, mainsHighPassHz, lowBandGainDB, lowBandPolarityInverted
         case lowBandDelaySamples, lowBandLowShelfEnabled, lowBandLowShelfFreqHz, lowBandLowShelfGainDB
         case leftSpeakerDistanceM, rightSpeakerDistanceM, subwooferDistanceM
+        case subEQBands
     }
 
     init(
         enabled: Bool = false,
         crossoverHz: Float = 80.0,
         slope: BassCrossoverSlope = .lr4,
+        crossoverType: CrossoverType = .linkwitzRiley,
+        asymmetricCrossoverEnabled: Bool = false,
+        mainsHighPassHz: Float = 80.0,
         lowBandGainDB: Float = 0.0,
         lowBandPolarityInverted: Bool = false,
         lowBandDelaySamples: Float = 0.0,
@@ -382,11 +415,15 @@ struct BassManagementConfig: Codable, Equatable, Sendable {
         lowBandLowShelfGainDB: Float = 0.0,
         leftSpeakerDistanceM: Float = 2.5,
         rightSpeakerDistanceM: Float = 2.5,
-        subwooferDistanceM: Float = 2.5
+        subwooferDistanceM: Float = 2.5,
+        subEQBands: [SubEQBand] = []
     ) {
         self.enabled = enabled
         self.crossoverHz = crossoverHz
         self.slope = slope
+        self.crossoverType = crossoverType
+        self.asymmetricCrossoverEnabled = asymmetricCrossoverEnabled
+        self.mainsHighPassHz = mainsHighPassHz
         self.lowBandGainDB = lowBandGainDB
         self.lowBandPolarityInverted = lowBandPolarityInverted
         self.lowBandDelaySamples = lowBandDelaySamples
@@ -396,6 +433,7 @@ struct BassManagementConfig: Codable, Equatable, Sendable {
         self.leftSpeakerDistanceM = leftSpeakerDistanceM
         self.rightSpeakerDistanceM = rightSpeakerDistanceM
         self.subwooferDistanceM = subwooferDistanceM
+        self.subEQBands = subEQBands
     }
 
     init(from decoder: Decoder) throws {
@@ -403,6 +441,9 @@ struct BassManagementConfig: Codable, Equatable, Sendable {
         enabled = try c.decodeIfPresent(Bool.self, forKey: .enabled) ?? false
         crossoverHz = try c.decodeIfPresent(Float.self, forKey: .crossoverHz) ?? 80.0
         slope = try c.decodeIfPresent(BassCrossoverSlope.self, forKey: .slope) ?? .lr4
+        crossoverType = try c.decodeIfPresent(CrossoverType.self, forKey: .crossoverType) ?? .linkwitzRiley
+        asymmetricCrossoverEnabled = try c.decodeIfPresent(Bool.self, forKey: .asymmetricCrossoverEnabled) ?? false
+        mainsHighPassHz = try c.decodeIfPresent(Float.self, forKey: .mainsHighPassHz) ?? 80.0
         lowBandGainDB = try c.decodeIfPresent(Float.self, forKey: .lowBandGainDB) ?? 0.0
         lowBandPolarityInverted = try c.decodeIfPresent(Bool.self, forKey: .lowBandPolarityInverted) ?? false
         lowBandDelaySamples = try c.decodeIfPresent(Float.self, forKey: .lowBandDelaySamples) ?? 0.0
@@ -412,6 +453,113 @@ struct BassManagementConfig: Codable, Equatable, Sendable {
         leftSpeakerDistanceM = try c.decodeIfPresent(Float.self, forKey: .leftSpeakerDistanceM) ?? 2.5
         rightSpeakerDistanceM = try c.decodeIfPresent(Float.self, forKey: .rightSpeakerDistanceM) ?? 2.5
         subwooferDistanceM = try c.decodeIfPresent(Float.self, forKey: .subwooferDistanceM) ?? 2.5
+        subEQBands = try c.decodeIfPresent([SubEQBand].self, forKey: .subEQBands) ?? []
+    }
+}
+
+// MARK: - Dynamic EQ Configuration
+
+/// Single dynamic EQ band configuration.
+struct DynamicEQBand: Codable, Equatable, Sendable {
+    var frequency: Float   // Hz, 20–20,000
+    var q: Float           // 0.4–8.0
+    var gain: Float        // dB, –18…+6
+    var thresholdDB: Float // dBFS, –60…0
+    var ratio: Float       // 1:1 to 10:1
+    var attackMs: Float    // ms, 1–100
+    var releaseMs: Float   // ms, 10–1000
+    var bypass: Bool = false
+}
+
+/// Dynamic EQ configuration.
+struct DynamicEQConfig: Codable, Equatable, Sendable {
+    static let maxDynamicEQBands = 8
+    var enabled: Bool = false
+    var bands: [DynamicEQBand] = []
+
+    static let `default` = DynamicEQConfig()
+
+    private enum CodingKeys: String, CodingKey {
+        case enabled, bands
+    }
+
+    init(enabled: Bool = false, bands: [DynamicEQBand] = []) {
+        self.enabled = enabled
+        self.bands = bands
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        enabled = try c.decodeIfPresent(Bool.self, forKey: .enabled) ?? false
+        bands = try c.decodeIfPresent([DynamicEQBand].self, forKey: .bands) ?? []
+    }
+}
+
+// MARK: - FIR Impulse Response Configuration
+
+/// FIR impulse response configuration for room correction.
+struct FIRImpulseResponseConfig: Codable, Equatable, Sendable {
+    var enabled: Bool = false
+    var leftIR: [Float] = []
+    var rightIR: [Float] = []
+    var sampleRate: Double = 48000.0
+    var tapCount: Int = 4096
+
+    static let `default` = FIRImpulseResponseConfig()
+
+    private enum CodingKeys: String, CodingKey {
+        case enabled, leftIR, rightIR, sampleRate, tapCount
+    }
+
+    init(enabled: Bool = false, leftIR: [Float] = [], rightIR: [Float] = [], sampleRate: Double = 48000.0, tapCount: Int = 4096) {
+        self.enabled = enabled
+        self.leftIR = leftIR
+        self.rightIR = rightIR
+        self.sampleRate = sampleRate
+        self.tapCount = tapCount
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        enabled = try c.decodeIfPresent(Bool.self, forKey: .enabled) ?? false
+        leftIR = try c.decodeIfPresent([Float].self, forKey: .leftIR) ?? []
+        rightIR = try c.decodeIfPresent([Float].self, forKey: .rightIR) ?? []
+        sampleRate = try c.decodeIfPresent(Double.self, forKey: .sampleRate) ?? 48000.0
+        tapCount = try c.decodeIfPresent(Int.self, forKey: .tapCount) ?? 4096
+    }
+}
+
+// MARK: - Room Correction Configuration
+
+/// Room correction configuration with target curve and smoothing options.
+struct RoomCorrectionConfig: Codable, Equatable, Sendable {
+    var enabled: Bool = false
+    var targetCurve: RoomCorrectionEngine.TargetCurve = .flat
+    var smoothingCrossoverHz: Double = 500.0
+    var maxGainDB: Double = 12.0
+    var tapCount: Int = 4096
+
+    static let `default` = RoomCorrectionConfig()
+
+    private enum CodingKeys: String, CodingKey {
+        case enabled, targetCurve, smoothingCrossoverHz, maxGainDB, tapCount
+    }
+
+    init(enabled: Bool = false, targetCurve: RoomCorrectionEngine.TargetCurve = .flat, smoothingCrossoverHz: Double = 500.0, maxGainDB: Double = 12.0, tapCount: Int = 4096) {
+        self.enabled = enabled
+        self.targetCurve = targetCurve
+        self.smoothingCrossoverHz = smoothingCrossoverHz
+        self.maxGainDB = maxGainDB
+        self.tapCount = tapCount
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        enabled = try c.decodeIfPresent(Bool.self, forKey: .enabled) ?? false
+        targetCurve = try c.decodeIfPresent(RoomCorrectionEngine.TargetCurve.self, forKey: .targetCurve) ?? .flat
+        smoothingCrossoverHz = try c.decodeIfPresent(Double.self, forKey: .smoothingCrossoverHz) ?? 500.0
+        maxGainDB = try c.decodeIfPresent(Double.self, forKey: .maxGainDB) ?? 12.0
+        tapCount = try c.decodeIfPresent(Int.self, forKey: .tapCount) ?? 4096
     }
 }
 
@@ -531,6 +679,15 @@ struct AdvancedProcessingConfig: Codable, Equatable, Sendable {
 
     // ── D. Dynamic EQ Mode (De-Esser) ─────────────────────────────────
     var deesserDynamicModeEnabled: Bool = false
+
+    // ── D. Dynamic EQ (General) ───────────────────────────────────────
+    var dynamicEQ: DynamicEQConfig = DynamicEQConfig()
+
+    // ── D. FIR Impulse Response (Room Correction) ─────────────────────
+    var firImpulseResponse: FIRImpulseResponseConfig = FIRImpulseResponseConfig()
+
+    // ── D. Room Correction (Target Curve + Smoothing) ─────────────────
+    var roomCorrection: RoomCorrectionConfig = RoomCorrectionConfig()
 
     // ── D. De-Harsh Tilt Filter ───────────────────────────────────────
     var deharshFilterEnabled: Bool = false
@@ -694,6 +851,9 @@ struct AdvancedProcessingConfig: Codable, Equatable, Sendable {
         case loudnessDialogueGateEnabled
         case clipperAsymmetryTrimDB
         case deesserDynamicModeEnabled
+        case dynamicEQ
+        case firImpulseResponse
+        case roomCorrection
         case coefficientDecouplingEnabled
         case deharshFilterEnabled, deharshTiltAmountDB
         case stereoBalancePosition
@@ -743,6 +903,9 @@ struct AdvancedProcessingConfig: Codable, Equatable, Sendable {
         loudnessDialogueGateEnabled: Bool = false,
         clipperAsymmetryTrimDB: Float = 0.0,
         deesserDynamicModeEnabled: Bool = false,
+        dynamicEQ: DynamicEQConfig = DynamicEQConfig(),
+        firImpulseResponse: FIRImpulseResponseConfig = FIRImpulseResponseConfig(),
+        roomCorrection: RoomCorrectionConfig = RoomCorrectionConfig(),
         coefficientDecouplingEnabled: Bool = true,
         deharshFilterEnabled: Bool = false,
         deharshTiltAmountDB: Float = -1.5,
@@ -802,6 +965,9 @@ struct AdvancedProcessingConfig: Codable, Equatable, Sendable {
         self.loudnessDialogueGateEnabled      = loudnessDialogueGateEnabled
         self.clipperAsymmetryTrimDB           = clipperAsymmetryTrimDB
         self.deesserDynamicModeEnabled        = deesserDynamicModeEnabled
+        self.dynamicEQ                        = dynamicEQ
+        self.firImpulseResponse              = firImpulseResponse
+        self.roomCorrection                 = roomCorrection
         self.coefficientDecouplingEnabled     = coefficientDecouplingEnabled
         self.deharshFilterEnabled             = deharshFilterEnabled
         self.deharshTiltAmountDB              = deharshTiltAmountDB
@@ -863,6 +1029,9 @@ struct AdvancedProcessingConfig: Codable, Equatable, Sendable {
         loudnessDialogueGateEnabled      = try c.decodeIfPresent(Bool.self,                  forKey: .loudnessDialogueGateEnabled)      ?? false
         clipperAsymmetryTrimDB           = try c.decodeIfPresent(Float.self,                 forKey: .clipperAsymmetryTrimDB)           ?? 0.0
         deesserDynamicModeEnabled        = try c.decodeIfPresent(Bool.self,                  forKey: .deesserDynamicModeEnabled)        ?? false
+        dynamicEQ                        = try c.decodeIfPresent(DynamicEQConfig.self,       forKey: .dynamicEQ)                        ?? DynamicEQConfig()
+        firImpulseResponse              = try c.decodeIfPresent(FIRImpulseResponseConfig.self, forKey: .firImpulseResponse)              ?? FIRImpulseResponseConfig()
+        roomCorrection                 = try c.decodeIfPresent(RoomCorrectionConfig.self,     forKey: .roomCorrection)                 ?? RoomCorrectionConfig()
         coefficientDecouplingEnabled     = try c.decodeIfPresent(Bool.self,                  forKey: .coefficientDecouplingEnabled)     ?? true
         deharshFilterEnabled             = try c.decodeIfPresent(Bool.self,                  forKey: .deharshFilterEnabled)             ?? false
         deharshTiltAmountDB              = try c.decodeIfPresent(Float.self,                 forKey: .deharshTiltAmountDB)              ?? -1.5

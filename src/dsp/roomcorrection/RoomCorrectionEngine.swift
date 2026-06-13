@@ -9,6 +9,49 @@ enum RoomCorrectionEngine {
     static let maxCorrectionGainDB: Float = 12.0
     static let stopResidualDB:      Float = 0.5
 
+    // MARK: - Target Curves
+
+    enum TargetCurve: String, Codable, Sendable, CaseIterable {
+        case flat = "Flat"
+        case harman = "Harman"
+        case custom = "Custom"
+
+        var displayName: String { rawValue }
+    }
+
+    /// Returns the Harman target curve frequency response.
+    /// Based on the Harman headphone target curve (Olive-Welti et al.).
+    /// - Returns: Array of (frequency, gainDB) tuples
+    static func harmanTargetCurve() -> [(frequency: Double, gainDB: Double)] {
+        return [
+            (20.0, 2.0),
+            (50.0, 1.5),
+            (100.0, 1.0),
+            (200.0, 0.5),
+            (500.0, 0.0),
+            (1000.0, -1.0),
+            (2000.0, -2.0),
+            (4000.0, -1.5),
+            (8000.0, -1.0),
+            (16000.0, -2.0),
+            (20000.0, -3.0)
+        ]
+    }
+
+    /// Returns the target curve for the specified type.
+    /// - Parameter curve: The target curve type
+    /// - Returns: Array of (frequency, gainDB) tuples
+    static func getTargetCurve(_ curve: TargetCurve) -> [(frequency: Double, gainDB: Double)] {
+        switch curve {
+        case .flat:
+            return []
+        case .harman:
+            return harmanTargetCurve()
+        case .custom:
+            return [] // User-provided custom curve would be stored separately
+        }
+    }
+
     /// Fits parametric EQ bands to the inverse of (measured − target).
     static func fitBands(
         measured: [(frequency: Double, gainDB: Double)],
@@ -264,5 +307,93 @@ enum RoomCorrectionEngine {
         }
 
         return (ir, ir)  // symmetric — call separately for per-channel correction
+    }
+
+    /// Import FIR impulse response from WAV file.
+    /// - Parameters:
+    ///   - url: URL of the WAV file to import
+    ///   - targetTapCount: Desired tap count (will be padded or truncated to match)
+    /// - Returns: Tuple containing (left channel IR, right channel IR, sample rate) or nil on failure
+    static func importFIRFromWAV(url: URL, targetTapCount: Int = 4096) -> (left: [Float], right: [Float], sampleRate: Double)? {
+        guard url.pathExtension.lowercased() == "wav" else { return nil }
+
+        do {
+            let data = try Data(contentsOf: url)
+            guard data.count > 44 else { return nil } // Minimum WAV header size
+
+            // Parse WAV header
+            let riff = data[0..<4]
+            let fileSize = data.withUnsafeBytes { $0.load(fromByteOffset: 4, as: UInt32.self) }
+            let wave = data[8..<12]
+            let fmt = data[12..<16]
+            let fmtSize = data.withUnsafeBytes { $0.load(fromByteOffset: 16, as: UInt32.self) }
+            let audioFormat = data.withUnsafeBytes { $0.load(fromByteOffset: 20, as: UInt16.self) }
+            let numChannels = data.withUnsafeBytes { $0.load(fromByteOffset: 22, as: UInt16.self) }
+            let sampleRate = data.withUnsafeBytes { $0.load(fromByteOffset: 24, as: UInt32.self) }
+            let byteRate = data.withUnsafeBytes { $0.load(fromByteOffset: 28, as: UInt32.self) }
+            let blockAlign = data.withUnsafeBytes { $0.load(fromByteOffset: 32, as: UInt16.self) }
+            let bitsPerSample = data.withUnsafeBytes { $0.load(fromByteOffset: 34, as: UInt16.self) }
+
+            guard audioFormat == 1 else { return nil } // PCM only
+            guard numChannels == 1 || numChannels == 2 else { return nil }
+            guard bitsPerSample == 16 || bitsPerSample == 24 || bitsPerSample == 32 else { return nil }
+
+            let bytesPerSample = bitsPerSample / 8
+            let dataStart = 44 // Standard WAV data chunk start
+
+            // Read audio data
+            let sampleCount = (data.count - dataStart) / (Int(numChannels) * Int(bytesPerSample))
+            guard sampleCount > 0 else { return nil }
+
+            var leftIR = [Float](repeating: 0.0, count: targetTapCount)
+            var rightIR = [Float](repeating: 0.0, count: targetTapCount)
+
+            let samplesToCopy = min(sampleCount, targetTapCount)
+
+            for i in 0..<samplesToCopy {
+                let offset = dataStart + i * Int(numChannels) * Int(bytesPerSample)
+
+                if bitsPerSample == 16 {
+                    // 16-bit PCM
+                    let leftSample = Int16(bitPattern: data.withUnsafeBytes { $0.load(fromByteOffset: offset, as: UInt16.self) })
+                    leftIR[i] = Float(leftSample) / 32768.0
+
+                    if numChannels == 2 {
+                        let rightSample = Int16(bitPattern: data.withUnsafeBytes { $0.load(fromByteOffset: offset + 2, as: UInt16.self) })
+                        rightIR[i] = Float(rightSample) / 32768.0
+                    } else {
+                        rightIR[i] = leftIR[i]
+                    }
+                } else if bitsPerSample == 24 {
+                    // 24-bit PCM
+                    let leftSample24 = data.withUnsafeBytes { $0.load(fromByteOffset: offset, as: UInt32.self) }
+                    let leftSample = Int32(bitPattern: (leftSample24 << 8) | (leftSample24 >> 16))
+                    leftIR[i] = Float(leftSample) / 8388608.0
+
+                    if numChannels == 2 {
+                        let rightSample24 = data.withUnsafeBytes { $0.load(fromByteOffset: offset + 3, as: UInt32.self) }
+                        let rightSample = Int32(bitPattern: (rightSample24 << 8) | (rightSample24 >> 16))
+                        rightIR[i] = Float(rightSample) / 8388608.0
+                    } else {
+                        rightIR[i] = leftIR[i]
+                    }
+                } else if bitsPerSample == 32 {
+                    // 32-bit PCM
+                    let leftSample = data.withUnsafeBytes { $0.load(fromByteOffset: offset, as: Int32.self) }
+                    leftIR[i] = Float(leftSample) / 2147483648.0
+
+                    if numChannels == 2 {
+                        let rightSample = data.withUnsafeBytes { $0.load(fromByteOffset: offset + 4, as: Int32.self) }
+                        rightIR[i] = Float(rightSample) / 2147483648.0
+                    } else {
+                        rightIR[i] = leftIR[i]
+                    }
+                }
+            }
+
+            return (left: leftIR, right: rightIR, sampleRate: Double(sampleRate))
+        } catch {
+            return nil
+        }
     }
 }

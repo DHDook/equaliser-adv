@@ -56,6 +56,9 @@ struct DynamicsView: View {
                         systemUtilitiesSection
                         ltiDenoisingSection
                         bassManagementSection
+                        ltiDynamicEQSection
+                        ltiFIRSection
+                        ltiRoomCorrectionSection
                         ltiConvolutionSection
                     }
                     .formStyle(.grouped)
@@ -297,6 +300,21 @@ struct DynamicsView: View {
                 range: 5.0...1000.0,
                 step: 5.0,
                 formatValue: { String(format: "%.0f ms", $0) },
+                isDisabled: !store.dynamicsConfig.compressor.isEnabled
+            )
+
+            Toggle("Program-Dependent Release", isOn: compressorProgramDependentReleaseBinding)
+                .toggleStyle(.switch)
+                .controlSize(.regular)
+                .font(.system(size: 13))
+                .disabled(!store.dynamicsConfig.compressor.isEnabled)
+
+            DynamicsSliderRow(
+                label: "Sidechain HP",
+                value: compressorSidechainHighPassBinding,
+                range: 0.0...500.0,
+                step: 10.0,
+                formatValue: { $0 == 0.0 ? "Off" : String(format: "%.0f Hz", $0) },
                 isDisabled: !store.dynamicsConfig.compressor.isEnabled
             )
 
@@ -1050,6 +1068,209 @@ struct DynamicsView: View {
         }
     }
 
+    // MARK: - LTI: Dynamic EQ Section
+
+    private var ltiDynamicEQSection: some View {
+        Section {
+            Toggle("Dynamic EQ", isOn: dynamicEQEnabledBinding)
+                .toggleStyle(.switch)
+                .controlSize(.regular)
+                .font(.system(size: 13))
+
+            if store.dynamicsConfig.advanced.dynamicEQ.enabled {
+                Button("Add Band") {
+                    var adv = store.dynamicsConfig.advanced
+                    if adv.dynamicEQ.bands.count < DynamicEQConfig.maxDynamicEQBands {
+                        adv.dynamicEQ.bands.append(DynamicEQBand(
+                            frequency: 1000.0,
+                            q: 1.0,
+                            gain: 0.0,
+                            thresholdDB: -20.0,
+                            ratio: 2.0,
+                            attackMs: 10.0,
+                            releaseMs: 100.0,
+                            bypass: false
+                        ))
+                        store.updateAdvancedProcessing(adv)
+                    }
+                }
+                .font(.system(size: 13))
+                .disabled(store.dynamicsConfig.advanced.dynamicEQ.bands.count >= DynamicEQConfig.maxDynamicEQBands)
+
+                ForEach(store.dynamicsConfig.advanced.dynamicEQ.bands.indices, id: \.self) { bandIndex in
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack {
+                            Text("Band \(bandIndex + 1)")
+                                .font(.system(size: 13, weight: .medium))
+                            Spacer()
+                            Toggle("", isOn: dynamicEQBandBypassBinding(bandIndex))
+                                .toggleStyle(.switch)
+                                .controlSize(.mini)
+                            Button("Remove") {
+                                var adv = store.dynamicsConfig.advanced
+                                adv.dynamicEQ.bands.remove(at: bandIndex)
+                                store.updateAdvancedProcessing(adv)
+                            }
+                            .font(.system(size: 11))
+                            .foregroundStyle(.red)
+                        }
+
+                        DynamicsSliderRow(
+                            label: "Frequency",
+                            value: dynamicEQBandFrequencyBinding(bandIndex),
+                            range: 20.0...20000.0,
+                            step: 10.0,
+                            formatValue: { String(format: "%.0f Hz", $0) },
+                            isDisabled: false
+                        )
+
+                        DynamicsSliderRow(
+                            label: "Q",
+                            value: dynamicEQBandQBinding(bandIndex),
+                            range: 0.4...8.0,
+                            step: 0.1,
+                            formatValue: { String(format: "%.1f", $0) },
+                            isDisabled: false
+                        )
+
+                        DynamicsSliderRow(
+                            label: "Gain",
+                            value: dynamicEQBandGainBinding(bandIndex),
+                            range: -18.0...6.0,
+                            step: 0.5,
+                            formatValue: { String(format: "%+.1f dB", $0) },
+                            isDisabled: false
+                        )
+
+                        DynamicsSliderRow(
+                            label: "Threshold",
+                            value: dynamicEQBandThresholdBinding(bandIndex),
+                            range: -60.0...0.0,
+                            step: 1.0,
+                            formatValue: { String(format: "%.0f dBFS", $0) },
+                            isDisabled: false
+                        )
+
+                        DynamicsSliderRow(
+                            label: "Ratio",
+                            value: dynamicEQBandRatioBinding(bandIndex),
+                            range: 1.0...10.0,
+                            step: 0.5,
+                            formatValue: { String(format: "%.1f:1", $0) },
+                            isDisabled: false
+                        )
+
+                        DynamicsSliderRow(
+                            label: "Attack",
+                            value: dynamicEQBandAttackBinding(bandIndex),
+                            range: 1.0...100.0,
+                            step: 1.0,
+                            formatValue: { String(format: "%.0f ms", $0) },
+                            isDisabled: false
+                        )
+
+                        DynamicsSliderRow(
+                            label: "Release",
+                            value: dynamicEQBandReleaseBinding(bandIndex),
+                            range: 10.0...1000.0,
+                            step: 10.0,
+                            formatValue: { String(format: "%.0f ms", $0) },
+                            isDisabled: false
+                        )
+                    }
+                    .padding(.vertical, 2)
+                }
+            }
+        } header: {
+            Text("Dynamic EQ")
+        }
+    }
+
+    // MARK: - LTI: FIR Impulse Response Section
+
+    private var ltiFIRSection: some View {
+        Section {
+            Toggle("FIR Impulse Response", isOn: firEnabledBinding)
+                .toggleStyle(.switch)
+                .controlSize(.regular)
+                .font(.system(size: 13))
+
+            if store.dynamicsConfig.advanced.firImpulseResponse.enabled {
+                Button("Import WAV") {
+                    // TODO: Implement file picker for WAV import
+                }
+                .font(.system(size: 13))
+
+                if !store.dynamicsConfig.advanced.firImpulseResponse.leftIR.isEmpty {
+                    Text("Loaded: \(store.dynamicsConfig.advanced.firImpulseResponse.leftIR.count) taps @ \(Int(store.dynamicsConfig.advanced.firImpulseResponse.sampleRate)) Hz")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+
+                    Button("Clear") {
+                        var adv = store.dynamicsConfig.advanced
+                        adv.firImpulseResponse.leftIR = []
+                        adv.firImpulseResponse.rightIR = []
+                        adv.firImpulseResponse.enabled = false
+                        store.updateAdvancedProcessing(adv)
+                    }
+                    .font(.system(size: 11))
+                    .foregroundStyle(.red)
+                }
+            }
+        } header: {
+            Text("FIR Impulse Response")
+        }
+    }
+
+    // MARK: - LTI: Room Correction Section
+
+    private var ltiRoomCorrectionSection: some View {
+        Section {
+            Toggle("Room Correction", isOn: roomCorrectionEnabledBinding)
+                .toggleStyle(.switch)
+                .controlSize(.regular)
+                .font(.system(size: 13))
+
+            if store.dynamicsConfig.advanced.roomCorrection.enabled {
+                Picker("Target Curve", selection: roomCorrectionTargetCurveBinding) {
+                    ForEach(RoomCorrectionEngine.TargetCurve.allCases, id: \.self) { curve in
+                        Text(curve.displayName).tag(curve)
+                    }
+                }
+                .font(.system(size: 13))
+
+                DynamicsSliderRow(
+                    label: "Smoothing Crossover",
+                    value: roomCorrectionSmoothingBinding,
+                    range: 100.0...2000.0,
+                    step: 50.0,
+                    formatValue: { String(format: "%.0f Hz", $0) },
+                    isDisabled: false
+                )
+
+                DynamicsSliderRow(
+                    label: "Max Gain",
+                    value: roomCorrectionMaxGainBinding,
+                    range: 3.0...18.0,
+                    step: 1.0,
+                    formatValue: { String(format: "%.0f dB", $0) },
+                    isDisabled: false
+                )
+
+                DynamicsSliderRow(
+                    label: "Tap Count",
+                    value: roomCorrectionTapCountBinding,
+                    range: 1024.0...8192.0,
+                    step: 1024.0,
+                    formatValue: { String(format: "%.0f", $0) },
+                    isDisabled: false
+                )
+            }
+        } header: {
+            Text("Room Correction")
+        }
+    }
+
     // MARK: - LTI: Unified Bass Management Section
 
     private var ltiBassManagementUnifiedSection: some View {
@@ -1083,6 +1304,37 @@ struct DynamicsView: View {
             }
             .disabled(!store.dynamicsConfig.advanced.bassManagement.enabled)
             .opacity(!store.dynamicsConfig.advanced.bassManagement.enabled ? 0.4 : 1.0)
+
+            HStack(spacing: 8) {
+                Text("Type")
+                    .font(.system(size: 13))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 72, alignment: .leading)
+                Picker("", selection: bassManagementCrossoverTypeBinding) {
+                    Text("Linkwitz-Riley").tag(CrossoverType.linkwitzRiley)
+                    Text("Butterworth").tag(CrossoverType.butterworth)
+                    Text("Bessel").tag(CrossoverType.bessel)
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+            }
+            .disabled(!store.dynamicsConfig.advanced.bassManagement.enabled)
+            .opacity(!store.dynamicsConfig.advanced.bassManagement.enabled ? 0.4 : 1.0)
+
+            Toggle("Asymmetric Crossover", isOn: bassManagementAsymmetricEnabledBinding)
+                .toggleStyle(.switch)
+                .controlSize(.regular)
+                .font(.system(size: 13))
+                .disabled(!store.dynamicsConfig.advanced.bassManagement.enabled)
+
+            DynamicsSliderRow(
+                label: "Mains HP Freq",
+                value: bassManagementMainsHighPassBinding,
+                range: 40.0...200.0,
+                step: 1.0,
+                formatValue: { String(format: "%.0f Hz", $0) },
+                isDisabled: !store.dynamicsConfig.advanced.bassManagement.enabled || !store.dynamicsConfig.advanced.bassManagement.asymmetricCrossoverEnabled
+            )
 
             DynamicsSliderRow(
                 label: "Low Band Gain",
@@ -1198,6 +1450,106 @@ struct DynamicsView: View {
                     .frame(width: 50, alignment: .trailing)
             }
             .disabled(!store.dynamicsConfig.advanced.bassManagement.enabled)
+
+            // Sub EQ Section
+            Divider()
+                .padding(.vertical, 4)
+
+            HStack(spacing: 8) {
+                Text("Subwoofer EQ")
+                    .font(.system(size: 13))
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button("Add Band") {
+                    var adv = store.dynamicsConfig.advanced
+                    if adv.bassManagement.subEQBands.count < BassManagementConfig.maxSubEQBands {
+                        adv.bassManagement.subEQBands.append(SubEQBand(frequency: 80.0, q: 1.0, gain: 0.0))
+                        store.updateAdvancedProcessing(adv)
+                    }
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .font(.system(size: 11))
+                .disabled(!store.dynamicsConfig.advanced.bassManagement.enabled || store.dynamicsConfig.advanced.bassManagement.subEQBands.count >= BassManagementConfig.maxSubEQBands)
+            }
+
+            ForEach(store.dynamicsConfig.advanced.bassManagement.subEQBands.indices, id: \.self) { bandIndex in
+                VStack(spacing: 4) {
+                    HStack(spacing: 8) {
+                        Text("Band \(bandIndex + 1)")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(.secondary)
+                            .frame(width: 50, alignment: .leading)
+                        Toggle("", isOn: Binding(
+                            get: { !store.dynamicsConfig.advanced.bassManagement.subEQBands[bandIndex].bypass },
+                            set: { val in
+                                var adv = store.dynamicsConfig.advanced
+                                adv.bassManagement.subEQBands[bandIndex].bypass = !val
+                                store.updateAdvancedProcessing(adv)
+                            }
+                        ))
+                        .toggleStyle(.switch)
+                        .controlSize(.mini)
+                        Spacer()
+                        Button("Remove") {
+                            var adv = store.dynamicsConfig.advanced
+                            adv.bassManagement.subEQBands.remove(at: bandIndex)
+                            store.updateAdvancedProcessing(adv)
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.mini)
+                        .font(.system(size: 10))
+                    }
+
+                    DynamicsSliderRow(
+                        label: "Frequency",
+                        value: Binding(
+                            get: { Double(store.dynamicsConfig.advanced.bassManagement.subEQBands[bandIndex].frequency) },
+                            set: { val in
+                                var adv = store.dynamicsConfig.advanced
+                                adv.bassManagement.subEQBands[bandIndex].frequency = Float(val)
+                                store.updateAdvancedProcessing(adv)
+                            }
+                        ),
+                        range: 20.0...500.0,
+                        step: 1.0,
+                        formatValue: { String(format: "%.0f Hz", $0) },
+                        isDisabled: !store.dynamicsConfig.advanced.bassManagement.enabled || store.dynamicsConfig.advanced.bassManagement.subEQBands[bandIndex].bypass
+                    )
+
+                    DynamicsSliderRow(
+                        label: "Q",
+                        value: Binding(
+                            get: { Double(store.dynamicsConfig.advanced.bassManagement.subEQBands[bandIndex].q) },
+                            set: { val in
+                                var adv = store.dynamicsConfig.advanced
+                                adv.bassManagement.subEQBands[bandIndex].q = Float(val)
+                                store.updateAdvancedProcessing(adv)
+                            }
+                        ),
+                        range: 0.4...8.0,
+                        step: 0.1,
+                        formatValue: { String(format: "%.1f", $0) },
+                        isDisabled: !store.dynamicsConfig.advanced.bassManagement.enabled || store.dynamicsConfig.advanced.bassManagement.subEQBands[bandIndex].bypass
+                    )
+
+                    DynamicsSliderRow(
+                        label: "Gain",
+                        value: Binding(
+                            get: { Double(store.dynamicsConfig.advanced.bassManagement.subEQBands[bandIndex].gain) },
+                            set: { val in
+                                var adv = store.dynamicsConfig.advanced
+                                adv.bassManagement.subEQBands[bandIndex].gain = Float(val)
+                                store.updateAdvancedProcessing(adv)
+                            }
+                        ),
+                        range: -18.0...6.0,
+                        step: 0.5,
+                        formatValue: { String(format: "%+.1f dB", $0) },
+                        isDisabled: !store.dynamicsConfig.advanced.bassManagement.enabled || store.dynamicsConfig.advanced.bassManagement.subEQBands[bandIndex].bypass
+                    )
+                }
+            }
 
             Button("Calculate Delays from Distances") {
                 calculateDelaysFromDistances()
@@ -1455,6 +1807,19 @@ struct DynamicsView: View {
         Binding(
             get: { Double(store.dynamicsConfig.compressor.makeupGainDB) },
             set: { v in var c = store.dynamicsConfig.compressor; c.makeupGainDB = Float(v); store.updateCompressor(c) }
+        )
+    }
+
+    private var compressorProgramDependentReleaseBinding: Binding<Bool> {
+        Binding(
+            get: { store.dynamicsConfig.compressor.programDependentRelease },
+            set: { v in var c = store.dynamicsConfig.compressor; c.programDependentRelease = v; store.updateCompressor(c) }
+        )
+    }
+    private var compressorSidechainHighPassBinding: Binding<Double> {
+        Binding(
+            get: { Double(store.dynamicsConfig.compressor.sidechainHighPassHz) },
+            set: { v in var c = store.dynamicsConfig.compressor; c.sidechainHighPassHz = Float(v); store.updateCompressor(c) }
         )
     }
 
@@ -1954,6 +2319,114 @@ struct DynamicsView: View {
         Binding(
             get: { store.dynamicsConfig.advanced.bassManagement.slope },
             set: { val in var adv = store.dynamicsConfig.advanced; adv.bassManagement.slope = val; store.updateAdvancedProcessing(adv) }
+        )
+    }
+    private var bassManagementCrossoverTypeBinding: Binding<CrossoverType> {
+        Binding(
+            get: { store.dynamicsConfig.advanced.bassManagement.crossoverType },
+            set: { val in var adv = store.dynamicsConfig.advanced; adv.bassManagement.crossoverType = val; store.updateAdvancedProcessing(adv) }
+        )
+    }
+    private var bassManagementAsymmetricEnabledBinding: Binding<Bool> {
+        Binding(
+            get: { store.dynamicsConfig.advanced.bassManagement.asymmetricCrossoverEnabled },
+            set: { val in var adv = store.dynamicsConfig.advanced; adv.bassManagement.asymmetricCrossoverEnabled = val; store.updateAdvancedProcessing(adv) }
+        )
+    }
+    private var bassManagementMainsHighPassBinding: Binding<Double> {
+        Binding(
+            get: { Double(store.dynamicsConfig.advanced.bassManagement.mainsHighPassHz) },
+            set: { val in var adv = store.dynamicsConfig.advanced; adv.bassManagement.mainsHighPassHz = Float(val); store.updateAdvancedProcessing(adv) }
+        )
+    }
+    private var dynamicEQEnabledBinding: Binding<Bool> {
+        Binding(
+            get: { store.dynamicsConfig.advanced.dynamicEQ.enabled },
+            set: { val in var adv = store.dynamicsConfig.advanced; adv.dynamicEQ.enabled = val; store.updateAdvancedProcessing(adv) }
+        )
+    }
+    private func dynamicEQBandBypassBinding(_ index: Int) -> Binding<Bool> {
+        Binding(
+            get: { store.dynamicsConfig.advanced.dynamicEQ.bands[index].bypass },
+            set: { val in var adv = store.dynamicsConfig.advanced; adv.dynamicEQ.bands[index].bypass = val; store.updateAdvancedProcessing(adv) }
+        )
+    }
+    private func dynamicEQBandFrequencyBinding(_ index: Int) -> Binding<Double> {
+        Binding(
+            get: { Double(store.dynamicsConfig.advanced.dynamicEQ.bands[index].frequency) },
+            set: { val in var adv = store.dynamicsConfig.advanced; adv.dynamicEQ.bands[index].frequency = Float(val); store.updateAdvancedProcessing(adv) }
+        )
+    }
+    private func dynamicEQBandQBinding(_ index: Int) -> Binding<Double> {
+        Binding(
+            get: { Double(store.dynamicsConfig.advanced.dynamicEQ.bands[index].q) },
+            set: { val in var adv = store.dynamicsConfig.advanced; adv.dynamicEQ.bands[index].q = Float(val); store.updateAdvancedProcessing(adv) }
+        )
+    }
+    private func dynamicEQBandGainBinding(_ index: Int) -> Binding<Double> {
+        Binding(
+            get: { Double(store.dynamicsConfig.advanced.dynamicEQ.bands[index].gain) },
+            set: { val in var adv = store.dynamicsConfig.advanced; adv.dynamicEQ.bands[index].gain = Float(val); store.updateAdvancedProcessing(adv) }
+        )
+    }
+    private func dynamicEQBandThresholdBinding(_ index: Int) -> Binding<Double> {
+        Binding(
+            get: { Double(store.dynamicsConfig.advanced.dynamicEQ.bands[index].thresholdDB) },
+            set: { val in var adv = store.dynamicsConfig.advanced; adv.dynamicEQ.bands[index].thresholdDB = Float(val); store.updateAdvancedProcessing(adv) }
+        )
+    }
+    private func dynamicEQBandRatioBinding(_ index: Int) -> Binding<Double> {
+        Binding(
+            get: { Double(store.dynamicsConfig.advanced.dynamicEQ.bands[index].ratio) },
+            set: { val in var adv = store.dynamicsConfig.advanced; adv.dynamicEQ.bands[index].ratio = Float(val); store.updateAdvancedProcessing(adv) }
+        )
+    }
+    private func dynamicEQBandAttackBinding(_ index: Int) -> Binding<Double> {
+        Binding(
+            get: { Double(store.dynamicsConfig.advanced.dynamicEQ.bands[index].attackMs) },
+            set: { val in var adv = store.dynamicsConfig.advanced; adv.dynamicEQ.bands[index].attackMs = Float(val); store.updateAdvancedProcessing(adv) }
+        )
+    }
+    private func dynamicEQBandReleaseBinding(_ index: Int) -> Binding<Double> {
+        Binding(
+            get: { Double(store.dynamicsConfig.advanced.dynamicEQ.bands[index].releaseMs) },
+            set: { val in var adv = store.dynamicsConfig.advanced; adv.dynamicEQ.bands[index].releaseMs = Float(val); store.updateAdvancedProcessing(adv) }
+        )
+    }
+    private var firEnabledBinding: Binding<Bool> {
+        Binding(
+            get: { store.dynamicsConfig.advanced.firImpulseResponse.enabled },
+            set: { val in var adv = store.dynamicsConfig.advanced; adv.firImpulseResponse.enabled = val; store.updateAdvancedProcessing(adv) }
+        )
+    }
+    private var roomCorrectionEnabledBinding: Binding<Bool> {
+        Binding(
+            get: { store.dynamicsConfig.advanced.roomCorrection.enabled },
+            set: { val in var adv = store.dynamicsConfig.advanced; adv.roomCorrection.enabled = val; store.updateAdvancedProcessing(adv) }
+        )
+    }
+    private var roomCorrectionTargetCurveBinding: Binding<RoomCorrectionEngine.TargetCurve> {
+        Binding(
+            get: { store.dynamicsConfig.advanced.roomCorrection.targetCurve },
+            set: { val in var adv = store.dynamicsConfig.advanced; adv.roomCorrection.targetCurve = val; store.updateAdvancedProcessing(adv) }
+        )
+    }
+    private var roomCorrectionSmoothingBinding: Binding<Double> {
+        Binding(
+            get: { store.dynamicsConfig.advanced.roomCorrection.smoothingCrossoverHz },
+            set: { val in var adv = store.dynamicsConfig.advanced; adv.roomCorrection.smoothingCrossoverHz = val; store.updateAdvancedProcessing(adv) }
+        )
+    }
+    private var roomCorrectionMaxGainBinding: Binding<Double> {
+        Binding(
+            get: { store.dynamicsConfig.advanced.roomCorrection.maxGainDB },
+            set: { val in var adv = store.dynamicsConfig.advanced; adv.roomCorrection.maxGainDB = val; store.updateAdvancedProcessing(adv) }
+        )
+    }
+    private var roomCorrectionTapCountBinding: Binding<Double> {
+        Binding(
+            get: { Double(store.dynamicsConfig.advanced.roomCorrection.tapCount) },
+            set: { val in var adv = store.dynamicsConfig.advanced; adv.roomCorrection.tapCount = Int(val); store.updateAdvancedProcessing(adv) }
         )
     }
     private var bassManagementLowBandGainBinding: Binding<Double> {
