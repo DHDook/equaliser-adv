@@ -40,29 +40,7 @@ final class DeviceVolumeService: VolumeControlling {
     }
     
     @discardableResult
-    func setVirtualMasterVolume(deviceID: AudioDeviceID, volume: Float) -> Bool {
-        var address = AudioObjectPropertyAddress(
-            mSelector: kAudioHardwareServiceDeviceProperty_VirtualMasterVolume,
-            mScope: kAudioDevicePropertyScopeOutput,
-            mElement: kAudioObjectPropertyElementMain
-        )
-
-        var vol = volume
-        let status = AudioObjectSetPropertyData(
-            deviceID,
-            &address,
-            0,
-            nil,
-            UInt32(MemoryLayout<Float32>.size),
-            &vol
-        )
-
-        return status == noErr
-    }
-
-    /// Nonisolated version for background queue volume forwarding.
-    @discardableResult
-    nonisolated func setVirtualMasterVolumeNonisolated(deviceID: AudioDeviceID, volume: Float) -> Bool {
+    nonisolated func setVirtualMasterVolume(deviceID: AudioDeviceID, volume: Float) -> Bool {
         var address = AudioObjectPropertyAddress(
             mSelector: kAudioHardwareServiceDeviceProperty_VirtualMasterVolume,
             mScope: kAudioDevicePropertyScopeOutput,
@@ -131,12 +109,12 @@ final class DeviceVolumeService: VolumeControlling {
         }
 
         // Fallback to VirtualMasterVolume (common for real audio output devices)
-        if setVirtualMasterVolumeNonisolated(deviceID: deviceID, volume: volume) {
+        if setVirtualMasterVolume(deviceID: deviceID, volume: volume) {
             return true
         }
 
         // Fallback to per-channel volume (Bluetooth devices)
-        return setDeviceVolumeOnChannelsNonisolated(deviceID: deviceID, volume: volume)
+        return setDeviceVolumeOnChannels(deviceID: deviceID, volume: volume)
     }
 
     // MARK: - Per-Channel Volume Control
@@ -145,42 +123,7 @@ final class DeviceVolumeService: VolumeControlling {
     /// Some Bluetooth devices only support channel-level volume control, not master volume.
     /// Uses kAudioDevicePropertyPreferredChannelsForStereo to determine actual channel numbers.
     @discardableResult
-    private func setDeviceVolumeOnChannels(deviceID: AudioDeviceID, volume: Float) -> Bool {
-        // Get preferred channels for stereo
-        var preferredAddress = AudioObjectPropertyAddress(
-            mSelector: kAudioDevicePropertyPreferredChannelsForStereo,
-            mScope: kAudioDevicePropertyScopeOutput,
-            mElement: kAudioObjectPropertyElementMain
-        )
-        var preferredSize = UInt32(MemoryLayout<UInt32>.size * 2)
-        var channels: [UInt32] = [1, 2]  // Default left/right
-
-        let getStatus = AudioObjectGetPropertyData(deviceID, &preferredAddress, 0, nil, &preferredSize, &channels)
-        if getStatus != noErr {
-            channels = [1, 2]
-        }
-
-        // Set volume on each channel (skip element 0 which is invalid)
-        var success = false
-        for channel in channels where channel != 0 {
-            var address = AudioObjectPropertyAddress(
-                mSelector: kAudioDevicePropertyVolumeScalar,
-                mScope: kAudioDevicePropertyScopeOutput,
-                mElement: AudioObjectPropertyElement(channel)
-            )
-
-            var volumeValue = volume
-            if AudioObjectSetPropertyData(deviceID, &address, 0, nil, UInt32(MemoryLayout<Float32>.size), &volumeValue) == noErr {
-                success = true
-            }
-        }
-
-        return success
-    }
-
-    /// Nonisolated version for background queue volume forwarding.
-    @discardableResult
-    nonisolated private func setDeviceVolumeOnChannelsNonisolated(deviceID: AudioDeviceID, volume: Float) -> Bool {
+    nonisolated private func setDeviceVolumeOnChannels(deviceID: AudioDeviceID, volume: Float) -> Bool {
         // Get preferred channels for stereo
         var preferredAddress = AudioObjectPropertyAddress(
             mSelector: kAudioDevicePropertyPreferredChannelsForStereo,
@@ -447,35 +390,16 @@ final class DeviceVolumeService: VolumeControlling {
     // MARK: - Private Helpers - Volume Control Objects
     
     private func getVolumeFromControlObject(deviceID: AudioDeviceID, scope: AudioObjectPropertyScope) -> Float? {
-        var address = AudioObjectPropertyAddress(
-            mSelector: kAudioDevicePropertyOwnedObjects,
-            mScope: scope,
-            mElement: kAudioObjectPropertyElementMain
-        )
-        
-        var qualifier = AudioClassID(kAudioVolumeControlClassID)
-        var size: UInt32 = 0
-        
-        // Get size first
-        guard AudioObjectGetPropertyDataSize(deviceID, &address, UInt32(MemoryLayout<AudioClassID>.size), &qualifier, &size) == noErr else {
-            return nil
-        }
-        
-        let controlCount = Int(size) / MemoryLayout<AudioObjectID>.size
-        guard controlCount > 0 else { return nil }
-        
-        var controls = [AudioObjectID](repeating: 0, count: controlCount)
-        guard AudioObjectGetPropertyData(deviceID, &address, UInt32(MemoryLayout<AudioClassID>.size), &qualifier, &size, &controls) == noErr else {
-            return nil
-        }
-        
-        // Get volume from the first volume control
+        guard let controls = fetchOwnedControls(
+            deviceID: deviceID, scope: scope,
+            classID: AudioClassID(kAudioVolumeControlClassID)
+        ) else { return nil }
+
         for controlID in controls {
             if let volume = getVolumeFromControl(controlID: controlID) {
                 return volume
             }
         }
-        
         return nil
     }
     
@@ -499,33 +423,16 @@ final class DeviceVolumeService: VolumeControlling {
     // MARK: - Private Helpers - Mute Control Objects
     
     private func getMuteFromControlObject(deviceID: AudioDeviceID, scope: AudioObjectPropertyScope) -> Bool? {
-        var address = AudioObjectPropertyAddress(
-            mSelector: kAudioDevicePropertyOwnedObjects,
-            mScope: scope,
-            mElement: kAudioObjectPropertyElementMain
-        )
-        
-        var qualifier = AudioClassID(kAudioMuteControlClassID)
-        var size: UInt32 = 0
-        
-        guard AudioObjectGetPropertyDataSize(deviceID, &address, UInt32(MemoryLayout<AudioClassID>.size), &qualifier, &size) == noErr else {
-            return nil
-        }
-        
-        let controlCount = Int(size) / MemoryLayout<AudioObjectID>.size
-        guard controlCount > 0 else { return nil }
-        
-        var controls = [AudioObjectID](repeating: 0, count: controlCount)
-        guard AudioObjectGetPropertyData(deviceID, &address, UInt32(MemoryLayout<AudioClassID>.size), &qualifier, &size, &controls) == noErr else {
-            return nil
-        }
-        
+        guard let controls = fetchOwnedControls(
+            deviceID: deviceID, scope: scope,
+            classID: AudioClassID(kAudioMuteControlClassID)
+        ) else { return nil }
+
         for controlID in controls {
             if let muted = getMuteFromControl(controlID: controlID) {
                 return muted
             }
         }
-        
         return nil
     }
     

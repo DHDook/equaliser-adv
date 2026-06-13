@@ -62,47 +62,10 @@ final class SystemDefaultObserver: SystemDefaultObserving {
     /// Gets the current system default output device UID.
     /// - Returns: The UID of the current default output device, or nil if not available.
     func getCurrentSystemDefaultOutputUID() -> String? {
-        var deviceID: AudioDeviceID = 0
-        var propertySize = UInt32(MemoryLayout<AudioDeviceID>.size)
-        var address = AudioObjectPropertyAddress(
-            mSelector: kAudioHardwarePropertyDefaultOutputDevice,
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain
-        )
-        
-        guard AudioObjectGetPropertyData(
-            AudioObjectID(kAudioObjectSystemObject),
-            &address, 0, nil, &propertySize, &deviceID
-        ) == noErr, deviceID != 0 else {
+        guard let deviceID = fetchDefaultOutputDeviceID() else {
             return nil
         }
-        
-        // Get UID for this device
-        var uidAddress = AudioObjectPropertyAddress(
-            mSelector: kAudioDevicePropertyDeviceUID,
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain
-        )
-        
-        var uid: Unmanaged<CFString>?
-        var uidSize = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
-        
-        guard AudioObjectGetPropertyData(
-            deviceID,
-            &uidAddress,
-            0,
-            nil,
-            &uidSize,
-            &uid
-        ) == noErr else {
-            return nil
-        }
-        
-        guard let uidString = uid?.takeRetainedValue() as String? else {
-            return nil
-        }
-        
-        return uidString
+        return fetchDeviceUID(deviceID)
     }
     
     /// Restores the system default output device to the specified UID.
@@ -110,30 +73,13 @@ final class SystemDefaultObserver: SystemDefaultObserving {
     /// - Returns: true if successful, false otherwise.
     @discardableResult
     func restoreSystemDefaultOutput(to uid: String) -> Bool {
-        // Find device ID for UID
         guard let deviceID = deviceManager.deviceID(forUID: uid) else {
             logger.warning("Device not found for UID: \(uid)")
             return false
         }
         
-        var address = AudioObjectPropertyAddress(
-            mSelector: kAudioHardwarePropertyDefaultOutputDevice,
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain
-        )
-        
-        var deviceIDValue = deviceID
-        let status = AudioObjectSetPropertyData(
-            AudioObjectID(kAudioObjectSystemObject),
-            &address,
-            0,
-            nil,
-            UInt32(MemoryLayout<AudioDeviceID>.size),
-            &deviceIDValue
-        )
-        
-        if status != noErr {
-            logger.error("Failed to restore system default: status \(status)")
+        guard setDefaultOutputDevice(deviceID) else {
+            logger.error("Failed to restore system default for UID: \(uid)")
             return false
         }
         

@@ -1089,21 +1089,7 @@ struct RoomCalibrationTab: View {
 
     /// Returns all CoreAudio devices that have at least one input stream.
     private static func listInputDevices() -> [(id: AudioDeviceID, name: String)] {
-        var propSize: UInt32 = 0
-        var addr = AudioObjectPropertyAddress(
-            mSelector: kAudioHardwarePropertyDevices,
-            mScope:    kAudioObjectPropertyScopeGlobal,
-            mElement:  kAudioObjectPropertyElementMain
-        )
-        guard AudioObjectGetPropertyDataSize(
-            AudioObjectID(kAudioObjectSystemObject), &addr, 0, nil, &propSize
-        ) == noErr else { return [] }
-
-        let count = Int(propSize) / MemoryLayout<AudioDeviceID>.size
-        var ids   = [AudioDeviceID](repeating: 0, count: count)
-        guard AudioObjectGetPropertyData(
-            AudioObjectID(kAudioObjectSystemObject), &addr, 0, nil, &propSize, &ids
-        ) == noErr else { return [] }
+        guard let ids = fetchAllDeviceIDs() else { return [] }
 
         return ids.compactMap { deviceID in
             // Filter to devices with input streams.

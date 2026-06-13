@@ -92,6 +92,170 @@ func hasStreams(id: AudioDeviceID, scope: AudioObjectPropertyScope) -> Bool {
     return AudioObjectGetPropertyDataSize(id, &address, 0, nil, &propertySize) == noErr && propertySize > 0
 }
 
+// MARK: - System Device Enumeration
+
+/// Fetches all audio device IDs from the system.
+/// - Returns: Array of device IDs, or nil on failure.
+func fetchAllDeviceIDs() -> [AudioDeviceID]? {
+    var address = AudioObjectPropertyAddress(
+        mSelector: kAudioHardwarePropertyDevices,
+        mScope: kAudioObjectPropertyScopeGlobal,
+        mElement: kAudioObjectPropertyElementMain
+    )
+
+    var propertySize: UInt32 = 0
+    guard AudioObjectGetPropertyDataSize(
+        AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &propertySize
+    ) == noErr else {
+        return nil
+    }
+
+    let deviceCount = Int(propertySize) / MemoryLayout<AudioDeviceID>.size
+    var deviceIDs = [AudioDeviceID](repeating: 0, count: deviceCount)
+
+    guard AudioObjectGetPropertyData(
+        AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &propertySize, &deviceIDs
+    ) == noErr else {
+        return nil
+    }
+
+    return deviceIDs
+}
+
+// MARK: - Default Output Device
+
+/// Gets the current system default output device ID.
+/// - Returns: The device ID, or nil if unavailable.
+func fetchDefaultOutputDeviceID() -> AudioDeviceID? {
+    var deviceID: AudioDeviceID = 0
+    var propertySize = UInt32(MemoryLayout<AudioDeviceID>.size)
+    var address = AudioObjectPropertyAddress(
+        mSelector: kAudioHardwarePropertyDefaultOutputDevice,
+        mScope: kAudioObjectPropertyScopeGlobal,
+        mElement: kAudioObjectPropertyElementMain
+    )
+
+    guard AudioObjectGetPropertyData(
+        AudioObjectID(kAudioObjectSystemObject),
+        &address, 0, nil, &propertySize, &deviceID
+    ) == noErr, deviceID != 0 else {
+        return nil
+    }
+
+    return deviceID
+}
+
+/// Sets the system default output device.
+/// - Parameter deviceID: The device ID to set as default.
+/// - Returns: true if successful.
+@discardableResult
+func setDefaultOutputDevice(_ deviceID: AudioDeviceID) -> Bool {
+    var address = AudioObjectPropertyAddress(
+        mSelector: kAudioHardwarePropertyDefaultOutputDevice,
+        mScope: kAudioObjectPropertyScopeGlobal,
+        mElement: kAudioObjectPropertyElementMain
+    )
+
+    var deviceIDValue = deviceID
+    return AudioObjectSetPropertyData(
+        AudioObjectID(kAudioObjectSystemObject),
+        &address,
+        0,
+        nil,
+        UInt32(MemoryLayout<AudioDeviceID>.size),
+        &deviceIDValue
+    ) == noErr
+}
+
+// MARK: - Device UID Helpers
+
+/// Fetches the UID for a CoreAudio device.
+/// - Parameter id: The device ID
+/// - Returns: The UID string, or nil if unavailable.
+func fetchDeviceUID(_ id: AudioDeviceID) -> String? {
+    var address = AudioObjectPropertyAddress(
+        mSelector: kAudioDevicePropertyDeviceUID,
+        mScope: kAudioObjectPropertyScopeGlobal,
+        mElement: kAudioObjectPropertyElementMain
+    )
+
+    var uid: Unmanaged<CFString>?
+    var size = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
+
+    guard AudioObjectGetPropertyData(id, &address, 0, nil, &size, &uid) == noErr else {
+        return nil
+    }
+
+    return uid?.takeRetainedValue() as String?
+}
+
+// MARK: - Sample Rate Helpers
+
+/// Fetches a sample rate property from a device.
+/// - Parameters:
+///   - deviceID: The audio device ID
+///   - selector: The property selector (actual or nominal sample rate)
+/// - Returns: The sample rate, or nil if unavailable.
+func fetchSampleRate(deviceID: AudioDeviceID, selector: AudioObjectPropertySelector) -> Float64? {
+    var address = AudioObjectPropertyAddress(
+        mSelector: selector,
+        mScope: kAudioObjectPropertyScopeGlobal,
+        mElement: kAudioObjectPropertyElementMain
+    )
+
+    var rate: Float64 = 0
+    var size = UInt32(MemoryLayout<Float64>.size)
+
+    guard AudioObjectGetPropertyData(deviceID, &address, 0, nil, &size, &rate) == noErr else {
+        return nil
+    }
+
+    return rate
+}
+
+// MARK: - Owned Control Objects
+
+/// Fetches owned control objects of a specific class from a device.
+/// - Parameters:
+///   - deviceID: The audio device ID
+///   - scope: The property scope (input or output)
+///   - classID: The control class ID to filter by
+/// - Returns: Array of control object IDs, or nil on failure.
+func fetchOwnedControls(
+    deviceID: AudioDeviceID,
+    scope: AudioObjectPropertyScope,
+    classID: AudioClassID
+) -> [AudioObjectID]? {
+    var address = AudioObjectPropertyAddress(
+        mSelector: kAudioDevicePropertyOwnedObjects,
+        mScope: scope,
+        mElement: kAudioObjectPropertyElementMain
+    )
+
+    var qualifier = classID
+    var size: UInt32 = 0
+
+    guard AudioObjectGetPropertyDataSize(
+        deviceID, &address,
+        UInt32(MemoryLayout<AudioClassID>.size), &qualifier, &size
+    ) == noErr else {
+        return nil
+    }
+
+    let controlCount = Int(size) / MemoryLayout<AudioObjectID>.size
+    guard controlCount > 0 else { return nil }
+
+    var controls = [AudioObjectID](repeating: 0, count: controlCount)
+    guard AudioObjectGetPropertyData(
+        deviceID, &address,
+        UInt32(MemoryLayout<AudioClassID>.size), &qualifier, &size, &controls
+    ) == noErr else {
+        return nil
+    }
+
+    return controls
+}
+
 // MARK: - Jack Connection Helper (Intel Macs)
 
 /// Checks if a jack (headphone/audio port) is connected for a device.

@@ -18,37 +18,11 @@ final class DeviceSampleRateService: SampleRateObserving {
     // MARK: - Sample Rate Queries
     
     func getActualSampleRate(deviceID: AudioDeviceID) -> Float64? {
-        var address = AudioObjectPropertyAddress(
-            mSelector: kAudioDevicePropertyActualSampleRate,
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain
-        )
-        
-        var rate: Float64 = 0
-        var size = UInt32(MemoryLayout<Float64>.size)
-        
-        guard AudioObjectGetPropertyData(deviceID, &address, 0, nil, &size, &rate) == noErr else {
-            return nil
-        }
-        
-        return rate
+        fetchSampleRate(deviceID: deviceID, selector: kAudioDevicePropertyActualSampleRate)
     }
     
     func getNominalSampleRate(deviceID: AudioDeviceID) -> Float64? {
-        var address = AudioObjectPropertyAddress(
-            mSelector: kAudioDevicePropertyNominalSampleRate,
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain
-        )
-        
-        var rate: Float64 = 0
-        var size = UInt32(MemoryLayout<Float64>.size)
-        
-        guard AudioObjectGetPropertyData(deviceID, &address, 0, nil, &size, &rate) == noErr else {
-            return nil
-        }
-        
-        return rate
+        fetchSampleRate(deviceID: deviceID, selector: kAudioDevicePropertyNominalSampleRate)
     }
     
     // MARK: - Sample Rate Observation

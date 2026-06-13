@@ -205,23 +205,7 @@ final class DeviceEnumerationService: ObservableObject, Enumerating {
     /// Refreshes output devices only.
     /// Safe to call during app initialization - does NOT trigger TCC dialog.
     func refreshOutputDevices() {
-        var propertySize: UInt32 = 0
-        var address = AudioObjectPropertyAddress(
-            mSelector: kAudioHardwarePropertyDevices,
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain
-        )
-
-        guard AudioObjectGetPropertyDataSize(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &propertySize) == noErr else {
-            return
-        }
-
-        let deviceCount = Int(propertySize) / MemoryLayout<AudioDeviceID>.size
-        var deviceIDs = [AudioDeviceID](repeating: 0, count: deviceCount)
-
-        guard AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &propertySize, &deviceIDs) == noErr else {
-            return
-        }
+        guard let deviceIDs = fetchAllDeviceIDs() else { return }
 
         var outputs: [AudioDevice] = []
 
@@ -242,23 +226,7 @@ final class DeviceEnumerationService: ObservableObject, Enumerating {
     /// May trigger TCC permission dialog for microphone access.
     /// Should only be called after microphone permission is granted or when needed.
     func refreshInputDevices() {
-        var propertySize: UInt32 = 0
-        var address = AudioObjectPropertyAddress(
-            mSelector: kAudioHardwarePropertyDevices,
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain
-        )
-
-        guard AudioObjectGetPropertyDataSize(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &propertySize) == noErr else {
-            return
-        }
-
-        let deviceCount = Int(propertySize) / MemoryLayout<AudioDeviceID>.size
-        var deviceIDs = [AudioDeviceID](repeating: 0, count: deviceCount)
-
-        guard AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &propertySize, &deviceIDs) == noErr else {
-            return
-        }
+        guard let deviceIDs = fetchAllDeviceIDs() else { return }
 
         var inputs: [AudioDevice] = []
 
@@ -472,18 +440,7 @@ final class DeviceEnumerationService: ObservableObject, Enumerating {
     // MARK: - Default Device
     
     func defaultOutputDevice() -> AudioDevice? {
-        var deviceID: AudioDeviceID = 0
-        var propertySize = UInt32(MemoryLayout<AudioDeviceID>.size)
-        var address = AudioObjectPropertyAddress(
-            mSelector: kAudioHardwarePropertyDefaultOutputDevice,
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain
-        )
-
-        guard AudioObjectGetPropertyData(
-            AudioObjectID(kAudioObjectSystemObject),
-            &address, 0, nil, &propertySize, &deviceID
-        ) == noErr, deviceID != 0 else {
+        guard let deviceID = fetchDefaultOutputDeviceID() else {
             return nil
         }
 

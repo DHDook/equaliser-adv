@@ -101,41 +101,17 @@ public final class DriverDeviceRegistry: ObservableObject, DriverDeviceDiscoveri
             return false
         }
         
-        var address = AudioObjectPropertyAddress(
-            mSelector: kAudioHardwarePropertyDefaultOutputDevice,
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain
-        )
-        
-        var deviceIDValue = deviceID
-        let status = AudioObjectSetPropertyData(
-            AudioObjectID(kAudioObjectSystemObject),
-            &address,
-            0,
-            nil,
-            UInt32(MemoryLayout<AudioDeviceID>.size),
-            &deviceIDValue
-        )
-        
-        if status != noErr {
-            logger.error("Failed to set driver as default output: \(status)")
+        guard setDefaultOutputDevice(deviceID) else {
+            logger.error("Failed to set driver as default output")
             return false
         }
         
         // Verify the system default actually changed
-        var verifyID: AudioDeviceID = 0
-        var verifySize = UInt32(MemoryLayout<AudioDeviceID>.size)
-        let verifyStatus = AudioObjectGetPropertyData(
-            AudioObjectID(kAudioObjectSystemObject),
-            &address,
-            0, nil, &verifySize, &verifyID
-        )
-        
-        if verifyStatus == noErr && verifyID == deviceID {
+        if fetchDefaultOutputDeviceID() == deviceID {
             logger.info("Set driver as default output device (ID: \(deviceID))")
             return true
         } else {
-            logger.error("Failed to verify default output device (expected \(deviceID), got \(verifyID))")
+            logger.error("Failed to verify default output device (expected \(deviceID))")
             return false
         }
     }
@@ -145,41 +121,8 @@ public final class DriverDeviceRegistry: ObservableObject, DriverDeviceDiscoveri
     /// - Returns: true if successful, false otherwise.
     @discardableResult
     public func restoreToBuiltInSpeakers() -> Bool {
-        // Enumerate audio devices to find first physical output
-        var address = AudioObjectPropertyAddress(
-            mSelector: kAudioHardwarePropertyDevices,
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain
-        )
-        
-        var propertySize: UInt32 = 0
-        var status = AudioObjectGetPropertyDataSize(
-            AudioObjectID(kAudioObjectSystemObject),
-            &address,
-            0,
-            nil,
-            &propertySize
-        )
-        
-        guard status == noErr else {
-            logger.error("Failed to get device count: \(status)")
-            return false
-        }
-        
-        let deviceCount = Int(propertySize) / MemoryLayout<AudioDeviceID>.size
-        var deviceIDs = [AudioDeviceID](repeating: 0, count: deviceCount)
-        
-        status = AudioObjectGetPropertyData(
-            AudioObjectID(kAudioObjectSystemObject),
-            &address,
-            0,
-            nil,
-            &propertySize,
-            &deviceIDs
-        )
-        
-        guard status == noErr else {
-            logger.error("Failed to get device list: \(status)")
+        guard let deviceIDs = fetchAllDeviceIDs() else {
+            logger.error("Failed to enumerate devices")
             return false
         }
         
@@ -212,38 +155,9 @@ public final class DriverDeviceRegistry: ObservableObject, DriverDeviceDiscoveri
             
             if transportStatus == noErr && transportType != 0 {
                 // This is a physical device - set it as default
-                var setAddress = AudioObjectPropertyAddress(
-                    mSelector: kAudioHardwarePropertyDefaultOutputDevice,
-                    mScope: kAudioObjectPropertyScopeGlobal,
-                    mElement: kAudioObjectPropertyElementMain
-                )
-                
-                var deviceIDValue = deviceID
-                let setStatus = AudioObjectSetPropertyData(
-                    AudioObjectID(kAudioObjectSystemObject),
-                    &setAddress,
-                    0,
-                    nil,
-                    UInt32(MemoryLayout<AudioDeviceID>.size),
-                    &deviceIDValue
-                )
-                
-                if setStatus == noErr {
+                if setDefaultOutputDevice(deviceID) {
                     // Verify it was set correctly
-                    var verifyID: AudioDeviceID = 0
-                    var verifySize = UInt32(MemoryLayout<AudioDeviceID>.size)
-                    var verifyAddress = AudioObjectPropertyAddress(
-                        mSelector: kAudioHardwarePropertyDefaultOutputDevice,
-                        mScope: kAudioObjectPropertyScopeGlobal,
-                        mElement: kAudioObjectPropertyElementMain
-                    )
-                    let verifyStatus = AudioObjectGetPropertyData(
-                        AudioObjectID(kAudioObjectSystemObject),
-                        &verifyAddress,
-                        0, nil, &verifySize, &verifyID
-                    )
-                    
-                    if verifyStatus == noErr && verifyID == deviceID {
+                    if fetchDefaultOutputDeviceID() == deviceID {
                         logger.info("Restored system default to built-in speakers (ID: \(deviceID))")
                         return true
                     }
@@ -260,70 +174,20 @@ public final class DriverDeviceRegistry: ObservableObject, DriverDeviceDiscoveri
     /// Finds the Equaliser driver device by UID.
     /// - Returns: The AudioObjectID if found, nil otherwise.
     private func findDriverDevice() -> AudioObjectID? {
-        var address = AudioObjectPropertyAddress(
-            mSelector: kAudioHardwarePropertyDevices,
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain
-        )
-        
-        var propertySize: UInt32 = 0
-        var status = AudioObjectGetPropertyDataSize(
-            AudioObjectID(kAudioObjectSystemObject),
-            &address,
-            0,
-            nil,
-            &propertySize
-        )
-        
-        guard status == noErr else {
-            logger.error("Failed to get device count: \(status)")
-            return nil
-        }
-        
-        let deviceCount = Int(propertySize) / MemoryLayout<AudioObjectID>.size
-        var deviceIDs = [AudioObjectID](repeating: 0, count: deviceCount)
-        
-        status = AudioObjectGetPropertyData(
-            AudioObjectID(kAudioObjectSystemObject),
-            &address,
-            0,
-            nil,
-            &propertySize,
-            &deviceIDs
-        )
-        
-        guard status == noErr else {
-            logger.error("Failed to get device list: \(status)")
+        guard let deviceIDs = fetchAllDeviceIDs() else {
+            logger.error("Failed to enumerate devices")
             return nil
         }
         
         for deviceID in deviceIDs {
-            var uidAddress = AudioObjectPropertyAddress(
-                mSelector: kAudioDevicePropertyDeviceUID,
-                mScope: kAudioObjectPropertyScopeGlobal,
-                mElement: kAudioObjectPropertyElementMain
-            )
-            
-            var uid: Unmanaged<CFString>?
-            var uidSize = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
-            
-            status = AudioObjectGetPropertyData(
-                deviceID,
-                &uidAddress,
-                0,
-                nil,
-                &uidSize,
-                &uid
-            )
-            
-            if status == noErr, let uidString = uid?.takeRetainedValue() as String?,
+            if let uidString = fetchDeviceUID(deviceID),
                uidString == DRIVER_DEVICE_UID {
                 logger.debug("Found driver: deviceID=\(deviceID)")
                 return deviceID
             }
         }
         
-        logger.error("Driver not found among \(deviceCount) devices")
+        logger.error("Driver not found among \(deviceIDs.count) devices")
         return nil
     }
     
@@ -347,22 +211,6 @@ public final class DriverDeviceRegistry: ObservableObject, DriverDeviceDiscoveri
     /// Gets the current system default output device ID.
     /// - Returns: The device ID, or nil if none set or error.
     private func getCurrentDefaultOutputDeviceID() -> AudioDeviceID? {
-        var deviceID: AudioDeviceID = 0
-        var propertySize = UInt32(MemoryLayout<AudioDeviceID>.size)
-        var address = AudioObjectPropertyAddress(
-            mSelector: kAudioHardwarePropertyDefaultOutputDevice,
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain
-        )
-        
-        let status = AudioObjectGetPropertyData(
-            AudioObjectID(kAudioObjectSystemObject),
-            &address, 0, nil, &propertySize, &deviceID
-        )
-        
-        guard status == noErr, deviceID != 0 else {
-            return nil
-        }
-        return deviceID
+        fetchDefaultOutputDeviceID()
     }
 }
