@@ -171,10 +171,14 @@ final class PresetManager: ObservableObject {
     }
 
     /// Returns the URL for a preset file.
+    /// Sanitises the name to prevent path traversal and filesystem issues.
     private func fileURL(for presetName: String) -> URL {
         let safeName = presetName
             .replacingOccurrences(of: "/", with: "-")
             .replacingOccurrences(of: ":", with: "-")
+            .replacingOccurrences(of: "\0", with: "")
+            .replacingOccurrences(of: "..", with: "_")
+            .filter { !$0.isNewline && $0 != "\r" && $0.asciiValue.map({ $0 >= 32 }) ?? true }
             .trimmingCharacters(in: .whitespacesAndNewlines)
         return presetsDirectory.appendingPathComponent("\(safeName).\(Preset.fileExtension)")
     }

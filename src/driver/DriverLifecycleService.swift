@@ -54,7 +54,7 @@ public final class DriverLifecycleService: ObservableObject, DriverLifecycleMana
             
             logger.info("Installing driver from \(bundledURL.path)")
             
-            let script = "if [ -d '\(DRIVER_BUNDLE_PATH)' ]; then rm -rf '\(DRIVER_BUNDLE_PATH)'; fi; mkdir -p '\(DRIVER_INSTALL_PATH)'; cp -R '\(bundledURL.path)' '\(DRIVER_BUNDLE_PATH)'; chown -R root:wheel '\(DRIVER_BUNDLE_PATH)'; chmod -R 755 '\(DRIVER_BUNDLE_PATH)'; killall coreaudiod"
+            let script = "if [ -d '\(Self.shellEscape(DRIVER_BUNDLE_PATH))' ]; then rm -rf '\(Self.shellEscape(DRIVER_BUNDLE_PATH))'; fi; mkdir -p '\(Self.shellEscape(DRIVER_INSTALL_PATH))'; cp -R '\(Self.shellEscape(bundledURL.path))' '\(Self.shellEscape(DRIVER_BUNDLE_PATH))'; chown -R root:wheel '\(Self.shellEscape(DRIVER_BUNDLE_PATH))'; chmod -R 755 '\(Self.shellEscape(DRIVER_BUNDLE_PATH))'; killall coreaudiod"
             
             try await executeWithAdminPrivileges(script: script)
             
@@ -85,7 +85,7 @@ public final class DriverLifecycleService: ObservableObject, DriverLifecycleMana
         isInstalling = true
         
         do {
-            let script = "if [ -d '\(DRIVER_BUNDLE_PATH)' ]; then rm -rf '\(DRIVER_BUNDLE_PATH)'; killall coreaudiod; fi"
+            let script = "if [ -d '\(Self.shellEscape(DRIVER_BUNDLE_PATH))' ]; then rm -rf '\(Self.shellEscape(DRIVER_BUNDLE_PATH))'; killall coreaudiod; fi"
             
             try await executeWithAdminPrivileges(script: script)
             
@@ -162,10 +162,18 @@ public final class DriverLifecycleService: ObservableObject, DriverLifecycleMana
         return info["CFBundleShortVersionString"] as? String
     }
     
+    /// Escapes a string for safe inclusion inside single-quoted shell arguments.
+    private static func shellEscape(_ value: String) -> String {
+        value.replacingOccurrences(of: "'", with: "'\\''")
+    }
+
     private func executeWithAdminPrivileges(script: String) async throws {
+        let escapedScript = script
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
         let task = Process()
         task.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-        task.arguments = ["-e", "do shell script \"\(script)\" with administrator privileges"]
+        task.arguments = ["-e", "do shell script \"\(escapedScript)\" with administrator privileges"]
         
         let outputPipe = Pipe()
         let errorPipe = Pipe()
