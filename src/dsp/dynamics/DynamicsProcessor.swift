@@ -84,6 +84,12 @@ final class DynamicsProcessor: @unchecked Sendable {
     nonisolated(unsafe) var expanderAlphaAttack:  Float = 0.0
     nonisolated(unsafe) var expanderAlphaRelease: Float = 0.0
 
+    // ── Denoiser mode tracking ─────────────────────────────────────────────
+    /// Tracks the last denoiser mode and sample rate passed to setMode(),
+    /// so we only call setMode() (which blocks the main thread) when something actually changed.
+    private var denoisersConfiguredMode: DenoiserMode = .high
+    private var denoisersConfiguredSampleRate: Double = 0.0  // 0 forces update on first applyConfig
+
     // ── Stereo Widener + LUFS ─────────────────────────────────────────────
     let stereoWidener:  StereoWidener
     let lufsProcessor:  LoudnessMatchProcessor
@@ -1296,12 +1302,22 @@ final class DynamicsProcessor: @unchecked Sendable {
         // (The store always writes the most recently set value, so call threshold last
         // to let it win over the preset if the user has diverged from it.)
         setDenoisingThresholdDB(adv.linearDenoisingThresholdDB)
-        // Set mode first (reallocates buffers with _reinitializing guard active).
+        // Only call setMode() when the mode or sample rate actually changed.
+        // setMode() blocks the main thread briefly; calling it on every applyConfig()
+        // (which fires on every UI parameter change) causes repeated main-thread stalls
+        // that destabilise Core Audio's HAL device management.
+        if adv.denoiserMode != denoisersConfiguredMode ||
+           storedSampleRate != denoisersConfiguredSampleRate {
+            for d in denoisers {
+                d.setMode(adv.denoiserMode, sampleRate: storedSampleRate)
+            }
+            denoisersConfiguredMode = adv.denoiserMode
+            denoisersConfiguredSampleRate = storedSampleRate
+        }
         for d in denoisers {
-            d.setMode(adv.denoiserMode, sampleRate: storedSampleRate)
             d.setReductionAmount(adv.denoiserReductionAmount)
         }
-        // Only enable after buffers are fully initialised.
+        // Enable after buffers are confirmed initialised for the current mode.
         setDenoisingEnabled(adv.linearDenoisingEnabled)
         setDialogueGateEnabled(adv.loudnessDialogueGateEnabled)
         setLoudnessContourEnabled(adv.loudnessContourEnabled)
@@ -1584,10 +1600,14 @@ final class DynamicsProcessor: @unchecked Sendable {
             clipperLimiterSampleRate = sampleRate
         }
         
-        // Update denoiser sample rate
+        // Update denoiser sample rate (updateSampleRate is safe — it does not reallocate,
+        // it only rebuilds the masking bias curve and resets noise history).
         for d in denoisers {
             d.updateSampleRate(sampleRate)
         }
+        // Keep tracking vars in sync so applyConfig() doesn't re-trigger setMode()
+        // immediately after a sample rate change.
+        denoisersConfiguredSampleRate = sampleRate
         limiterGainCurrent  = 1.0
         for i in 0..<deEsserFilterState.count  { deEsserFilterState[i]  = 0 }
         for i in 0..<mbFilterState.count        { mbFilterState[i]        = 0 }

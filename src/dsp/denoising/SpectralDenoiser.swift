@@ -14,7 +14,7 @@ import Accelerate
 import Atomics
 import Foundation
 
-enum DenoiserMode: Codable {
+enum DenoiserMode: Codable, Equatable {
     case quality   // N=1024, hop=512,  50% overlap
     case high      // N=2048, hop=512,  75% overlap  ← default
     case ultra     // N=4096, hop=1024, 75% overlap
@@ -129,6 +129,11 @@ final class SpectralDenoiser: @unchecked Sendable {
     // preventing any access to buffers that are being reallocated.
     private let _reinitializing: ManagedAtomic<Int32>
 
+    /// Incremented by the audio thread at the START of each process() call (before the guard).
+    /// setMode() reads this before and after setting _reinitializing to confirm
+    /// that any in-flight process() call has completed before proceeding.
+    private let _processGeneration: ManagedAtomic<Int32>
+
     // Reduction amount control with psychoacoustic masking bias.
     private let _reductionAmountBits: ManagedAtomic<Int32>
 
@@ -212,6 +217,7 @@ final class SpectralDenoiser: @unchecked Sendable {
         _captureFramesRemaining = ManagedAtomic(Int32(0))
         _hasCapturedProfile = ManagedAtomic(Int32(0))
         _reinitializing = ManagedAtomic(Int32(0))
+        _processGeneration = ManagedAtomic(Int32(0))
         captureAccum = [Double](repeating: 0.0, count: halfN + 1)
 
         // Default reduction amount: 50%
@@ -305,17 +311,44 @@ final class SpectralDenoiser: @unchecked Sendable {
     /// must only be called from the main thread while the audio engine is stopped
     /// or while the denoiser is bypassed.
     func setMode(_ newMode: DenoiserMode, sampleRate: Double) {
+        // Snapshot the generation counter BEFORE signalling _reinitializing.
+        // If an audio callback has just entered process() past the generation increment
+        // but not yet reached the _reinitializing guard, its generation value will be
+        // strictly greater than genBefore.
+        let genBefore = _processGeneration.load(ordering: .acquiring)
+
         // Signal the audio thread to bypass process() while we reallocate.
-        _reinitializing.store(1, ordering: .releasing)
+        // Use .sequentiallyConsistent so this is visible to ALL threads immediately.
+        _reinitializing.store(1, ordering: .sequentiallyConsistent)
 
         // Stop any in-progress noise capture so captureAccum is not written
         // by the audio thread while we reallocate it below.
         _captureFramesRemaining.store(0, ordering: .sequentiallyConsistent)
 
-        // Spin briefly to let any in-flight process() call finish.
-        // process() is bounded (<< 1 ms), so this is safe on the main thread.
-        // A proper solution would use a mutex; this is the minimal viable fix.
-        Thread.sleep(forTimeInterval: 0.005)
+        // Spin until we observe at least one additional process() generation tick
+        // after _reinitializing was set, which proves any in-flight callback that
+        // was running BEFORE we set the flag has now completed and returned.
+        // A new process() call after _reinitializing=1 will immediately return silence
+        // via the guard, so the generation tick we're waiting for costs only the guard check.
+        //
+        // Bounded: the audio callback fires at minimum every ~0.3 ms (384 kHz / 128 frames).
+        // In the worst case we wait one full callback period. The maximum is bounded
+        // by the length of one process() call (< 1 ms in practice).
+        // We cap at 50,000 iterations (~50 ms wall time) as a safety valve; if the audio
+        // thread is not ticking by then, the engine has stopped and it's safe to proceed.
+        var spinCount = 0
+        while _processGeneration.load(ordering: .acquiring) == genBefore && spinCount < 50_000 {
+            // Pause hint for the CPU: yields the hyper-thread and reduces power/contention
+            // without sleeping or involving the scheduler.
+            #if arch(arm64)
+            // On Apple Silicon, `yield` is the correct SMT pause instruction.
+            // Swift doesn't expose it directly; use a no-op loop as a compiler fence.
+            withUnsafeCurrentTask { _ in }   // compiler fence to prevent loop elimination
+            #else
+            sched_yield()
+            #endif
+            spinCount += 1
+        }
 
         let N   = newMode.fftSize
         let hop = newMode.hopSize
@@ -395,8 +428,14 @@ final class SpectralDenoiser: @unchecked Sendable {
 
     @inline(__always)
     func process(buffer: UnsafeMutablePointer<Float>, count: Int) {
+        // Increment the generation counter so setMode() can detect when this call started.
+        // This must happen BEFORE the _reinitializing check so setMode() can observe
+        // an in-flight process() call even when _reinitializing is about to be set.
+        _processGeneration.wrappingIncrement(ordering: .releasing)
+
         // Real-time safety: if setMode() is running on the main thread, return silence.
-        // This avoids a data race on fftSetup and all buffer pointers.
+        // The _reinitializing store in setMode() uses .releasing and this load uses .acquiring,
+        // forming a happens-before relationship that makes all setMode() writes visible here.
         guard _reinitializing.load(ordering: .acquiring) == 0 else {
             vDSP_vclr(buffer, 1, vDSP_Length(count))
             return
