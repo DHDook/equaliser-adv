@@ -33,7 +33,24 @@ struct BassManagementCrossover {
             // Linkwitz-Riley: cascaded Butterworth sections with specific Q values
             switch slope {
             case .lr2:
-                qValues = [0.5]                                   // critically-damped (1st-order Butterworth)^2
+                // LR2 = two cascaded 1st-order Butterworth LP/HP.
+                // BiquadMath.firstOrderLowPass/firstOrderHighPass return degenerate
+                // biquads (b2 = a2 = 0) that implement true 1st-order 6 dB/oct sections.
+                // Two cascaded sections give the LR2 -6 dB crossover with flat LP+HP sum.
+                for _ in 0..<2 {
+                    let lpCoeffs = BiquadMath.firstOrderLowPass(
+                        sampleRate: sampleRate, frequency: Double(crossoverHz))
+                    let hpCoeffs = BiquadMath.firstOrderHighPass(
+                        sampleRate: sampleRate, frequency: Double(crossoverHz))
+                    lowPassSections.append((
+                        b0: Float(lpCoeffs.b0), b1: Float(lpCoeffs.b1), b2: Float(lpCoeffs.b2),
+                        na1: Float(lpCoeffs.a1), na2: Float(lpCoeffs.a2)
+                    ))
+                    highPassSections.append((
+                        b0: Float(hpCoeffs.b0), b1: Float(hpCoeffs.b1), b2: Float(hpCoeffs.b2),
+                        na1: Float(hpCoeffs.a1), na2: Float(hpCoeffs.a2)
+                    ))
+                }
             case .lr4:
                 qValues = [0.7071067811865476, 0.7071067811865476] // (2nd-order Butterworth)^2
             case .lr8:

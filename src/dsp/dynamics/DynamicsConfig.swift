@@ -800,6 +800,9 @@ struct AdvancedProcessingConfig: Codable, Equatable, Sendable {
     var subBassPhaseAlignmentEnabled: Bool = false
     /// Sub-bass crossover target. Range: 40 – 120 Hz. Default: 80 Hz.
     var subBassAlignmentFrequencyHz: Float = 80.0
+    /// Q factor for the sub-bass phase-alignment allpass cascade.
+    /// Default 0.7 (~Butterworth). Increase for steeper phase rotation.
+    var subBassPhaseAlignmentQ: Float = 0.7
 
     /// 4x Oversampling — upsamples audio by 4x before EQ and downsamples after EQ.
     /// Improves high-frequency response and reduces aliasing artifacts.

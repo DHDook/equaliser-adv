@@ -188,17 +188,18 @@ final class OversamplingProcessor {
         // Summing all F branches (the previous code) gives gain ≈ sum(h) instead of 1.
         let phaseCoeffs = downCoeffs[0]
         for i in 0..<frameCount {
-            // Load F upsampled samples into the circular delay line.
+            // 1. Write F new upsampled input samples into the delay line.
             for p in 0..<F {
                 delay[(delayIdx + p) % T] = src[i * F + p]
             }
-            // Apply phase 0 only.
+            // 2. Advance the write head.
+            delayIdx = (delayIdx + F) % T
+            // 3. Accumulate phase-0 filter taps (newest sample at tap 0).
             var acc: Float = 0
             for k in 0..<T {
-                acc += phaseCoeffs[k] * delay[(delayIdx + F - 1 - k + T) % T]
+                acc += phaseCoeffs[k] * delay[(delayIdx - 1 - k + T) % T]
             }
             dst[i] = acc
-            delayIdx = (delayIdx + F) % T
         }
     }
 

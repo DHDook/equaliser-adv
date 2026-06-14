@@ -22,16 +22,25 @@ final class AllPassChain: @unchecked Sendable {
     // In practice: 32 bands × ≤8 sections at the absolute maximum slope.
     private static let maxSections = 256
 
-    // Double-buffered section arrays
-    nonisolated(unsafe) private var activeSections: [AllPassSection]
-    nonisolated(unsafe) private var activeCount: Int = 0
-    private var pendingSections: [AllPassSection]
+    // Pre-allocated flat storage — no heap allocation on the audio thread.
+    private let activeStore:  UnsafeMutablePointer<AllPassSection>
+    private let pendingStore: UnsafeMutablePointer<AllPassSection>
+    nonisolated(unsafe) private var activeCount:  Int = 0
     private var pendingCount: Int = 0
     private let hasPending = ManagedAtomic<Bool>(false)
 
     init() {
-        activeSections  = []
-        pendingSections = []
+        activeStore  = .allocate(capacity: Self.maxSections)
+        activeStore.initialize(repeating: AllPassSection(), count: Self.maxSections)
+        pendingStore = .allocate(capacity: Self.maxSections)
+        pendingStore.initialize(repeating: AllPassSection(), count: Self.maxSections)
+    }
+
+    deinit {
+        activeStore.deinitialize(count: Self.maxSections)
+        activeStore.deallocate()
+        pendingStore.deinitialize(count: Self.maxSections)
+        pendingStore.deallocate()
     }
 
     // MARK: - Main Thread API
@@ -42,16 +51,15 @@ final class AllPassChain: @unchecked Sendable {
     /// - Parameter sectionSets: One `[BiquadCoefficients]` array per active band.
     ///   Bypassed bands must be excluded by the caller.
     func stageSections(from sectionSets: [[BiquadCoefficients]]) {
-        var pending: [AllPassSection] = []
-        pending.reserveCapacity(sectionSets.reduce(0) { $0 + $1.count })
+        var count = 0
         for sections in sectionSets {
             for sec in sections {
-                let ap = AllPassChain.allPassSection(from: sec)
-                pending.append(ap)
+                guard count < Self.maxSections else { break }
+                pendingStore[count] = AllPassChain.allPassSection(from: sec)
+                count += 1
             }
         }
-        pendingSections = pending
-        pendingCount    = pending.count
+        pendingCount = count
         hasPending.store(true, ordering: .releasing)
     }
 
@@ -62,9 +70,14 @@ final class AllPassChain: @unchecked Sendable {
     @inline(__always)
     func applyPendingUpdates() {
         guard hasPending.load(ordering: .acquiring) else { return }
-        // Swap active ← pending (copy-on-write; [AllPassSection] is a value type)
-        activeSections = pendingSections
-        activeCount    = pendingCount
+        // Copy section data — no heap allocation, just a memcpy.
+        let bytes = pendingCount * MemoryLayout<AllPassSection>.stride
+        activeStore.withMemoryRebound(to: UInt8.self, capacity: bytes) { dst in
+            pendingStore.withMemoryRebound(to: UInt8.self, capacity: bytes) { src in
+                dst.assign(from: src, count: bytes)
+            }
+        }
+        activeCount = pendingCount
         hasPending.store(false, ordering: .relaxed)
     }
 
@@ -85,13 +98,13 @@ final class AllPassChain: @unchecked Sendable {
         buffer: UnsafeMutablePointer<Float>,
         frameCount: UInt32
     ) {
-        let b0 = activeSections[sectionIdx].b0
-        let b1 = activeSections[sectionIdx].b1
-        let b2 = activeSections[sectionIdx].b2
-        let a1 = activeSections[sectionIdx].a1
-        let a2 = activeSections[sectionIdx].a2
-        var w1 = activeSections[sectionIdx].w1
-        var w2 = activeSections[sectionIdx].w2
+        let b0 = activeStore[sectionIdx].b0
+        let b1 = activeStore[sectionIdx].b1
+        let b2 = activeStore[sectionIdx].b2
+        let a1 = activeStore[sectionIdx].a1
+        let a2 = activeStore[sectionIdx].a2
+        var w1 = activeStore[sectionIdx].w1
+        var w2 = activeStore[sectionIdx].w2
 
         // Direct-Form II Transposed
         for n in 0..<Int(frameCount) {
@@ -101,8 +114,8 @@ final class AllPassChain: @unchecked Sendable {
             w2 = b2 * x - a2 * y
             buffer[n] = y
         }
-        activeSections[sectionIdx].w1 = w1
-        activeSections[sectionIdx].w2 = w2
+        activeStore[sectionIdx].w1 = w1
+        activeStore[sectionIdx].w2 = w2
     }
 
     /// Constructs an all-pass biquad from a source biquad's denominator coefficients.
@@ -132,9 +145,9 @@ final class AllPassChain: @unchecked Sendable {
 
     /// Clears processing state (call when mode is disabled).
     func reset() {
-        for i in 0..<activeSections.count {
-            activeSections[i].w1 = 0
-            activeSections[i].w2 = 0
+        for i in 0..<activeCount {
+            activeStore[i].w1 = 0
+            activeStore[i].w2 = 0
         }
     }
 }

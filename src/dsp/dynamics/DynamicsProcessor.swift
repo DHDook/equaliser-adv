@@ -218,6 +218,9 @@ final class DynamicsProcessor: @unchecked Sendable {
     nonisolated(unsafe) var dynamicEQFilterState: [Float]  // 2 × maxDynamicEQBands state vars (w1, w2 per band)
     nonisolated(unsafe) var dynamicEQEnvelopeState: [Float]  // maxDynamicEQBands envelope follower state
     nonisolated(unsafe) var dynamicEQGainReductionDB: [Float]  // maxDynamicEQBands current GR in dB
+    // Cached per-callback attack/release coefficients for Dynamic EQ
+    nonisolated(unsafe) var dynamicEQAttackCoeffs: [Float] = []  // maxDynamicEQBands
+    nonisolated(unsafe) var dynamicEQReleaseCoeffs: [Float] = []  // maxDynamicEQBands
     // Pending dynamic EQ — staged on main thread, consumed at start of processDynamicEQ
     nonisolated(unsafe) var pendingDynamicEQCoeffs: [(b0: Float, b1: Float, b2: Float, na1: Float, na2: Float)] = []
     nonisolated(unsafe) var activeDynamicEQCoeffs:  [(b0: Float, b1: Float, b2: Float, na1: Float, na2: Float)] = []
@@ -274,8 +277,12 @@ final class DynamicsProcessor: @unchecked Sendable {
     private let _compProgramDependentRelease: ManagedAtomic<Int32>
     /// Sidechain high-pass filter frequency in Hz.
     private let _compSidechainHighPassBits: ManagedAtomic<Int32>
-    /// Sidechain high-pass filter state (2 state vars: w1, w2).
-    nonisolated(unsafe) var compSidechainHPState: [Float] = [0.0, 0.0]
+    /// Per-channel sidechain high-pass filter state for the compressor.
+    /// Layout: [ch * 2 + 0] = w1,  [ch * 2 + 1] = w2.
+    nonisolated(unsafe) private var compSidechainHPState: [Float]
+
+    // Cached per-callback coefficients (recomputed when sample rate or parameters change)
+    nonisolated(unsafe) private var compSidechainHPCoeffs: (b0: Float, b1: Float, b2: Float, a1: Float, a2: Float) = (1.0, 0.0, 0.0, 0.0, 0.0)
 
     // Expander
     private let _expEnabled:    ManagedAtomic<Int32>
@@ -374,6 +381,7 @@ final class DynamicsProcessor: @unchecked Sendable {
     private let _ditherModeBits:         ManagedAtomic<Int32>  // DitherMode.rawValue
     private let _subBassPhaseEnabled:  ManagedAtomic<Int32>
     private let _subBassPhaseFreqBits: ManagedAtomic<Int32>   // Float bits, Hz
+    private let _subBassPhaseQBits:    ManagedAtomic<Int32>   // Float bits, Q factor
     private let _oversamplingEnabled: ManagedAtomic<Int32>
 
     // Mono bass atomics
@@ -541,7 +549,8 @@ final class DynamicsProcessor: @unchecked Sendable {
         _compKneeWidthBits = ManagedAtomic(floatBits(6.0))
         _compProgramDependentRelease = ManagedAtomic(0)
         _compSidechainHighPassBits = ManagedAtomic(floatBits(0.0))
-        compSidechainHPState = [0.0, 0.0]
+        self.compSidechainHPState = Array(repeating: 0.0, count: Int(channelCount) * 2)
+        recomputeCompSidechainHPCoeffs()
 
         // Atomics — expander
         _expEnabled     = ManagedAtomic(0)
@@ -656,9 +665,15 @@ final class DynamicsProcessor: @unchecked Sendable {
         self.hasSubEQUpdate = ManagedAtomic(false)
 
         // Dynamic EQ state (2 state vars per band for filter, 1 for envelope, 1 for GR)
-        self.dynamicEQFilterState = Array(repeating: 0.0, count: 2 * DynamicEQConfig.maxDynamicEQBands)
-        self.dynamicEQEnvelopeState = Array(repeating: 0.0, count: DynamicEQConfig.maxDynamicEQBands)
-        self.dynamicEQGainReductionDB = Array(repeating: 0.0, count: DynamicEQConfig.maxDynamicEQBands)
+        // State arrays are indexed [ch * maxBands * 2 + band * 2 + {0,1}] for filter,
+        // and [ch * maxBands + band] for envelope / gain-reduction.
+        let maxCh = Int(channelCount)
+        let maxBands = DynamicEQConfig.maxDynamicEQBands
+        self.dynamicEQFilterState = Array(repeating: 0.0, count: maxCh * maxBands * 2)
+        self.dynamicEQEnvelopeState = Array(repeating: 0.0, count: maxCh * maxBands)
+        self.dynamicEQGainReductionDB = Array(repeating: 0.0, count: maxCh * maxBands)
+        self.dynamicEQAttackCoeffs = Array(repeating: 0.0, count: maxBands)
+        self.dynamicEQReleaseCoeffs = Array(repeating: 0.0, count: maxBands)
         self.hasDynamicEQUpdate = ManagedAtomic(false)
 
         // FIR Impulse Response — ConvolutionEngine for FFT-based partitioned convolution
@@ -708,6 +723,7 @@ final class DynamicsProcessor: @unchecked Sendable {
         _ditherModeBits         = ManagedAtomic(Int32(DitherMode.bypass.rawValue))
         _subBassPhaseEnabled  = ManagedAtomic(0)
         _subBassPhaseFreqBits = ManagedAtomic(floatBits(80.0))
+        _subBassPhaseQBits    = ManagedAtomic(floatBits(0.7))
         _oversamplingEnabled = ManagedAtomic(0)
 
         // Mono bass atomics
@@ -851,6 +867,30 @@ final class DynamicsProcessor: @unchecked Sendable {
     }
     func setCompressorSidechainHighPassHz(_ hz: Float, sampleRate: Double) {
         _compSidechainHighPassBits.store(floatBits(hz), ordering: .relaxed)
+        recomputeCompSidechainHPCoeffs()
+    }
+
+    private func recomputeCompSidechainHPCoeffs() {
+        let sidechainHPHz = bitsToFloat(_compSidechainHighPassBits.load(ordering: .relaxed))
+        if sidechainHPHz > 0.0 {
+            let sampleRate = storedSampleRate
+            let w = 2.0 * Float.pi * sidechainHPHz / Float(sampleRate)
+            let q: Float = 0.7071 // Butterworth Q
+            let k = tan(w * 0.5)
+            let kDivQ = k / q
+            let kSquared = k * k
+            let denominator = 1.0 + kDivQ + kSquared
+            let norm = 1.0 / denominator
+            compSidechainHPCoeffs = (
+                b0: 1.0 * norm,
+                b1: -2.0 * norm,
+                b2: 1.0 * norm,
+                a1: 2.0 * (kSquared - 1.0) * norm,
+                a2: (1.0 - kDivQ + kSquared) * norm
+            )
+        } else {
+            compSidechainHPCoeffs = (1.0, 0.0, 0.0, 0.0, 0.0)
+        }
     }
     func setCompressorMakeupGainDB(_ db: Float) {
         _compMakeupBits.store(floatBits(Self.dbToLinear(db)), ordering: .relaxed)
@@ -1082,6 +1122,9 @@ final class DynamicsProcessor: @unchecked Sendable {
     func setSubBassAlignmentFrequencyHz(_ hz: Float) {
         _subBassPhaseFreqBits.store(floatBits(max(20.0, min(200.0, hz))), ordering: .relaxed)
     }
+    func setSubBassPhaseQ(_ q: Float) {
+        _subBassPhaseQBits.store(floatBits(max(0.1, min(4.0, q))), ordering: .relaxed)
+    }
     func setOversamplingEnabled(_ v: Bool) {
         _oversamplingEnabled.store(v ? 1 : 0, ordering: .relaxed)
         // Update clipper/limiter effective sample rate
@@ -1138,7 +1181,20 @@ final class DynamicsProcessor: @unchecked Sendable {
         pendingDynamicEQCoeffs = coeffs
         activeDynamicEQBypass = config.bands.map(\.bypass)
         activeDynamicEQParams = params
+        recomputeDynamicEQCoeffs()
         hasDynamicEQUpdate.store(true, ordering: .releasing)
+    }
+
+    private func recomputeDynamicEQCoeffs() {
+        let sampleRate = storedSampleRate
+        let maxBands = DynamicEQConfig.maxDynamicEQBands
+        dynamicEQAttackCoeffs = Array(repeating: 0.0, count: maxBands)
+        dynamicEQReleaseCoeffs = Array(repeating: 0.0, count: maxBands)
+        for (idx, params) in activeDynamicEQParams.enumerated() {
+            guard idx < maxBands else { break }
+            dynamicEQAttackCoeffs[idx] = Float(exp(-1.0 / (Double(params.attackMs) * 0.001 * sampleRate)))
+            dynamicEQReleaseCoeffs[idx] = Float(exp(-1.0 / (Double(params.releaseMs) * 0.001 * sampleRate)))
+        }
     }
     func setBassManagementCrossoverHz(_ hz: Float) {
         _bassManagementCrossoverHzBits.store(floatBits(max(20.0, min(200.0, hz))), ordering: .relaxed)
@@ -1232,18 +1288,19 @@ final class DynamicsProcessor: @unchecked Sendable {
         let adv = config.advanced
         setStereoMode(adv.stereoMode)
         setDCOffsetFilterEnabled(adv.dcOffsetFilterEnabled)
-        setDenoisingEnabled(adv.linearDenoisingEnabled)
         setDenoisingPreset(adv.linearDenoisingPreset)
         // Allow the user's manual threshold slider to override the preset's noise floor
         // only if it differs from the preset's seeded value; otherwise the preset wins.
         // (The store always writes the most recently set value, so call threshold last
         // to let it win over the preset if the user has diverged from it.)
         setDenoisingThresholdDB(adv.linearDenoisingThresholdDB)
-        // Set denoiser mode and reduction amount
+        // Set mode first (reallocates buffers with _reinitializing guard active).
         for d in denoisers {
             d.setMode(adv.denoiserMode, sampleRate: storedSampleRate)
             d.setReductionAmount(adv.denoiserReductionAmount)
         }
+        // Only enable after buffers are fully initialised.
+        setDenoisingEnabled(adv.linearDenoisingEnabled)
         setDialogueGateEnabled(adv.loudnessDialogueGateEnabled)
         setLoudnessContourEnabled(adv.loudnessContourEnabled)
         setLoudnessReferencePhon(adv.loudnessReferencePhon)
@@ -1285,6 +1342,7 @@ final class DynamicsProcessor: @unchecked Sendable {
         setDitherMode(adv.ditherMode)
         setSubBassPhaseAlignmentEnabled(adv.subBassPhaseAlignmentEnabled)
         setSubBassAlignmentFrequencyHz(adv.subBassAlignmentFrequencyHz)
+        setSubBassPhaseQ(adv.subBassPhaseAlignmentQ)
         setOversamplingEnabled(adv.oversamplingEnabled)
 
         // Bass Management - rebuild crossover only when parameters change
@@ -1424,10 +1482,11 @@ final class DynamicsProcessor: @unchecked Sendable {
                 guard idx < DynamicEQConfig.maxDynamicEQBands else { break }
                 guard idx < activeDynamicEQParams.count else { break }
 
-                var w1 = dynamicEQFilterState[idx * 2]
-                var w2 = dynamicEQFilterState[idx * 2 + 1]
-                var env = dynamicEQEnvelopeState[idx]
-                var grDB = dynamicEQGainReductionDB[idx]
+                let maxBands = DynamicEQConfig.maxDynamicEQBands
+                var w1   = dynamicEQFilterState[ch * maxBands * 2 + idx * 2]
+                var w2   = dynamicEQFilterState[ch * maxBands * 2 + idx * 2 + 1]
+                var env  = dynamicEQEnvelopeState[ch * maxBands + idx]
+                var grDB = dynamicEQGainReductionDB[ch * maxBands + idx]
 
                 let (b0, b1, b2, na1, na2) = coeffs
                 let params = activeDynamicEQParams[idx]
@@ -1436,26 +1495,28 @@ final class DynamicsProcessor: @unchecked Sendable {
                 let attackMs = params.attackMs
                 let releaseMs = params.releaseMs
 
-                // Calculate attack and release coefficients
-                let attackCoeff = Float(exp(-1.0 / (Double(attackMs) * 0.001 * sampleRate)))
-                let releaseCoeff = Float(exp(-1.0 / (Double(releaseMs) * 0.001 * sampleRate)))
+                // Use cached attack/release coefficients (computed on main thread when sample rate or parameters change)
+                let attackCoeff = dynamicEQAttackCoeffs[idx]
+                let releaseCoeff = dynamicEQReleaseCoeffs[idx]
 
                 for i in 0..<count {
                     let input = buf[i]
 
-                    // Apply biquad filter
+                    // Run input through the band-detection filter for level sensing only.
+                    // The filter output is used exclusively for envelope detection —
+                    // it is NOT written to the output buffer.
                     let filtered = Self.processBiquad(input, b0: b0, b1: b1, b2: b2,
                                                      na1: na1, na2: na2, w1: &w1, w2: &w2)
 
-                    // Envelope follower (peak detector)
-                    let absInput = abs(filtered)
-                    if absInput > env {
-                        env = attackCoeff * env + (1.0 - attackCoeff) * absInput
+                    // Envelope follower on the band-filtered signal.
+                    let absFiltered = abs(filtered)
+                    if absFiltered > env {
+                        env = attackCoeff * env + (1.0 - attackCoeff) * absFiltered
                     } else {
-                        env = releaseCoeff * env + (1.0 - releaseCoeff) * absInput
+                        env = releaseCoeff * env + (1.0 - releaseCoeff) * absFiltered
                     }
 
-                    // Calculate gain reduction
+                    // Gain computer: how much to reduce gain when band energy exceeds threshold.
                     let envDB = 20.0 * log10(max(env, 1e-10))
                     let overThreshold = envDB - thresholdDB
                     var targetGR: Float = 0.0
@@ -1463,19 +1524,19 @@ final class DynamicsProcessor: @unchecked Sendable {
                         targetGR = -overThreshold * (ratio - 1.0) / ratio
                     }
 
-                    // Smooth gain reduction
+                    // Smooth gain reduction.
                     let grCoeff = overThreshold > 0 ? attackCoeff : releaseCoeff
                     grDB = grCoeff * grDB + (1.0 - grCoeff) * targetGR
 
-                    // Apply gain reduction
+                    // Apply gain reduction to the ORIGINAL full-bandwidth input signal.
                     let gainLinear = pow(10.0, grDB / 20.0)
-                    buf[i] = filtered * gainLinear
+                    buf[i] = input * gainLinear
                 }
 
-                dynamicEQFilterState[idx * 2] = w1
-                dynamicEQFilterState[idx * 2 + 1] = w2
-                dynamicEQEnvelopeState[idx] = env
-                dynamicEQGainReductionDB[idx] = grDB
+                dynamicEQFilterState[ch * maxBands * 2 + idx * 2]     = w1
+                dynamicEQFilterState[ch * maxBands * 2 + idx * 2 + 1] = w2
+                dynamicEQEnvelopeState[ch * maxBands + idx]            = env
+                dynamicEQGainReductionDB[ch * maxBands + idx]          = grDB
             }
         }
     }
@@ -1503,6 +1564,8 @@ final class DynamicsProcessor: @unchecked Sendable {
     /// Called when the pipeline sample rate changes (main thread).
     func updateSampleRate(_ sampleRate: Double, attackMs: Float, releaseMs: Float, lookAheadMs: Float) {
         storedSampleRate = sampleRate
+        recomputeCompSidechainHPCoeffs()
+        recomputeDynamicEQCoeffs()
         for p in lookAheadBufs { p.initialize(repeating: 0, count: Self.maxLookAheadSamples) }
         lookAheadWriteIndex = 0
         lookAheadSize       = Self.computeLookAheadSamples(sampleRate: sampleRate, lookAheadMs: lookAheadMs)
@@ -2125,7 +2188,9 @@ final class DynamicsProcessor: @unchecked Sendable {
                     var s3 = noiseShapeState[base + 3]
                     var s4 = noiseShapeState[base + 4]
                     for i in 0..<count {
-                        let r = ditherRNG.nextFloat(in: -lsb...lsb)
+                        // TPDF input noise for the noise shaper: two independent uniform samples
+                        // sum to a triangular distribution, which is optimal for error feedback.
+                        let r = ditherRNG.nextFloat(in: -lsb...lsb) + ditherRNG.nextFloat(in: -lsb...lsb)
                         let shaped = r - (h.0*s0 + h.1*s1 + h.2*s2 + h.3*s3 + h.4*s4)
                         let input = buf[i] + shaped
                         let quant = (input * invLSB).rounded() * lsb
@@ -2314,9 +2379,10 @@ final class DynamicsProcessor: @unchecked Sendable {
     private func processSubBassPhaseAlignment(
         abl: UnsafeMutableAudioBufferListPointer, numCh: Int, count: Int
     ) {
-        let freq   = bitsToFloat(_subBassPhaseFreqBits.load(ordering: .relaxed))
+        let freq = bitsToFloat(_subBassPhaseFreqBits.load(ordering: .relaxed))
+        let q = Double(_subBassPhaseQBits.load(ordering: .relaxed).bitPatternToFloat)
         let coeffs = BiquadMath.allPass(sampleRate: storedSampleRate,
-                                        frequency: Double(freq), q: 0.7)
+                                        frequency: Double(freq), q: q)
         let b0  = Float(coeffs.b0)
         let b1  = Float(coeffs.b1)
         let b2  = Float(coeffs.b2)
@@ -2787,42 +2853,30 @@ final class DynamicsProcessor: @unchecked Sendable {
         let progDepRelease = _compProgramDependentRelease.load(ordering: .relaxed) != 0
         let sidechainHPHz = bitsToFloat(_compSidechainHighPassBits.load(ordering: .relaxed))
         var env = compEnvDB
-        var hpW1 = compSidechainHPState[0]
-        var hpW2 = compSidechainHPState[1]
 
-        // Calculate sidechain high-pass filter coefficients if enabled
-        var hpB0: Float = 1.0, hpB1: Float = 0.0, hpB2: Float = 0.0
-        var hpA1: Float = 0.0, hpA2: Float = 0.0
-        if sidechainHPHz > 0.0 {
-            let sampleRate = storedSampleRate
-            let w = 2.0 * Float.pi * sidechainHPHz / Float(sampleRate)
-            let q: Float = 0.7071 // Butterworth Q
-            let k = tan(w * 0.5)
-            let kDivQ = k / q
-            let kSquared = k * k
-            let denominator = 1.0 + kDivQ + kSquared
-            let norm = 1.0 / denominator
-            hpB0 = 1.0 * norm
-            hpB1 = -2.0 * norm
-            hpB2 = 1.0 * norm
-            let kSquaredMinusOne = kSquared - 1.0
-            hpA1 = 2.0 * kSquaredMinusOne * norm
-            let oneMinusKDivQPlusKSquared = 1.0 - kDivQ + kSquared
-            hpA2 = oneMinusKDivQPlusKSquared * norm
-        }
+        // Use cached sidechain HP coefficients (computed on main thread when sample rate or frequency changes)
+        let hpB0 = compSidechainHPCoeffs.b0
+        let hpB1 = compSidechainHPCoeffs.b1
+        let hpB2 = compSidechainHPCoeffs.b2
+        let hpA1 = compSidechainHPCoeffs.a1
+        let hpA2 = compSidechainHPCoeffs.a2
 
         for frame in 0..<count {
             var peak: Float = 0.0
             for ch in 0..<numCh {
                 guard let buf = abl[ch].mData?.assumingMemoryBound(to: Float.self) else { continue }
                 var v = buf[frame]
-                
+
                 // Apply sidechain high-pass filter if enabled
                 if sidechainHPHz > 0.0 {
+                    var hpW1 = compSidechainHPState[ch * 2]
+                    var hpW2 = compSidechainHPState[ch * 2 + 1]
                     let filtered = Self.processBiquad(v, b0: hpB0, b1: hpB1, b2: hpB2, na1: hpA1, na2: hpA2, w1: &hpW1, w2: &hpW2)
+                    compSidechainHPState[ch * 2] = hpW1
+                    compSidechainHPState[ch * 2 + 1] = hpW2
                     v = filtered
                 }
-                
+
                 let a = v < 0 ? -v : v; if a > peak { peak = a }
             }
             let xDB: Float = peak > 1e-5 ? 20.0 * log10(peak) : -100.0
@@ -2862,8 +2916,6 @@ final class DynamicsProcessor: @unchecked Sendable {
             }
         }
         compEnvDB = env
-        compSidechainHPState[0] = hpW1
-        compSidechainHPState[1] = hpW2
     }
 
     // MARK: - Module 4: Expander

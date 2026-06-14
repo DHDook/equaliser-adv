@@ -316,84 +316,105 @@ enum RoomCorrectionEngine {
     /// - Returns: Tuple containing (left channel IR, right channel IR, sample rate) or nil on failure
     static func importFIRFromWAV(url: URL, targetTapCount: Int = 4096) -> (left: [Float], right: [Float], sampleRate: Double)? {
         guard url.pathExtension.lowercased() == "wav" else { return nil }
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        guard data.count > 44 else { return nil }
 
-        do {
-            let data = try Data(contentsOf: url)
-            guard data.count > 44 else { return nil } // Minimum WAV header size
+        // ── Parse RIFF header ────────────────────────────────────────────────
+        guard String(bytes: data[0..<4],  encoding: .ascii) == "RIFF",
+              String(bytes: data[8..<12], encoding: .ascii) == "WAVE" else { return nil }
 
-            // Parse WAV header
-            let riff = data[0..<4]
-            let fileSize = data.withUnsafeBytes { $0.load(fromByteOffset: 4, as: UInt32.self) }
-            let wave = data[8..<12]
-            let fmt = data[12..<16]
-            let fmtSize = data.withUnsafeBytes { $0.load(fromByteOffset: 16, as: UInt32.self) }
-            let audioFormat = data.withUnsafeBytes { $0.load(fromByteOffset: 20, as: UInt16.self) }
-            let numChannels = data.withUnsafeBytes { $0.load(fromByteOffset: 22, as: UInt16.self) }
-            let sampleRate = data.withUnsafeBytes { $0.load(fromByteOffset: 24, as: UInt32.self) }
-            let byteRate = data.withUnsafeBytes { $0.load(fromByteOffset: 28, as: UInt32.self) }
-            let blockAlign = data.withUnsafeBytes { $0.load(fromByteOffset: 32, as: UInt16.self) }
-            let bitsPerSample = data.withUnsafeBytes { $0.load(fromByteOffset: 34, as: UInt16.self) }
+        // ── Find fmt chunk ───────────────────────────────────────────────────
+        var pos = 12
+        var audioFormat:  UInt16 = 0
+        var numChannels:  UInt16 = 0
+        var sampleRate:   UInt32 = 0
+        var bitsPerSample: UInt16 = 0
+        var dataStart = -1
+        var dataByteCount = 0
 
-            guard audioFormat == 1 else { return nil } // PCM only
-            guard numChannels == 1 || numChannels == 2 else { return nil }
-            guard bitsPerSample == 16 || bitsPerSample == 24 || bitsPerSample == 32 else { return nil }
+        while pos + 8 <= data.count {
+            let chunkID   = String(bytes: data[pos..<pos+4], encoding: .ascii) ?? ""
+            let chunkSize = Int(data.withUnsafeBytes { $0.load(fromByteOffset: pos + 4, as: UInt32.self).littleEndian })
 
-            let bytesPerSample = bitsPerSample / 8
-            let dataStart = 44 // Standard WAV data chunk start
+            switch chunkID {
+            case "fmt ":
+                audioFormat   = data.withUnsafeBytes { $0.load(fromByteOffset: pos + 8,  as: UInt16.self).littleEndian }
+                numChannels   = data.withUnsafeBytes { $0.load(fromByteOffset: pos + 10, as: UInt16.self).littleEndian }
+                sampleRate    = data.withUnsafeBytes { $0.load(fromByteOffset: pos + 12, as: UInt32.self).littleEndian }
+                bitsPerSample = data.withUnsafeBytes { $0.load(fromByteOffset: pos + 22, as: UInt16.self).littleEndian }
+            case "data":
+                dataStart     = pos + 8
+                dataByteCount = chunkSize
+            default:
+                break
+            }
+            pos += 8 + chunkSize + (chunkSize & 1)   // chunks are word-aligned
+        }
 
-            // Read audio data
-            let sampleCount = (data.count - dataStart) / (Int(numChannels) * Int(bytesPerSample))
-            guard sampleCount > 0 else { return nil }
+        guard audioFormat == 1 || audioFormat == 3 else { return nil }   // PCM or IEEE float
+        guard numChannels == 1 || numChannels == 2 else { return nil }
+        guard bitsPerSample == 16 || bitsPerSample == 24 || bitsPerSample == 32 else { return nil }
+        guard dataStart >= 0 else { return nil }
 
-            var leftIR = [Float](repeating: 0.0, count: targetTapCount)
-            var rightIR = [Float](repeating: 0.0, count: targetTapCount)
+        let bytesPerSample = Int(bitsPerSample / 8)
+        let frameCount     = dataByteCount / (Int(numChannels) * bytesPerSample)
+        guard frameCount > 0 else { return nil }
 
-            let samplesToCopy = min(sampleCount, targetTapCount)
+        let samplesToCopy  = min(frameCount, targetTapCount)
+        var leftIR  = [Float](repeating: 0.0, count: targetTapCount)
+        var rightIR = [Float](repeating: 0.0, count: targetTapCount)
 
-            for i in 0..<samplesToCopy {
-                let offset = dataStart + i * Int(numChannels) * Int(bytesPerSample)
+        for i in 0..<samplesToCopy {
+            let frameOffset = dataStart + i * Int(numChannels) * bytesPerSample
 
-                if bitsPerSample == 16 {
-                    // 16-bit PCM
-                    let leftSample = Int16(bitPattern: data.withUnsafeBytes { $0.load(fromByteOffset: offset, as: UInt16.self) })
-                    leftIR[i] = Float(leftSample) / 32768.0
+            switch bitsPerSample {
+            case 16:
+                let lRaw = data.withUnsafeBytes { $0.load(fromByteOffset: frameOffset, as: Int16.self).littleEndian }
+                leftIR[i] = Float(lRaw) / 32768.0
+                if numChannels == 2 {
+                    let rRaw = data.withUnsafeBytes { $0.load(fromByteOffset: frameOffset + 2, as: Int16.self).littleEndian }
+                    rightIR[i] = Float(rRaw) / 32768.0
+                } else {
+                    rightIR[i] = leftIR[i]
+                }
 
+            case 24:
+                // Read three bytes manually to avoid crossing into the next sample.
+                func read24(_ offset: Int) -> Float {
+                    let b0 = UInt32(data[offset])
+                    let b1 = UInt32(data[offset + 1])
+                    let b2 = UInt32(data[offset + 2])
+                    // Reconstruct signed 24-bit value via sign extension.
+                    let raw24 = Int32(bitPattern: (b2 << 16 | b1 << 8 | b0) << 8) >> 8
+                    return Float(raw24) / 8_388_608.0
+                }
+                leftIR[i] = read24(frameOffset)
+                rightIR[i] = numChannels == 2 ? read24(frameOffset + 3) : leftIR[i]
+
+            case 32:
+                if audioFormat == 3 {   // IEEE 754 float
+                    leftIR[i] = data.withUnsafeBytes { $0.load(fromByteOffset: frameOffset, as: Float.self) }
                     if numChannels == 2 {
-                        let rightSample = Int16(bitPattern: data.withUnsafeBytes { $0.load(fromByteOffset: offset + 2, as: UInt16.self) })
-                        rightIR[i] = Float(rightSample) / 32768.0
+                        rightIR[i] = data.withUnsafeBytes { $0.load(fromByteOffset: frameOffset + 4, as: Float.self) }
                     } else {
                         rightIR[i] = leftIR[i]
                     }
-                } else if bitsPerSample == 24 {
-                    // 24-bit PCM
-                    let leftSample24 = data.withUnsafeBytes { $0.load(fromByteOffset: offset, as: UInt32.self) }
-                    let leftSample = Int32(bitPattern: (leftSample24 << 8) | (leftSample24 >> 16))
-                    leftIR[i] = Float(leftSample) / 8388608.0
-
+                } else {                // 32-bit integer PCM
+                    let lRaw = data.withUnsafeBytes { $0.load(fromByteOffset: frameOffset, as: Int32.self).littleEndian }
+                    leftIR[i] = Float(lRaw) / 2_147_483_648.0
                     if numChannels == 2 {
-                        let rightSample24 = data.withUnsafeBytes { $0.load(fromByteOffset: offset + 3, as: UInt32.self) }
-                        let rightSample = Int32(bitPattern: (rightSample24 << 8) | (rightSample24 >> 16))
-                        rightIR[i] = Float(rightSample) / 8388608.0
-                    } else {
-                        rightIR[i] = leftIR[i]
-                    }
-                } else if bitsPerSample == 32 {
-                    // 32-bit PCM
-                    let leftSample = data.withUnsafeBytes { $0.load(fromByteOffset: offset, as: Int32.self) }
-                    leftIR[i] = Float(leftSample) / 2147483648.0
-
-                    if numChannels == 2 {
-                        let rightSample = data.withUnsafeBytes { $0.load(fromByteOffset: offset + 4, as: Int32.self) }
-                        rightIR[i] = Float(rightSample) / 2147483648.0
+                        let rRaw = data.withUnsafeBytes { $0.load(fromByteOffset: frameOffset + 4, as: Int32.self).littleEndian }
+                        rightIR[i] = Float(rRaw) / 2_147_483_648.0
                     } else {
                         rightIR[i] = leftIR[i]
                     }
                 }
-            }
 
-            return (left: leftIR, right: rightIR, sampleRate: Double(sampleRate))
-        } catch {
-            return nil
+            default:
+                break
+            }
         }
+
+        return (left: leftIR, right: rightIR, sampleRate: Double(sampleRate))
     }
 }

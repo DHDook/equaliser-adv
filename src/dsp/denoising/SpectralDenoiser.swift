@@ -124,6 +124,11 @@ final class SpectralDenoiser: @unchecked Sendable {
     // Flag indicating whether a noise profile has been captured.
     private let _hasCapturedProfile: ManagedAtomic<Int32>
 
+    // Set to 1 on the main thread at the start of setMode(); cleared to 0 at the end.
+    // The audio thread checks this at the top of process() and returns silence if set,
+    // preventing any access to buffers that are being reallocated.
+    private let _reinitializing: ManagedAtomic<Int32>
+
     // Reduction amount control with psychoacoustic masking bias.
     private let _reductionAmountBits: ManagedAtomic<Int32>
 
@@ -146,7 +151,10 @@ final class SpectralDenoiser: @unchecked Sendable {
         let N   = self.fftSize
         let hop = self.hopSize
         log2n    = vDSP_Length(log2(Double(N)).rounded())
-        fftSetup = vDSP_create_fftsetup(log2n, FFTRadix(kFFTRadix2))!
+        guard let initialSetup = vDSP_create_fftsetup(log2n, FFTRadix(kFFTRadix2)) else {
+            fatalError("SpectralDenoiser: vDSP_create_fftsetup failed for log2n=\(log2n)")
+        }
+        fftSetup = initialSetup
 
         // Periodic Hann window (N in denominator).
         // Satisfies COLA-1 at 50% overlap: w[n] + w[n + N/2] = 1.0 for all n.
@@ -175,7 +183,8 @@ final class SpectralDenoiser: @unchecked Sendable {
         outputOverlap = [Float](repeating: 0, count: N)
         workReal      = [Float](repeating: 0, count: N)
         workImag      = [Float](repeating: 0, count: N)
-        outRing       = [Float](repeating: 0, count: N * 2)
+        let ringCapacity = max(N * 2, Int(AudioConstants.maxFrameCount) * 2)
+        outRing       = [Float](repeating: 0, count: ringCapacity)
 
         // Initialize smoothed gains to 1.0 — denoiser starts transparent and fades in.
         prevGain = [Float](repeating: 1.0, count: halfN + 1)
@@ -195,13 +204,14 @@ final class SpectralDenoiser: @unchecked Sendable {
         // Initialize read pointer to lag one hop behind write pointer
         // to account for the inherent OLA latency of one analysis frame.
         outWritePos = 0
-        outReadPos  = N * 2 - hop
+        outReadPos  = outRing.count - hop
 
         // Default: noise floor = -60 dBFS, Wiener floor = 0.01 (-40 dB)
         _noiseFloorBits  = ManagedAtomic(Self.floatBits(pow(10.0, -60.0 / 20.0)))
         _wienerFloorBits = ManagedAtomic(Self.floatBits(0.01))
         _captureFramesRemaining = ManagedAtomic(Int32(0))
         _hasCapturedProfile = ManagedAtomic(Int32(0))
+        _reinitializing = ManagedAtomic(Int32(0))
         captureAccum = [Double](repeating: 0.0, count: halfN + 1)
 
         // Default reduction amount: 50%
@@ -230,6 +240,8 @@ final class SpectralDenoiser: @unchecked Sendable {
     func updateSampleRate(_ newSampleRate: Double) {
         sampleRate = newSampleRate
         rebuildMaskingBias()
+        // Per-bin noise floor estimates are in the old frequency scale; discard them.
+        reset()
     }
 
     // MARK: - Main Thread API
@@ -293,50 +305,67 @@ final class SpectralDenoiser: @unchecked Sendable {
     /// must only be called from the main thread while the audio engine is stopped
     /// or while the denoiser is bypassed.
     func setMode(_ newMode: DenoiserMode, sampleRate: Double) {
-        // Reinitialise with the new mode
+        // Signal the audio thread to bypass process() while we reallocate.
+        _reinitializing.store(1, ordering: .releasing)
+
+        // Stop any in-progress noise capture so captureAccum is not written
+        // by the audio thread while we reallocate it below.
+        _captureFramesRemaining.store(0, ordering: .sequentiallyConsistent)
+
+        // Spin briefly to let any in-flight process() call finish.
+        // process() is bounded (<< 1 ms), so this is safe on the main thread.
+        // A proper solution would use a mutex; this is the minimal viable fix.
+        Thread.sleep(forTimeInterval: 0.005)
+
         let N   = newMode.fftSize
         let hop = newMode.hopSize
 
-        // Update mode and derived properties
-        mode = newMode
+        mode    = newMode
         fftSize = N
         hopSize = hop
-        halfN = N / 2
+        halfN   = N / 2
         self.sampleRate = sampleRate
 
-        // Update FFT setup
-        log2n    = vDSP_Length(log2(Double(N)).rounded())
-        fftSetup = vDSP_create_fftsetup(log2n, FFTRadix(kFFTRadix2))!
+        // Destroy old FFT setup before replacing it to avoid a resource leak.
+        vDSP_destroy_fftsetup(fftSetup)
+        log2n = vDSP_Length(log2(Double(N)).rounded())
+        guard let newSetup = vDSP_create_fftsetup(log2n, FFTRadix(kFFTRadix2)) else {
+            fatalError("SpectralDenoiser: vDSP_create_fftsetup failed for log2n=\(log2n)")
+        }
+        fftSetup = newSetup
 
-        // Rebuild Hann window
+        // Rebuild Hann window.
         var hann = [Float](repeating: 0, count: N)
         for i in 0..<N {
             hann[i] = 0.5 * (1.0 - cos(2.0 * Float.pi * Float(i) / Float(N)))
         }
         hannWindow = hann
 
-        // Rebuild masking bias with new sample rate and FFT size
         rebuildMaskingBias()
 
-        // Reallocate buffers
+        // Reallocate all buffers.
+        // Ring buffer must be large enough for the worst-case HAL callback size.
+        let ringCapacity = max(N * 2, Int(AudioConstants.maxFrameCount) * 2)
         prevHop       = [Float](repeating: 0, count: hop)
         inputAccum    = [Float](repeating: 0, count: hop)
         outputOverlap = [Float](repeating: 0, count: N)
         workReal      = [Float](repeating: 0, count: N)
         workImag      = [Float](repeating: 0, count: N)
-        outRing       = [Float](repeating: 0, count: N * 2)
+        outRing       = [Float](repeating: 0, count: ringCapacity)
 
-        // Reallocate noise estimator buffers
         let initNoisePower: Float = 1e-12
         noisePowerHistory = [[Float]](
             repeating: [Float](repeating: initNoisePower, count: halfN + 1),
             count: Self.historyLength
         )
         noiseFloorEst = [Float](repeating: initNoisePower, count: halfN + 1)
-        captureAccum = [Double](repeating: 0.0, count: halfN + 1)
+        captureAccum  = [Double](repeating: 0.0, count: halfN + 1)
 
-        // Reset state
+        // Reset all processing state.
         reset()
+
+        // Re-enable process().
+        _reinitializing.store(0, ordering: .releasing)
     }
 
     // MARK: - Audio Thread
@@ -349,9 +378,9 @@ final class SpectralDenoiser: @unchecked Sendable {
         prevHop.withUnsafeMutableBufferPointer       { vDSP_vclr($0.baseAddress!, 1, vDSP_Length(hop)) }
         inputAccum.withUnsafeMutableBufferPointer    { vDSP_vclr($0.baseAddress!, 1, vDSP_Length(hop)) }
         outputOverlap.withUnsafeMutableBufferPointer { vDSP_vclr($0.baseAddress!, 1, vDSP_Length(N)) }
-        outRing.withUnsafeMutableBufferPointer       { vDSP_vclr($0.baseAddress!, 1, vDSP_Length(N * 2)) }
+        outRing.withUnsafeMutableBufferPointer       { vDSP_vclr($0.baseAddress!, 1, vDSP_Length(outRing.count)) }
         outWritePos = 0
-        outReadPos  = N * 2 - hop
+        outReadPos  = outRing.count - hop
         accumPos    = 0
         // Reset smoothed gains to 1.0 so the denoiser opens transparently after a reset.
         for i in 0..<prevGain.count { prevGain[i] = 1.0 }
@@ -366,6 +395,13 @@ final class SpectralDenoiser: @unchecked Sendable {
 
     @inline(__always)
     func process(buffer: UnsafeMutablePointer<Float>, count: Int) {
+        // Real-time safety: if setMode() is running on the main thread, return silence.
+        // This avoids a data race on fftSetup and all buffer pointers.
+        guard _reinitializing.load(ordering: .acquiring) == 0 else {
+            vDSP_vclr(buffer, 1, vDSP_Length(count))
+            return
+        }
+
         let N          = fftSize
         let hop        = hopSize
         let halfN      = self.halfN

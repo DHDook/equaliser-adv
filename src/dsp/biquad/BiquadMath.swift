@@ -87,23 +87,26 @@ enum BiquadMath {
         q: Double,
         gain: Double
     ) -> BiquadCoefficients {
+        // Clamp frequency strictly below Nyquist. At or above Nyquist, the bilinear
+        // transform produces degenerate or numerically unstable coefficients.
+        let clampedFrequency = min(frequency, sampleRate * 0.499)
         switch type {
         case .parametric:
-            return peakingEQ(sampleRate: sampleRate, frequency: frequency, q: q, gain: gain)
+            return peakingEQ(sampleRate: sampleRate, frequency: clampedFrequency, q: q, gain: gain)
         case .lowPass:
-            return lowPass(sampleRate: sampleRate, frequency: frequency, q: q)
+            return lowPass(sampleRate: sampleRate, frequency: clampedFrequency, q: q)
         case .highPass:
-            return highPass(sampleRate: sampleRate, frequency: frequency, q: q)
+            return highPass(sampleRate: sampleRate, frequency: clampedFrequency, q: q)
         case .lowShelf:
-            return lowShelf(sampleRate: sampleRate, frequency: frequency, gain: gain, q: q)
+            return lowShelf(sampleRate: sampleRate, frequency: clampedFrequency, gain: gain, q: q)
         case .highShelf:
-            return highShelf(sampleRate: sampleRate, frequency: frequency, gain: gain, q: q)
+            return highShelf(sampleRate: sampleRate, frequency: clampedFrequency, gain: gain, q: q)
         case .bandPass:
-            return bandPass(sampleRate: sampleRate, frequency: frequency, q: q)
+            return bandPass(sampleRate: sampleRate, frequency: clampedFrequency, q: q)
         case .notch:
-            return notch(sampleRate: sampleRate, frequency: frequency, q: q)
+            return notch(sampleRate: sampleRate, frequency: clampedFrequency, q: q)
         case .allPass:
-            return allPass(sampleRate: sampleRate, frequency: frequency, q: q)
+            return allPass(sampleRate: sampleRate, frequency: clampedFrequency, q: q)
         }
     }
 
@@ -139,21 +142,24 @@ enum BiquadMath {
         gain: Double,
         slope: FilterSlope
     ) -> [BiquadCoefficients] {
+        // Clamp frequency strictly below Nyquist. At or above Nyquist, the bilinear
+        // transform produces degenerate or numerically unstable coefficients.
+        let clampedFrequency = min(frequency, sampleRate * 0.499)
         switch type {
         case .lowPass:
-            return lowPassSections(sampleRate: sampleRate, frequency: frequency, q: q, slope: slope)
+            return lowPassSections(sampleRate: sampleRate, frequency: clampedFrequency, q: q, slope: slope)
         case .highPass:
-            return highPassSections(sampleRate: sampleRate, frequency: frequency, q: q, slope: slope)
+            return highPassSections(sampleRate: sampleRate, frequency: clampedFrequency, q: q, slope: slope)
         case .lowShelf:
-            return lowShelfSections(sampleRate: sampleRate, frequency: frequency, gain: gain, slope: slope)
+            return lowShelfSections(sampleRate: sampleRate, frequency: clampedFrequency, gain: gain, slope: slope)
         case .highShelf:
-            return highShelfSections(sampleRate: sampleRate, frequency: frequency, gain: gain, slope: slope)
+            return highShelfSections(sampleRate: sampleRate, frequency: clampedFrequency, gain: gain, slope: slope)
         case .allPass:
             // Allpass has no slope — return a single section
-            return [calculateCoefficients(type: type, sampleRate: sampleRate, frequency: frequency, q: q, gain: gain)]
+            return [calculateCoefficients(type: type, sampleRate: sampleRate, frequency: clampedFrequency, q: q, gain: gain)]
         default:
             // Slope is not applicable — return a single section
-            return [calculateCoefficients(type: type, sampleRate: sampleRate, frequency: frequency, q: q, gain: gain)]
+            return [calculateCoefficients(type: type, sampleRate: sampleRate, frequency: clampedFrequency, q: q, gain: gain)]
         }
     }
 
@@ -165,21 +171,24 @@ enum BiquadMath {
         q: Double,
         slope: FilterSlope
     ) -> [BiquadCoefficients] {
+        // Clamp frequency strictly below Nyquist. At or above Nyquist, the bilinear
+        // transform produces degenerate or numerically unstable coefficients.
+        let clampedFrequency = min(frequency, sampleRate * 0.499)
         switch slope {
         case .db6:
-            return [firstOrderLowPass(sampleRate: sampleRate, frequency: frequency)]
+            return [firstOrderLowPass(sampleRate: sampleRate, frequency: clampedFrequency)]
         case .db12:
-            return [lowPass(sampleRate: sampleRate, frequency: frequency, q: q)]
+            return [lowPass(sampleRate: sampleRate, frequency: clampedFrequency, q: q)]
         case .db18:
             // 3rd-order Butterworth: first-order stage + one biquad section (Q = 1.0).
             return [
-                firstOrderLowPass(sampleRate: sampleRate, frequency: frequency),
-                lowPass(sampleRate: sampleRate, frequency: frequency, q: 1.0)
+                firstOrderLowPass(sampleRate: sampleRate, frequency: clampedFrequency),
+                lowPass(sampleRate: sampleRate, frequency: clampedFrequency, q: 1.0)
             ]
         default:
             // All even-order slopes (db24 … db96): cascade Butterworth biquad sections.
             return slope.butterworthQValues.map { sectionQ in
-                lowPass(sampleRate: sampleRate, frequency: frequency, q: sectionQ)
+                lowPass(sampleRate: sampleRate, frequency: clampedFrequency, q: sectionQ)
             }
         }
     }
@@ -192,21 +201,24 @@ enum BiquadMath {
         q: Double,
         slope: FilterSlope
     ) -> [BiquadCoefficients] {
+        // Clamp frequency strictly below Nyquist. At or above Nyquist, the bilinear
+        // transform produces degenerate or numerically unstable coefficients.
+        let clampedFrequency = min(frequency, sampleRate * 0.499)
         switch slope {
         case .db6:
-            return [firstOrderHighPass(sampleRate: sampleRate, frequency: frequency)]
+            return [firstOrderHighPass(sampleRate: sampleRate, frequency: clampedFrequency)]
         case .db12:
-            return [highPass(sampleRate: sampleRate, frequency: frequency, q: q)]
+            return [highPass(sampleRate: sampleRate, frequency: clampedFrequency, q: q)]
         case .db18:
             // 3rd-order Butterworth: first-order stage + one biquad section (Q = 1.0).
             return [
-                firstOrderHighPass(sampleRate: sampleRate, frequency: frequency),
-                highPass(sampleRate: sampleRate, frequency: frequency, q: 1.0)
+                firstOrderHighPass(sampleRate: sampleRate, frequency: clampedFrequency),
+                highPass(sampleRate: sampleRate, frequency: clampedFrequency, q: 1.0)
             ]
         default:
             // All even-order slopes (db24 … db96): cascade Butterworth biquad sections.
             return slope.butterworthQValues.map { sectionQ in
-                highPass(sampleRate: sampleRate, frequency: frequency, q: sectionQ)
+                highPass(sampleRate: sampleRate, frequency: clampedFrequency, q: sectionQ)
             }
         }
     }
@@ -219,23 +231,26 @@ enum BiquadMath {
         gain: Double,
         slope: FilterSlope
     ) -> [BiquadCoefficients] {
+        // Clamp frequency strictly below Nyquist. At or above Nyquist, the bilinear
+        // transform produces degenerate or numerically unstable coefficients.
+        let clampedFrequency = min(frequency, sampleRate * 0.499)
         switch slope {
         case .db6:
-            return [firstOrderLowShelf(sampleRate: sampleRate, frequency: frequency, gain: gain)]
+            return [firstOrderLowShelf(sampleRate: sampleRate, frequency: clampedFrequency, gain: gain)]
         case .db12:
-            return [lowShelf(sampleRate: sampleRate, frequency: frequency, gain: gain, q: 0.7071067811865476)]
+            return [lowShelf(sampleRate: sampleRate, frequency: clampedFrequency, gain: gain, q: 0.7071067811865476)]
         case .db18:
             // 3rd-order: split gain equally across first-order stage + one biquad section (Q = 1.0).
             let perSectionGain = gain / Double(slope.sectionCount)
             return [
-                firstOrderLowShelf(sampleRate: sampleRate, frequency: frequency, gain: perSectionGain),
-                lowShelf(sampleRate: sampleRate, frequency: frequency, gain: perSectionGain, q: 1.0)
+                firstOrderLowShelf(sampleRate: sampleRate, frequency: clampedFrequency, gain: perSectionGain),
+                lowShelf(sampleRate: sampleRate, frequency: clampedFrequency, gain: perSectionGain, q: 1.0)
             ]
         default:
             // All even-order slopes (db24 … db96): split gain equally across all sections.
             let perSectionGain = gain / Double(slope.sectionCount)
             return (0..<slope.sectionCount).map { _ in
-                lowShelf(sampleRate: sampleRate, frequency: frequency, gain: perSectionGain, q: 0.7071067811865476)
+                lowShelf(sampleRate: sampleRate, frequency: clampedFrequency, gain: perSectionGain, q: 0.7071067811865476)
             }
         }
     }
@@ -248,23 +263,26 @@ enum BiquadMath {
         gain: Double,
         slope: FilterSlope
     ) -> [BiquadCoefficients] {
+        // Clamp frequency strictly below Nyquist. At or above Nyquist, the bilinear
+        // transform produces degenerate or numerically unstable coefficients.
+        let clampedFrequency = min(frequency, sampleRate * 0.499)
         switch slope {
         case .db6:
-            return [firstOrderHighShelf(sampleRate: sampleRate, frequency: frequency, gain: gain)]
+            return [firstOrderHighShelf(sampleRate: sampleRate, frequency: clampedFrequency, gain: gain)]
         case .db12:
-            return [highShelf(sampleRate: sampleRate, frequency: frequency, gain: gain, q: 0.7071067811865476)]
+            return [highShelf(sampleRate: sampleRate, frequency: clampedFrequency, gain: gain, q: 0.7071067811865476)]
         case .db18:
             // 3rd-order: split gain equally across first-order stage + one biquad section (Q = 1.0).
             let perSectionGain = gain / Double(slope.sectionCount)
             return [
-                firstOrderHighShelf(sampleRate: sampleRate, frequency: frequency, gain: perSectionGain),
-                highShelf(sampleRate: sampleRate, frequency: frequency, gain: perSectionGain, q: 1.0)
+                firstOrderHighShelf(sampleRate: sampleRate, frequency: clampedFrequency, gain: perSectionGain),
+                highShelf(sampleRate: sampleRate, frequency: clampedFrequency, gain: perSectionGain, q: 1.0)
             ]
         default:
             // All even-order slopes (db24 … db96): split gain equally across all sections.
             let perSectionGain = gain / Double(slope.sectionCount)
             return (0..<slope.sectionCount).map { _ in
-                highShelf(sampleRate: sampleRate, frequency: frequency, gain: perSectionGain, q: 0.7071067811865476)
+                highShelf(sampleRate: sampleRate, frequency: clampedFrequency, gain: perSectionGain, q: 0.7071067811865476)
             }
         }
     }

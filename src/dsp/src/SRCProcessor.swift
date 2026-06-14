@@ -64,6 +64,15 @@ final class SRCProcessor {
             proto[n] = sinc * win
         }
 
+        // Normalise prototype so the passband gain is unity.
+        // Without normalisation, the polyphase subfilter sum is approximately
+        // cutoffNorm * 2 * phases * tapsPerPhase * (Kaiser window average) ≠ 1.
+        let protoSum = proto.reduce(0.0, +)
+        if protoSum > 0 {
+            let normFactor = Double(Self.phases) / protoSum  // target: sum = phases (for upsampling gain)
+            for i in 0..<proto.count { proto[i] *= Float(normFactor) }
+        }
+
         // Build polyphase bank: coeffs[phase][tap].
         var bank = [[Float]](repeating: [Float](repeating: 0, count: Self.tapsPerPhase),
                              count: Self.phases)

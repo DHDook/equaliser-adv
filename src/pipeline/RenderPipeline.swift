@@ -1063,7 +1063,10 @@ final class RenderPipeline {
             let remaining = sweepBuf.count - sweepPos
             let toCopy = min(workFrames, remaining)
 
+            // Mix sweep into left and right channels only.
+            // Broadcasting to surround channels would excite non-stereo outputs incorrectly.
             for (index, buffer) in abl.enumerated() {
+                guard index < 2 else { break }   // stereo only
                 if let destData = buffer.mData?.assumingMemoryBound(to: Float.self) {
                     for i in 0..<toCopy {
                         destData[i] = destData[i] + sweepBuf[sweepPos + i]
@@ -1084,7 +1087,7 @@ final class RenderPipeline {
             let targetOutputGain = context.getTargetOutputGain()
             context.applyGain(
                 to: ioData,
-                frameCount: frameCount,
+                frameCount: UInt32(workFrames),
                 currentGain: &context.outputGainLinear,
                 targetGain: targetOutputGain
             )
@@ -1092,13 +1095,18 @@ final class RenderPipeline {
 
         // 4.5. Apply dynamics processing (soft clipper → brickwall limiter) after output gain.
         // Only active in normal processing modes (not full system bypass).
+        // Use workFrames (post-SRC count in output sample rate) for all processing
+        // that operates on ioData. Using the HAL's frameCount here would process
+        // one sample too many or too few whenever the SRC ratio is irrational.
+        let outputFrames = UInt32(workFrames)
+
         if context.processingMode != 0 {
-            context.processDynamics(bufferList: ioData, frameCount: frameCount)
+            context.processDynamics(bufferList: ioData, frameCount: outputFrames)
         }
 
         // 5. Update output meters with rendered audio
-        context.updateOutputMeters(from: ioData, frameCount: frameCount)
-        context.writeRTAOutput(from: ioData, frameCount: Int(frameCount))
+        context.updateOutputMeters(from: ioData, frameCount: outputFrames)
+        context.writeRTAOutput(from: ioData, frameCount: Int(outputFrames))
 
         return noErr
     }

@@ -154,9 +154,9 @@ final class EQChain {
             let pending = pendingCoefficients[i]
             if pending != activeCoefficients[i] {
                 activeCoefficients[i] = pending
-                filters[i].setCoefficients(pending, resetState: fullReset)
+                filters[i].stageCoefficients(pending, resetState: fullReset)
             } else if fullReset {
-                filters[i].setCoefficients(pending, resetState: true)
+                filters[i].stageCoefficients(pending, resetState: true)
             }
         }
     }
@@ -168,6 +168,10 @@ final class EQChain {
     ///   - frameCount: Number of frames to process.
     @inline(__always)
     func process(buffer: UnsafeMutablePointer<Float>, frameCount: UInt32) {
+        // Apply any pending coefficient updates (no allocation — pointer swap only).
+        for i in 0..<activeBandCount {
+            filters[i].applyPendingSetup()
+        }
         if layerBypass { return }
         if activeBandCount == 0 { return }
 

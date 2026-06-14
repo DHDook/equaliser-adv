@@ -20,6 +20,10 @@ final class LinearPhaseEQEngine: @unchecked Sendable {
     private var pendingImag:  UnsafeMutablePointer<Float>
     private var pendingRealR: UnsafeMutablePointer<Float>
     private var pendingImagR: UnsafeMutablePointer<Float>
+    private var nextPendingReal:  UnsafeMutablePointer<Float>
+    private var nextPendingImag:  UnsafeMutablePointer<Float>
+    private var nextPendingRealR: UnsafeMutablePointer<Float>
+    private var nextPendingImagR: UnsafeMutablePointer<Float>
     private let hasPendingIR = ManagedAtomic<Bool>(false)
 
     nonisolated(unsafe) private var overlapL: UnsafeMutablePointer<Float>
@@ -30,6 +34,10 @@ final class LinearPhaseEQEngine: @unchecked Sendable {
     nonisolated(unsafe) private var accumR: UnsafeMutablePointer<Float>
     nonisolated(unsafe) private var accumPosL: Int = 0
     nonisolated(unsafe) private var accumPosR: Int = 0
+
+    /// Contiguous time-domain output buffer. Sized to fftSize.
+    /// Filled by vDSP_ztoc after IFFT to unpack the split-complex result.
+    private var outputBuf: UnsafeMutablePointer<Float>
 
     private var halfN: Int
 
@@ -49,6 +57,10 @@ final class LinearPhaseEQEngine: @unchecked Sendable {
         pendingImag  = Self.alloc(fftSize)
         pendingRealR = Self.alloc(fftSize)
         pendingImagR = Self.alloc(fftSize)
+        nextPendingReal  = Self.alloc(fftSize)
+        nextPendingImag  = Self.alloc(fftSize)
+        nextPendingRealR = Self.alloc(fftSize)
+        nextPendingImagR = Self.alloc(fftSize)
 
         overlapL = Self.alloc(hopSize)
         overlapR = Self.alloc(hopSize)
@@ -56,6 +68,7 @@ final class LinearPhaseEQEngine: @unchecked Sendable {
         fftWorkImag = Self.alloc(fftSize)
         accumL = Self.alloc(fftSize)
         accumR = Self.alloc(fftSize)
+        outputBuf = Self.alloc(fftSize)
 
         activeReal[0] = 1.0
         activeRealR[0] = 1.0
@@ -67,14 +80,21 @@ final class LinearPhaseEQEngine: @unchecked Sendable {
         if let s = fftSetup { vDSP_destroy_fftsetup(s) }
         [activeReal, activeImag, activeRealR, activeImagR,
          pendingReal, pendingImag, pendingRealR, pendingImagR,
+         nextPendingReal, nextPendingImag, nextPendingRealR, nextPendingImagR,
          overlapL, overlapR, fftWorkReal, fftWorkImag,
-         accumL, accumR].forEach { Self.free($0) }
+         accumL, accumR, outputBuf].forEach { Self.free($0) }
     }
 
     func updateIR(leftBands:  [EQBandConfiguration],
                   rightBands: [EQBandConfiguration],
                   sampleRate: Double) {
-        let newFFTSize = sampleRate > 96_000 ? 8192 : 4096
+        let newFFTSize: Int
+        switch sampleRate {
+        case ..<= 48_000:  newFFTSize = 4096
+        case ..<= 96_000:  newFFTSize = 8192
+        case ..<= 192_000: newFFTSize = 16384
+        default:           newFFTSize = 32768   // 384 kHz: ~85 ms, ~11.7 Hz/bin
+        }
         if newFFTSize != fftSize {
             fftSize = newFFTSize
             hopSize = fftSize / 2
@@ -84,12 +104,16 @@ final class LinearPhaseEQEngine: @unchecked Sendable {
             fftSetup = vDSP_create_fftsetup(log2n, FFTRadix(kFFTRadix2))
             [activeReal, activeImag, activeRealR, activeImagR,
              pendingReal, pendingImag, pendingRealR, pendingImagR,
+             nextPendingReal, nextPendingImag, nextPendingRealR, nextPendingImagR,
              fftWorkReal, fftWorkImag].forEach { Self.free($0) }
             activeReal   = Self.alloc(fftSize); activeImag   = Self.alloc(fftSize)
             activeRealR  = Self.alloc(fftSize); activeImagR  = Self.alloc(fftSize)
             pendingReal  = Self.alloc(fftSize); pendingImag  = Self.alloc(fftSize)
             pendingRealR = Self.alloc(fftSize); pendingImagR = Self.alloc(fftSize)
+            nextPendingReal  = Self.alloc(fftSize); nextPendingImag  = Self.alloc(fftSize)
+            nextPendingRealR = Self.alloc(fftSize); nextPendingImagR = Self.alloc(fftSize)
             fftWorkReal  = Self.alloc(fftSize); fftWorkImag  = Self.alloc(fftSize)
+            Self.free(outputBuf); outputBuf = Self.alloc(fftSize)
             Self.free(overlapL); overlapL = Self.alloc(hopSize)
             Self.free(overlapR); overlapR = Self.alloc(hopSize)
             Self.free(accumL);   accumL   = Self.alloc(fftSize)
@@ -97,9 +121,9 @@ final class LinearPhaseEQEngine: @unchecked Sendable {
             accumPosL = 0; accumPosR = 0
         }
         computeIRSpectrum(bands: leftBands,  sampleRate: sampleRate,
-                          outReal: pendingReal, outImag: pendingImag)
+                          outReal: nextPendingReal, outImag: nextPendingImag)
         computeIRSpectrum(bands: rightBands, sampleRate: sampleRate,
-                          outReal: pendingRealR, outImag: pendingImagR)
+                          outReal: nextPendingRealR, outImag: nextPendingImagR)
         hasPendingIR.store(true, ordering: .releasing)
     }
 
@@ -108,6 +132,12 @@ final class LinearPhaseEQEngine: @unchecked Sendable {
                  bufR: UnsafeMutablePointer<Float>?,
                  frameCount: Int) {
         if hasPendingIR.load(ordering: .acquiring) {
+            // First swap: nextPending → pending (main thread → audio thread handoff)
+            swap(&nextPendingReal,  &pendingReal)
+            swap(&nextPendingImag,  &pendingImag)
+            swap(&nextPendingRealR, &pendingRealR)
+            swap(&nextPendingImagR, &pendingImagR)
+            // Second swap: pending → active (audio thread internal swap)
             swap(&activeReal,  &pendingReal)
             swap(&activeImag,  &pendingImag)
             swap(&activeRealR, &pendingRealR)
@@ -143,6 +173,8 @@ final class LinearPhaseEQEngine: @unchecked Sendable {
         specReal: UnsafePointer<Float>, specImag: UnsafePointer<Float>,
         frameCount: Int
     ) {
+        assert(hopSize >= frameCount,
+            "LinearPhaseEQEngine: frameCount \(frameCount) exceeds hopSize \(hopSize). Increase FFT size.")
         guard let setup = fftSetup else {
             if src != dst { memcpy(dst, src, frameCount * 4) }
             return
@@ -173,15 +205,27 @@ final class LinearPhaseEQEngine: @unchecked Sendable {
 
                 vDSP_fft_zrip(setup, &sc, 1, log2n, Int32(FFT_INVERSE))
 
-                var scale = Float(1.0 / Float(fftSize))
-                vDSP_vsmul(fftWorkReal, 1, &scale, fftWorkReal, 1, vDSP_Length(fftSize))
+                // After vDSP_fft_zrip inverse, the N real time-domain samples are packed
+                // into the split-complex pair as N/2 interleaved complex values:
+                //   fftWorkReal[k] = x[2k],  fftWorkImag[k] = x[2k+1]
+                // Use vDSP_ztoc to unpack into a contiguous array of N real samples.
+                outputBuf.withMemoryRebound(to: DSPComplex.self, capacity: halfN) { cBuf in
+                    vDSP_ztoc(&sc, 1, cBuf, 2, vDSP_Length(halfN))
+                }
 
+                // Normalise. For overlap-save, scale is 1/N (round-trip vDSP scale = N).
+                var scale = Float(1.0 / Float(fftSize))
+                vDSP_vsmul(outputBuf, 1, &scale, outputBuf, 1, vDSP_Length(fftSize))
+
+                // The valid (alias-free) output is the SECOND half of the IFFT result,
+                // indices [hopSize .. fftSize-1].
                 let outSamples = min(hopSize, frameCount - dstPos)
                 memcpy(dst.advanced(by: dstPos),
-                       fftWorkReal.advanced(by: hopSize),
+                       outputBuf.advanced(by: hopSize),
                        outSamples * MemoryLayout<Float>.size)
                 dstPos += outSamples
 
+                // Save second half of INPUT as the overlap for the next frame (overlap-save).
                 memcpy(overlap, accum.advanced(by: hopSize), hopSize * MemoryLayout<Float>.size)
                 accumPos = 0
             }

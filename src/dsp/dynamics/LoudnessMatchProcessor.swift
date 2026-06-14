@@ -230,7 +230,6 @@ final class LoudnessMatchProcessor: @unchecked Sendable {
         let hs_A  = pow(10.0, hs_dBgain / 40.0)
         let hs_w0 = 2.0 * Double.pi * hs_f0 / sampleRate
         let hs_sinW = sin(hs_w0); let hs_cosW = cos(hs_w0)
-        let hs_alpha = hs_sinW / 2.0 * sqrt((hs_A + 1.0 / hs_A) * (1.0 - 1.0) + 2.0) // S=1
         // For S=1: alpha = sin(w0)/2 * sqrt(A + 1/A)
         let hs_alphaS1 = hs_sinW / 2.0 * sqrt(hs_A + 1.0 / hs_A)
         let hs_sqrtA   = sqrt(hs_A)

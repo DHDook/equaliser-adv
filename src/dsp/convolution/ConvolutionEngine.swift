@@ -41,12 +41,16 @@ final class ConvolutionEngine {
     // Output ring buffer (partitionSize * 2 samples)
     nonisolated(unsafe) private var outputRingL: [Float]
     nonisolated(unsafe) private var outputRingR: [Float]
-    nonisolated(unsafe) private var outputRingWritePos: Int = 0
+    nonisolated(unsafe) private var outputRingWritePosL: Int = 0
+    nonisolated(unsafe) private var outputRingWritePosR: Int = 0
     nonisolated(unsafe) private var outputRingReadPos: Int = 0
     
     // Scratch buffers for FFT/IFFT (N-point)
     nonisolated(unsafe) private var fftReal: [Float]
     nonisolated(unsafe) private var fftImag: [Float]
+
+    /// Contiguous N-point time-domain buffer filled by vDSP_ztoc after each IFFT.
+    nonisolated(unsafe) private var timeDomainBuf: [Float]
     
     // MARK: - Pending IR swap (main-thread → audio-thread)
     private let _pendingIRSwap: ManagedAtomic<Bool>
@@ -59,15 +63,20 @@ final class ConvolutionEngine {
     
     init() {
         fftSetup = vDSP_create_fftsetup(Self.log2n, FFTRadix(kFFTRadix2))!
-        
+
         currentPartitionL = [Float](repeating: 0, count: Self.partitionSize)
         currentPartitionR = [Float](repeating: 0, count: Self.partitionSize)
-        outputRingL = [Float](repeating: 0, count: Self.partitionSize * 2)
-        outputRingR = [Float](repeating: 0, count: Self.partitionSize * 2)
-        outputRingWritePos = 0
+        // Ring must hold at least maxFrameCount samples to avoid the read pointer
+        // lapping the write pointer on large HAL callbacks.
+        let ringCap = max(Self.partitionSize * 2, Int(AudioConstants.maxFrameCount) * 2)
+        outputRingL = [Float](repeating: 0, count: ringCap)
+        outputRingR = [Float](repeating: 0, count: ringCap)
+        outputRingWritePosL = 0
+        outputRingWritePosR = 0
         outputRingReadPos = 0
         fftReal = [Float](repeating: 0, count: Self.fftSize)
         fftImag = [Float](repeating: 0, count: Self.fftSize)
+        timeDomainBuf = [Float](repeating: 0, count: Self.fftSize)
         
         _pendingIRSwap = ManagedAtomic(false)
         _enabled = ManagedAtomic(0)
@@ -192,7 +201,7 @@ final class ConvolutionEngine {
         }
         
         // Drain exactly frameCount samples from ring buffer to output
-        let ringSize = Self.partitionSize * 2
+        let ringSize = outputRingL.count   // dynamic, not partitionSize * 2
         for i in 0..<frameCount {
             let readIdx = (outputRingReadPos + i) % ringSize
             bufL[i] = outputRingL[readIdx]
@@ -349,26 +358,38 @@ final class ConvolutionEngine {
             }
         }
         
-        // IFFT
+        // IFFT — result is packed as N/2 complex pairs in fftReal/fftImag.
         fftReal.withUnsafeMutableBufferPointer { rp in
             fftImag.withUnsafeMutableBufferPointer { ip in
                 var sc = DSPSplitComplex(realp: rp.baseAddress!, imagp: ip.baseAddress!)
                 vDSP_fft_zrip(fftSetup, &sc, 1, Self.log2n, Int32(FFT_INVERSE))
-                
-                // Normalize
-                var scale: Float = 1.0 / Float(2 * N)
-                vDSP_vsmul(rp.baseAddress!, 1, &scale, rp.baseAddress!, 1, vDSP_Length(halfN))
-                vDSP_vsmul(ip.baseAddress!, 1, &scale, ip.baseAddress!, 1, vDSP_Length(halfN))
             }
         }
-        
-        // Add first B samples to output ring buffer (left channel)
-        let ringSize = Self.partitionSize * 2
-        for i in 0..<Self.partitionSize {
-            let writeIdx = (outputRingWritePos + i) % ringSize
-            outputRingL[writeIdx] += fftReal[i]
+
+        // Unpack split-complex → contiguous N real time-domain samples.
+        timeDomainBuf.withUnsafeMutableBufferPointer { tdp in
+            fftReal.withUnsafeMutableBufferPointer { rp in
+                fftImag.withUnsafeMutableBufferPointer { ip in
+                    var sc = DSPSplitComplex(realp: rp.baseAddress!, imagp: ip.baseAddress!)
+                    tdp.baseAddress!.withMemoryRebound(to: DSPComplex.self, capacity: halfN) { cBuf in
+                        vDSP_ztoc(&sc, 1, cBuf, 2, vDSP_Length(halfN))
+                    }
+                }
+            }
         }
-        outputRingWritePos = (outputRingWritePos + Self.partitionSize) % ringSize
+
+        // Normalise: forward FFT of input (×2) × forward FFT of IR (×2) × inverse FFT (×N/2) = 2N.
+        var scale: Float = 1.0 / Float(2 * N)
+        vDSP_vsmul(&timeDomainBuf, 1, &scale, &timeDomainBuf, 1, vDSP_Length(N))
+
+        // OLA: add the SECOND B samples (alias-free region) to the output ring.
+        let ringSize = outputRingL.count
+        let B = Self.partitionSize
+        for i in 0..<B {
+            let writeIdx = (outputRingWritePosL + i) % ringSize
+            outputRingL[writeIdx] += timeDomainBuf[B + i]
+        }
+        outputRingWritePosL = (outputRingWritePosL + B) % ringSize
         
         // Process right channel if needed
         if let bufR = bufR {
@@ -390,17 +411,26 @@ final class ConvolutionEngine {
                 fftImag.withUnsafeMutableBufferPointer { ip in
                     var sc = DSPSplitComplex(realp: rp.baseAddress!, imagp: ip.baseAddress!)
                     vDSP_fft_zrip(fftSetup, &sc, 1, Self.log2n, Int32(FFT_INVERSE))
-                    var scale: Float = 1.0 / Float(2 * N)
-                    vDSP_vsmul(rp.baseAddress!, 1, &scale, rp.baseAddress!, 1, vDSP_Length(halfN))
-                    vDSP_vsmul(ip.baseAddress!, 1, &scale, ip.baseAddress!, 1, vDSP_Length(halfN))
                 }
             }
-            
-            for i in 0..<Self.partitionSize {
-                let writeIdx = (outputRingWritePos + i) % ringSize
-                outputRingR[writeIdx] += fftReal[i]
+
+            // Unpack and normalise right channel.
+            timeDomainBuf.withUnsafeMutableBufferPointer { tdp in
+                fftReal.withUnsafeMutableBufferPointer { rp in
+                    fftImag.withUnsafeMutableBufferPointer { ip in
+                        var sc = DSPSplitComplex(realp: rp.baseAddress!, imagp: ip.baseAddress!)
+                        tdp.baseAddress!.withMemoryRebound(to: DSPComplex.self, capacity: halfN) { cBuf in
+                            vDSP_ztoc(&sc, 1, cBuf, 2, vDSP_Length(halfN))
+                        }
+                    }
+                }
             }
-            outputRingWritePos = (outputRingWritePos + Self.partitionSize) % ringSize
+            vDSP_vsmul(&timeDomainBuf, 1, &scale, &timeDomainBuf, 1, vDSP_Length(N))
+            for i in 0..<B {
+                let writeIdx = (outputRingWritePosR + i) % ringSize
+                outputRingR[writeIdx] += timeDomainBuf[B + i]
+            }
+            outputRingWritePosR = (outputRingWritePosR + B) % ringSize
         }
     }
 }

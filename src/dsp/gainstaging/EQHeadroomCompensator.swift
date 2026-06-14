@@ -23,57 +23,33 @@ enum EQHeadroomCompensator {
         targetCurve: [(frequency: Double, gainDB: Double)],
         lowBandGainDB: Float
     ) -> Float {
-        // Compute magnitude response for each layer across audible band
         let frequencies = generateFrequencyBins()
-        var totalBoostDB: [Float] = Array(repeating: 0.0, count: frequencies.count)
+        var worstCaseBoostDB: Float = 0.0
 
-        // Add EQ layer contribution
         for (i, freq) in frequencies.enumerated() {
-            let gain = computeLayerGain(at: Float(freq), bands: eqLayer)
-            totalBoostDB[i] += gain
-        }
-
-        // Add room correction layer contribution
-        for (i, freq) in frequencies.enumerated() {
-            let gain = computeLayerGain(at: Float(freq), bands: roomCorrectionLayer)
-            totalBoostDB[i] += gain
-        }
-
-        // Add target curve contribution
-        for (i, freq) in frequencies.enumerated() {
-            let gain = interpolateTargetCurve(at: freq, curve: targetCurve)
-            totalBoostDB[i] += Float(gain)
-        }
-
-        // Add low band gain from bass management (affects low frequencies)
-        for (i, freq) in frequencies.enumerated() {
+            // Accumulate as linear gain (multiply, not add dB) for accuracy.
+            var linearGain: Double = 1.0
+            linearGain *= pow(10.0, Double(computeLayerGain(at: Float(freq), bands: eqLayer)) / 20.0)
+            linearGain *= pow(10.0, Double(computeLayerGain(at: Float(freq), bands: roomCorrectionLayer)) / 20.0)
+            linearGain *= pow(10.0, Double(interpolateTargetCurve(at: freq, curve: targetCurve)) / 20.0)
             if freq < 300.0 {
-                totalBoostDB[i] += lowBandGainDB
+                linearGain *= pow(10.0, Double(lowBandGainDB) / 20.0)
             }
+            let binBoostDB = Float(20.0 * log10(max(linearGain, 1e-10)))
+            if binBoostDB > worstCaseBoostDB { worstCaseBoostDB = binBoostDB }
         }
 
-        // Find worst-case boost (maximum across all frequency bins)
-        let worstCaseBoostDB = totalBoostDB.max() ?? 0.0
-
-        // Static preamp is the negative of the worst-case boost (never positive)
-        let staticPreampDB = -max(0.0, worstCaseBoostDB)
-
-        return staticPreampDB
+        return -max(0.0, worstCaseBoostDB)
     }
 
-    /// Generates frequency bins for analysis (20 Hz - 20 kHz, log-spaced).
-    private static func generateFrequencyBins() -> [Double] {
-        var frequencies: [Double] = []
+    /// Generates frequency bins for analysis (20 Hz - 96 kHz, log-spaced).
+    private static func generateFrequencyBins(maxHz: Double = 96_000.0) -> [Double] {
         let minFreq = 20.0
-        let maxFreq = 20000.0
-        let bins = 100  // Number of frequency bins
-
-        for i in 0..<bins {
-            let logFreq = log10(minFreq) + Double(i) / Double(bins - 1) * (log10(maxFreq) - log10(minFreq))
-            frequencies.append(pow(10.0, logFreq))
+        let maxFreq = maxHz
+        let bins    = 200  // More bins for better resolution above 20 kHz
+        return (0..<bins).map { i in
+            pow(10.0, log10(minFreq) + Double(i) / Double(bins - 1) * log10(maxFreq / minFreq))
         }
-
-        return frequencies
     }
 
     /// Computes the gain of a filter layer at a specific frequency.
