@@ -11,14 +11,20 @@ struct ChannelEQState: Codable, Sendable {
 
     /// Convenience: the primary user EQ layer (always index 0).
     var userEQ: EQLayerState {
-        get { layers[0] }
-        set { layers[0] = newValue }
+        get { layers.indices.contains(0) ? layers[0] : .userEQ(bandCount: EQConfiguration.defaultBandCount) }
+        set {
+            while layers.count <= 0 { layers.append(.userEQ(bandCount: EQConfiguration.defaultBandCount)) }
+            layers[0] = newValue
+        }
     }
 
     /// Convenience: the room correction layer (index 1).
     var roomCorrection: EQLayerState {
-        get { layers[1] }
-        set { layers[1] = newValue }
+        get { layers.indices.contains(1) ? layers[1] : .passthrough(label: "Room Correction") }
+        set {
+            while layers.count <= 1 { layers.append(.passthrough(label: "Room Correction")) }
+            layers[1] = newValue
+        }
     }
 
     /// Creates a default channel state with the specified number of bands.

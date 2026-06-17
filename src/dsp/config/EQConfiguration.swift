@@ -185,8 +185,8 @@ final class EQConfiguration: ObservableObject {
     // MARK: - Initialization
 
     init(initialBandCount: Int = EQConfiguration.defaultBandCount) {
-        leftState = ChannelEQState(layers: [.userEQ(bandCount: initialBandCount)])
-        rightState = ChannelEQState(layers: [.userEQ(bandCount: initialBandCount)])
+        leftState = ChannelEQState.default(bandCount: initialBandCount)
+        rightState = ChannelEQState.default(bandCount: initialBandCount)
         activeBandCount = EQConfiguration.clampBandCount(initialBandCount)
     }
 
