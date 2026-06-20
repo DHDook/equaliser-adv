@@ -1,15 +1,15 @@
 # <img src="./resources/AppIcon.svg" width="36" align="center"> Equaliser
 
-**Equaliser** (🇬🇧) is a system-wide audio equalizer (🇺🇸) for macOS.
+**Notch Sixty** started as a fork of Equaliser, and eventually evolved into a full DSP and Active Crossover engine. 
 
 It lets you shape the sound of everything playing on your Mac — Spotify, YouTube, films, games, or any other app.
 
-Equaliser runs quietly in your **menu bar**, keeping your Dock uncluttered.
+Notch Sixty runs quietly in your **menu bar**, keeping your Dock uncluttered.
 
 
 ## Menu Bar Control
 
-Equaliser lives in the macOS menu bar, where you can quickly enable or disable system EQ, and access presets.
+Notch Sixty lives in the macOS menu bar, where you can quickly enable or disable system EQ, and access presets.
 
 <p align="center">
   <img src="./docs/user/images/equalisaer-menu-bar.png" alt="Equaliser Menu Bar" width="320">
