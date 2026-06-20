@@ -68,7 +68,7 @@ jobs:
         run: |
           create-dmg \
             --volname "Equaliser Advanced" \
-            --filesystem APFS
+            --filesystem APFS \
             --app-drop-link 140 120 \
             --icon "Equaliser Advanced.app" 420 120 \
             --window-size 560 400 \
