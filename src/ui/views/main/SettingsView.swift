@@ -8,6 +8,7 @@ enum SettingsTab: String {
     case driver = "driver"
     case userGuide = "userGuide"
     case roomCalibration = "roomCalibration"
+    case outputMatrix = "outputMatrix"
 }
 
 struct SettingsView: View {
@@ -29,7 +30,7 @@ struct SettingsView: View {
                     Label("Display", systemImage: "paintbrush")
                 }
                 .tag(SettingsTab.display)
-            
+
             DriverSettingsTab()
                 .tabItem {
                     Label("Driver", systemImage: "speaker.wave.3")
@@ -47,8 +48,14 @@ struct SettingsView: View {
                     Label("Room Cal.", systemImage: "waveform.path.ecg.rectangle")
                 }
                 .tag(SettingsTab.roomCalibration)
+
+            OutputChannelMatrixView(store: store, meterStore: store.meterStore)
+                .tabItem {
+                    Label("Crossover", systemImage: "speaker.wave.3.fill")
+                }
+                .tag(SettingsTab.outputMatrix)
         }
-        .frame(width: 700, height: 540)
+        .frame(width: 760, height: 640)
         .onAppear {
             // Auto-select Driver tab if update required
             if let initialTab = initialTab {
