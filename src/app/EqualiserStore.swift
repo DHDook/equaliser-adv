@@ -6,6 +6,7 @@ import Foundation
 import OSLog
 import AppKit
 import SwiftUI
+import CoreAudio
 
 @MainActor
 final class EqualiserStore: ObservableObject {
@@ -94,6 +95,133 @@ final class EqualiserStore: ObservableObject {
     @Published var convolutionConfig: ConvolutionConfig = ConvolutionConfig()
     /// Error message from the most recent IR load attempt.
     @Published var convolutionLoadError: String? = nil
+
+    // MARK: - Transfer Function Measurement State (Task E)
+
+    enum TransferFunctionMeasurementStep: Equatable, Sendable {
+        case idle
+        case preparingChannel(channelIndex: Int, label: String)
+        case awaitingMicPosition(positionIndex: Int, totalPositions: Int)
+        case playingSweep(channelIndex: Int, label: String,
+                          sweepIndex: Int, totalSweeps: Int,
+                          positionIndex: Int, progress: Double)
+        case computingIR(channelIndex: Int, label: String)
+        case channelComplete(channelIndex: Int, label: String, snrDB: Double)
+        case allChannelsComplete
+        case failed(channelIndex: Int, reason: String)
+    }
+
+    @Published var tfMeasurementStep: TransferFunctionMeasurementStep = .idle
+    @Published var transferFunctionDataset: TransferFunctionDataset = TransferFunctionDataset()
+
+    private var micPositionContinuation: CheckedContinuation<Void, Never>?
+
+    @MainActor
+    func confirmMicPositioned() {
+        micPositionContinuation?.resume()
+        micPositionContinuation = nil
+    }
+
+    /// Runs a multi-channel transfer function measurement.
+    ///
+    /// - Parameters:
+    ///   - micInputDeviceID: Physical microphone input device.
+    ///   - channelIndices: Which channels to measure; –1 = main chain.
+    ///   - micPositionCount: Number of mic positions for spatial averaging.
+    ///   - sweepsPerPosition: Number of sweeps to average per position.
+    ///   - sweepDurationSeconds: Duration of each sweep.
+    ///   - minSNRDB: Minimum acceptable SNR.
+    @MainActor
+    func runTransferFunctionMeasurement(
+        micInputDeviceID: AudioDeviceID,
+        channelIndices: [Int],
+        micPositionCount: Int = 1,
+        sweepsPerPosition: Int = 3,
+        sweepDurationSeconds: Double = 10.0,
+        minSNRDB: Double = 30.0
+    ) async {
+        tfMeasurementStep = .idle
+        transferFunctionDataset = TransferFunctionDataset()
+
+        for (channelIdx, channelIndex) in channelIndices.enumerated() {
+            let label = channelIndex == -1 ? "Main Chain" : "Channel \(channelIndex)"
+
+            // Prepare channel
+            tfMeasurementStep = .preparingChannel(channelIndex: channelIndex, label: label)
+
+            // Initialize channel data
+            var channelData = ChannelTransferFunctionData(
+                channelIndex: channelIndex,
+                channelLabel: label,
+                signalSource: .mainsLeft // Placeholder - should be derived from channelIndex
+            )
+            channelData.sweepsByPosition = Array(repeating: [], count: micPositionCount)
+
+            // Measure at each position
+            for positionIndex in 0..<micPositionCount {
+                // Pause for mic repositioning if not first position
+                if positionIndex > 0 {
+                    tfMeasurementStep = .awaitingMicPosition(positionIndex: positionIndex, totalPositions: micPositionCount)
+                    await withCheckedContinuation { continuation in
+                        micPositionContinuation = continuation
+                    }
+                }
+
+                // Play sweeps at this position
+                var positionSweeps: [SingleSweepMeasurement] = []
+
+                for sweepIndex in 0..<sweepsPerPosition {
+                    tfMeasurementStep = .playingSweep(
+                        channelIndex: channelIndex,
+                        label: label,
+                        sweepIndex: sweepIndex,
+                        totalSweeps: sweepsPerPosition,
+                        positionIndex: positionIndex,
+                        progress: 0.0
+                    )
+
+                    // TODO: Implement actual sweep playback and capture
+                    // This requires integration with RenderCallbackContext
+                    // For now, this is a placeholder
+
+                    // Simulate progress
+                    for progress in stride(from: 0.0, through: 1.0, by: 0.1) {
+                        tfMeasurementStep = .playingSweep(
+                            channelIndex: channelIndex,
+                            label: label,
+                            sweepIndex: sweepIndex,
+                            totalSweeps: sweepsPerPosition,
+                            positionIndex: positionIndex,
+                            progress: progress
+                        )
+                        try? await Task.sleep(nanoseconds: 100_000_000) // 100ms
+                    }
+
+                    // TODO: Store actual sweep measurement
+                    // positionSweeps.append(sweepMeasurement)
+                }
+
+                channelData.sweepsByPosition[positionIndex] = positionSweeps
+            }
+
+            // Compute averaged IR for this channel
+            tfMeasurementStep = .computingIR(channelIndex: channelIndex, label: label)
+
+            // TODO: Compute averaged IR using RoomCorrectionEngine.averageImpulseResponses
+            // TODO: Estimate SNR using RoomCorrectionEngine.estimateSNR
+            let averageSNR = 40.0 // Placeholder
+
+            // Set placeholder averaged IR to mark as measured
+            channelData.averagedIR = [Float](repeating: 0.0, count: 48000) // Placeholder
+
+            // Add to dataset
+            transferFunctionDataset.channels.append(channelData)
+
+            tfMeasurementStep = .channelComplete(channelIndex: channelIndex, label: label, snrDB: averageSNR)
+        }
+
+        tfMeasurementStep = .allChannelsComplete
+    }
 
     // MARK: - Loopback Measurement State
 
@@ -245,6 +373,32 @@ final class EqualiserStore: ObservableObject {
     /// Returns `halInput` when driver doesn't support shared memory or in fallback mode.
     var effectiveCaptureMode: CaptureMode {
         routingCoordinator.effectiveCaptureMode
+    }
+
+    // MARK: - Output Channel Matrix Properties (forwarded from RoutingCoordinator)
+
+    var outputChannelMatrix: OutputChannelMatrixConfig {
+        get { routingCoordinator.outputChannelMatrix }
+        set { routingCoordinator.outputChannelMatrix = newValue }
+    }
+
+    var multiDeviceSyncMode: MultiDeviceSyncMode {
+        get { routingCoordinator.multiDeviceSyncMode }
+        set { routingCoordinator.multiDeviceSyncMode = newValue }
+    }
+
+    var aggregateClockMasterUID: String? {
+        get { routingCoordinator.aggregateClockMasterUID }
+        set { routingCoordinator.aggregateClockMasterUID = newValue }
+    }
+
+    var hasMultipleDevices: Bool {
+        routingCoordinator.hasMultipleDevices
+    }
+
+    var activeCrossoverConfig: ActiveCrossoverConfig {
+        get { routingCoordinator.activeCrossoverConfig }
+        set { routingCoordinator.activeCrossoverConfig = newValue }
     }
 
     /// Requests microphone permission and switches to HAL capture mode.

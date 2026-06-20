@@ -13,7 +13,7 @@ import OSLog
 final class AudioRoutingCoordinator: ObservableObject {
     
     // MARK: - Published Properties
-    
+
     @Published var routingStatus: RoutingStatus = .idle
     @Published var selectedInputDeviceID: String?
     @Published var selectedOutputDeviceID: String?
@@ -22,6 +22,33 @@ final class AudioRoutingCoordinator: ObservableObject {
     }
     private(set) var routingMode: RoutingMode = AutomaticRoutingMode()
     @Published var showDriverPrompt: Bool = false
+
+    /// Output channel matrix configuration for multi-device routing
+    @Published var outputChannelMatrix: OutputChannelMatrixConfig = .default {
+        didSet { saveOutputChannelMatrix() }
+    }
+
+    /// Multi-device synchronisation mode
+    @Published var multiDeviceSyncMode: MultiDeviceSyncMode = .aggregateDevice {
+        didSet {
+            saveMultiDeviceSyncMode()
+            if outputChannelMatrix.isEnabled && hasMultipleDevices {
+                reconfigureRouting()
+            }
+        }
+    }
+
+    /// Clock master device UID for aggregate device mode
+    @Published var aggregateClockMasterUID: String? = nil {
+        didSet {
+            if multiDeviceSyncMode == .aggregateDevice && hasMultipleDevices {
+                reconfigureRouting()
+            }
+        }
+    }
+
+    /// Active crossover configuration for multi-band speaker systems
+    @Published var activeCrossoverConfig: ActiveCrossoverConfig = .default
     
     /// Whether the driver needs updating (supports outdated driver detection).
     /// Set when driver doesn't support shared memory capture.
@@ -40,6 +67,14 @@ final class AudioRoutingCoordinator: ObservableObject {
             return .halInput
         }
         return captureMode
+    }
+
+    /// Computed property: true when enabled matrix channels target >1 unique device UID
+    var hasMultipleDevices: Bool {
+        guard outputChannelMatrix.isEnabled else { return false }
+        let enabledChannels = outputChannelMatrix.channels.filter { $0.isEnabled }
+        let uniqueDeviceUIDs = Set(enabledChannels.compactMap { $0.target?.deviceUID })
+        return uniqueDeviceUIDs.count > 1
     }
     
     // MARK: - Dependencies
@@ -88,6 +123,14 @@ final class AudioRoutingCoordinator: ObservableObject {
     let eqStager: EQCoefficientStager
 
     private let logger = Logger(subsystem: "net.knage.equaliser", category: "AudioRoutingCoordinator")
+
+    // MARK: - Persistence Keys
+
+    private enum PersistenceKeys {
+        static let outputChannelMatrix = "net.knage.equaliser.outputChannelMatrix"
+        static let multiDeviceSyncMode = "net.knage.equaliser.multiDeviceSyncMode"
+        static let aggregateClockMasterUID = "net.knage.equaliser.aggregateClockMasterUID"
+    }
     
     // MARK: - Initialization
     
@@ -164,6 +207,9 @@ final class AudioRoutingCoordinator: ObservableObject {
         pipelineManager.onVolumeStateChanged = { [weak self] in
             self?.objectWillChange.send()
         }
+
+        // Load persisted values
+        loadPersistedValues()
     }
     
     // MARK: - Public Methods
@@ -779,6 +825,35 @@ final class AudioRoutingCoordinator: ObservableObject {
     func updateConvolutionIR(left: [Float], right: [Float]) {
         pipelineManager.renderPipeline?.callbackContext?
             .updateConvolutionIR(left: left, right: right)
+    }
+
+    // MARK: - Persistence
+
+    private func loadPersistedValues() {
+        // Load output channel matrix
+        if let matrixData = UserDefaults.standard.data(forKey: PersistenceKeys.outputChannelMatrix),
+           let matrix = try? JSONDecoder().decode(OutputChannelMatrixConfig.self, from: matrixData) {
+            outputChannelMatrix = matrix
+        }
+
+        // Load multi-device sync mode
+        let syncModeRaw = UserDefaults.standard.integer(forKey: PersistenceKeys.multiDeviceSyncMode)
+        if let syncMode = MultiDeviceSyncMode(rawValue: syncModeRaw) {
+            multiDeviceSyncMode = syncMode
+        }
+
+        // Load aggregate clock master UID
+        aggregateClockMasterUID = UserDefaults.standard.string(forKey: PersistenceKeys.aggregateClockMasterUID)
+    }
+
+    private func saveOutputChannelMatrix() {
+        if let matrixData = try? JSONEncoder().encode(outputChannelMatrix) {
+            UserDefaults.standard.set(matrixData, forKey: PersistenceKeys.outputChannelMatrix)
+        }
+    }
+
+    private func saveMultiDeviceSyncMode() {
+        UserDefaults.standard.set(multiDeviceSyncMode.rawValue, forKey: PersistenceKeys.multiDeviceSyncMode)
     }
 
     // MARK: - Private Methods

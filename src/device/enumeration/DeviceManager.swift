@@ -137,6 +137,68 @@ final class DeviceManager: ObservableObject, DeviceProviding {
             device.isValidForSelection && device.uid != excludeUID
         }
     }
+
+    // MARK: - Output Channel Information
+
+    func outputChannelCount(deviceID: AudioDeviceID) -> Int {
+        // Query kAudioDevicePropertyStreamConfiguration on kAudioDevicePropertyScopeOutput
+        var propertyAddress = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyStreamConfiguration,
+            mScope: kAudioDevicePropertyScopeOutput,
+            mElement: kAudioObjectPropertyElementMain
+        )
+
+        var dataSize: UInt32 = 0
+        var status = AudioObjectGetPropertyDataSize(deviceID, &propertyAddress, 0, nil, &dataSize)
+        guard status == noErr else {
+            logger.error("Failed to get stream configuration size for device \(deviceID): \(status)")
+            return 2 // Default to stereo
+        }
+
+        let bufferListPtr = UnsafeMutableRawPointer.allocate(byteCount: Int(dataSize), alignment: 1)
+        defer { bufferListPtr.deallocate() }
+
+        status = AudioObjectGetPropertyData(deviceID, &propertyAddress, 0, nil, &dataSize, bufferListPtr)
+        guard status == noErr else {
+            logger.error("Failed to get stream configuration for device \(deviceID): \(status)")
+            return 2 // Default to stereo
+        }
+
+        let bufferList = bufferListPtr.bindMemory(to: AudioBufferList.self, capacity: 1).pointee
+        return Int(bufferList.mNumberBuffers)
+    }
+
+    func outputChannelInfo(deviceID: AudioDeviceID) -> [AudioDeviceChannelInfo] {
+        let channelCount = outputChannelCount(deviceID: deviceID)
+        var channelInfos: [AudioDeviceChannelInfo] = []
+
+        for channelIndex in 0..<channelCount {
+            // Query kAudioObjectPropertyElementName for channel label
+            var propertyAddress = AudioObjectPropertyAddress(
+                mSelector: kAudioObjectPropertyElementName,
+                mScope: kAudioDevicePropertyScopeOutput,
+                mElement: AudioObjectPropertyElement(channelIndex + 1) // 1-based for CoreAudio
+            )
+
+            var cfName: CFString = "" as CFString
+            var nameSize = UInt32(MemoryLayout<CFString>.size)
+            let status = AudioObjectGetPropertyData(deviceID, &propertyAddress, 0, nil, &nameSize, &cfName)
+
+            let channelLabel: String
+            if status == noErr, let nameStr = cfName as String?, !nameStr.isEmpty {
+                channelLabel = nameStr
+            } else {
+                channelLabel = "Channel \(channelIndex + 1)"
+            }
+
+            channelInfos.append(AudioDeviceChannelInfo(
+                channelIndex: channelIndex,
+                channelLabel: channelLabel
+            ))
+        }
+
+        return channelInfos
+    }
     
     // MARK: - Volume Control (pass-through)
     

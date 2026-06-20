@@ -11,7 +11,7 @@
 ///
 /// This value type is safe to copy between threads and requires no
 /// synchronisation.
-struct BiquadCoefficients: Sendable, Equatable {
+struct BiquadCoefficients: Sendable, Equatable, Codable {
     /// Feedforward coefficient b0
     let b0: Double
     /// Feedforward coefficient b1

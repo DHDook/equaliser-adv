@@ -81,6 +81,20 @@ final class RenderPipeline {
     /// Most recent meter snapshot from the audio thread.
     private nonisolated(unsafe) var latestMeters: LevelMeterSnapshot = .silent
 
+    // MARK: - Multi-Device Routing
+
+    /// Aggregate device manager for Mode 2 (aggregate device sync)
+    private var aggregateManager = AggregateDeviceManager()
+
+    /// PLL writers for Mode 3 (software PLL sync)
+    private var pllWriters: [PLLSRCWriter] = []
+
+    /// Fallback writers for Mode 3 when PLL configuration fails
+    private var fallbackWriters: [SecondaryOutputWriter] = []
+
+    /// Active routing mode (resolved by OutputDeviceRouter)
+    private var activeRoutingMode: OutputDeviceRouter.RoutingMode? = nil
+
     /// Maximum frames per render callback.
     /// See AudioConstants.maxFrameCount for rationale.
     private let maxFrameCount: UInt32 = AudioConstants.maxFrameCount
@@ -143,6 +157,57 @@ final class RenderPipeline {
 
     // MARK: - Configuration
 
+    /// Configures the render pipeline with the specified routing mode.
+    /// The routing mode is resolved by OutputDeviceRouter.resolve(...) before calling this method.
+    /// - Parameters:
+    ///   - routingMode: The resolved routing mode (single device, aggregate device, or software PLL).
+    ///   - inputDeviceID: The Core Audio device ID for audio input (e.g., BlackHole).
+    ///   - captureMode: The capture mode (standard uses HAL input, shared memory reads from driver).
+    ///   - driverRegistry: The driver registry (required for shared memory capture).
+    /// - Returns: Success or an error describing the failure.
+    func configure(
+        routingMode: OutputDeviceRouter.RoutingMode,
+        inputDeviceID: AudioDeviceID,
+        captureMode: CaptureMode = .halInput,
+        driverRegistry: DriverDeviceRegistry? = nil
+    ) -> Result<Void, HALIOError> {
+        logger.info("Configuring pipeline with routing mode: \(routingMode)")
+        activeRoutingMode = routingMode
+
+        switch routingMode {
+        case .singleDevice(let deviceID, let channelMap):
+            // Configure existing HAL output unit for deviceID with channelMap
+            return configureSingleDevice(
+                outputDeviceID: deviceID,
+                channelMap: channelMap,
+                inputDeviceID: inputDeviceID,
+                captureMode: captureMode,
+                driverRegistry: driverRegistry
+            )
+
+        case .aggregateDevice(let aggID, let channelMap):
+            // Configure for aggregate device ID with channelMap
+            return configureAggregateDevice(
+                aggregateDeviceID: aggID,
+                channelMap: channelMap,
+                inputDeviceID: inputDeviceID,
+                captureMode: captureMode,
+                driverRegistry: driverRegistry
+            )
+
+        case .softwarePLL(let primaryID, let primaryChannelMap, let writers):
+            // Configure for primary device and start PLLSRCWriter instances
+            return configureSoftwarePLL(
+                primaryDeviceID: primaryID,
+                primaryChannelMap: primaryChannelMap,
+                pllWriters: writers,
+                inputDeviceID: inputDeviceID,
+                captureMode: captureMode,
+                driverRegistry: driverRegistry
+            )
+        }
+    }
+
     /// Configures the render pipeline with the specified input and output devices.
     /// Creates two separate HAL managers: one for input-only and one for output-only.
     /// - Parameters:
@@ -167,6 +232,9 @@ final class RenderPipeline {
         inputHALManager = nil
         outputHALManager = nil
         driverCapture = nil
+        pllWriters = []
+        fallbackWriters = []
+        activeRoutingMode = nil
 
         // Create and configure the input HAL manager (standard mode only)
         if captureMode == .halInput {
@@ -253,6 +321,98 @@ final class RenderPipeline {
         }
 
         return .success(())
+    }
+
+    // MARK: - Routing Mode Configuration
+
+    private func configureSingleDevice(
+        outputDeviceID: AudioDeviceID,
+        channelMap: [Int32],
+        inputDeviceID: AudioDeviceID,
+        captureMode: CaptureMode,
+        driverRegistry: DriverDeviceRegistry?
+    ) -> Result<Void, HALIOError> {
+        logger.info("Configuring single device mode: output=\(outputDeviceID), channelMap=\(channelMap)")
+
+        // Store capture mode and registry
+        self.captureMode = captureMode
+        self.driverRegistry = driverRegistry
+
+        // Clean up any existing managers
+        inputHALManager = nil
+        outputHALManager = nil
+        driverCapture = nil
+        pllWriters = []
+        fallbackWriters = []
+        activeRoutingMode = nil
+
+        // Create and configure the input HAL manager (standard mode only)
+        if captureMode == .halInput {
+            let inputManager = HALIOManager(mode: .inputOnly)
+            if case .failure(let error) = inputManager.configure(deviceID: inputDeviceID) {
+                logger.error("Input HAL configuration failed: \(error.localizedDescription)")
+                return .failure(error)
+            }
+            inputHALManager = inputManager
+        } else {
+            // Shared memory mode: validate driver registry
+            guard let registry = driverRegistry else {
+                logger.error("Shared memory capture requires driver registry")
+                return .failure(.unitNotAvailable)
+            }
+            self.driverRegistry = registry
+        }
+
+        // Create and configure the output HAL manager (output-only mode)
+        let outputManager = HALIOManager(mode: .outputOnly)
+        if case .failure(let error) = outputManager.configure(deviceID: outputDeviceID) {
+            logger.error("Output HAL configuration failed: \(error.localizedDescription)")
+            inputHALManager = nil
+            return .failure(error)
+        }
+        outputHALManager = outputManager
+
+        // TODO: Apply channel map via kAudioOutputUnitProperty_ChannelMap
+        // if !channelMap.isEmpty {
+        //     outputManager.setChannelMap(channelMap)
+        // }
+
+        // Validate sample rates match between input and output
+        if case .failure(let error) = validateFormats() {
+            inputHALManager = nil
+            outputHALManager = nil
+            return .failure(error)
+        }
+
+        logger.info("Pipeline configured successfully")
+        return .success(())
+    }
+
+    private func configureAggregateDevice(
+        aggregateDeviceID: AudioDeviceID,
+        channelMap: [Int32],
+        inputDeviceID: AudioDeviceID,
+        captureMode: CaptureMode,
+        driverRegistry: DriverDeviceRegistry?
+    ) -> Result<Void, HALIOError> {
+        logger.info("Configuring aggregate device mode: aggID=\(aggregateDeviceID), channelMap=\(channelMap)")
+        // TODO: Implement aggregate device configuration
+        // Similar to single device but with aggregate device ID
+        return .failure(.unitNotAvailable)
+    }
+
+    private func configureSoftwarePLL(
+        primaryDeviceID: AudioDeviceID,
+        primaryChannelMap: [Int32],
+        pllWriters: [PLLSRCWriter],
+        inputDeviceID: AudioDeviceID,
+        captureMode: CaptureMode,
+        driverRegistry: DriverDeviceRegistry?
+    ) -> Result<Void, HALIOError> {
+        logger.info("Configuring software PLL mode: primaryID=\(primaryDeviceID), writers=\(pllWriters.count)")
+        // TODO: Implement software PLL configuration
+        // Configure primary device and start PLLSRCWriter instances
+        return .failure(.unitNotAvailable)
     }
 
     // MARK: - Lifecycle
@@ -871,6 +1031,39 @@ final class RenderPipeline {
         )
         latestMeters = meters
         return meters
+    }
+
+    /// Returns the most recent output channel meter data from the audio thread.
+    /// Reads pre-limiter and post-limiter peak levels from each active OutputChannelProcessor.
+    func currentOutputChannelMeters() -> [Int: OutputChannelMeterData] {
+        guard let context = callbackContext else { return [:] }
+
+        var result: [Int: OutputChannelMeterData] = [:]
+
+        for (index, processor) in context.outputChannelProcessors.enumerated() {
+            guard let processor = processor else { continue }
+
+            let preLimiterLinear = processor.preLimiterPeakLinear
+            let postLimiterLinear = processor.postLimiterPeakLinear
+            let excursionGR = processor.excursionLimiterGainReductionDB
+            let brickwallGR = processor.brickwallGainReductionDB
+
+            // Convert linear to dBFS
+            let preLimiterDB = preLimiterLinear > 0 ? 20.0 * log10(Double(preLimiterLinear)) : -100.0
+            let postLimiterDB = postLimiterLinear > 0 ? 20.0 * log10(Double(postLimiterLinear)) : -100.0
+
+            let isClipping = preLimiterDB > -0.5
+
+            result[index] = OutputChannelMeterData(
+                preLimiterPeakDB: Float(preLimiterDB),
+                postLimiterPeakDB: Float(postLimiterDB),
+                excursionGainReductionDB: excursionGR,
+                brickwallGainReductionDB: brickwallGR,
+                isClipping: isClipping
+            )
+        }
+
+        return result
     }
 
     // MARK: - Input Callback

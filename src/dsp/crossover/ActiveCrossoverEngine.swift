@@ -1,0 +1,239 @@
+import Foundation
+import Atomics
+
+/// Active crossover engine that splits the fully processed mains L/R signal
+/// into up to 3 band signals per channel using a cascaded topology.
+///
+/// Cascaded topology:
+/// Full range → [Lower crossover LP] → Low band
+///           → [Lower crossover HP] → Mid+High combined
+///                                  → [Upper crossover LP] → Mid band (tri-amp only)
+///                                  → [Upper crossover HP] → High band
+///
+/// Each crossover point carries independent LP and HP coefficients,
+/// supporting asymmetric frequencies, slopes, and types per side.
+struct ActiveCrossoverEngine {
+    static let maxSections = 8
+
+    // MARK: - Band Output Buffers
+    // Pre-allocated, sized to AudioConstants.maxFrameCount
+    nonisolated(unsafe) var leftLow:   [Float]
+    nonisolated(unsafe) var leftMid:   [Float]
+    nonisolated(unsafe) var leftHigh:  [Float]
+    nonisolated(unsafe) var rightLow:  [Float]
+    nonisolated(unsafe) var rightMid:  [Float]
+    nonisolated(unsafe) var rightHigh: [Float]
+
+    // MARK: - Flat IIR Filter State
+    // 8 blocks × 8 max sections × 2 state vars = 128 Floats
+    // Each block: lower LP left, lower LP right, lower HP left, lower HP right,
+    //             upper LP left, upper LP right, upper HP left, upper HP right
+    nonisolated(unsafe) var filterState: [Float]
+
+    // MARK: - Active IIR Coefficient Arrays
+    // One per filter block, LP and HP independent
+    nonisolated(unsafe) var activeLowerLP: SectionArray
+    nonisolated(unsafe) var activeLowerHP: SectionArray
+    nonisolated(unsafe) var activeUpperLP: SectionArray
+    nonisolated(unsafe) var activeUpperHP: SectionArray
+    nonisolated(unsafe) var activeBandCount: Int = 1
+
+    // MARK: - Pending IIR Coefficients
+    // Staged on main thread
+    nonisolated(unsafe) var pendingLowerLP: SectionArray
+    nonisolated(unsafe) var pendingLowerHP: SectionArray
+    nonisolated(unsafe) var pendingUpperLP: SectionArray
+    nonisolated(unsafe) var pendingUpperHP: SectionArray
+    nonisolated(unsafe) var pendingBandCount: Int = 1
+    let hasIIRPendingUpdate = ManagedAtomic<Bool>(false)
+
+    // MARK: - FIR Crossover (Linear Phase Mode)
+    // One ConvolutionEngine per filter block that uses FIR type.
+    // Nil when the corresponding filter block uses IIR.
+    nonisolated(unsafe) var lowerLPConvolution: ConvolutionEngine?
+    nonisolated(unsafe) var lowerHPConvolution: ConvolutionEngine?
+    nonisolated(unsafe) var upperLPConvolution: ConvolutionEngine?
+    nonisolated(unsafe) var upperHPConvolution: ConvolutionEngine?
+    let hasFIRPendingUpdate = ManagedAtomic<Bool>(false)
+
+    typealias SectionArray = [(b0: Float, b1: Float, b2: Float, na1: Float, na2: Float)]
+
+    // MARK: - Constants
+    private static let stateSize = 8 * maxSections * 2  // 8 blocks × 8 sections × 2 state vars
+
+    // MARK: - Initialization
+    init(maxFrameCount: Int) {
+        // Allocate band output buffers
+        leftLow   = Array(repeating: 0.0, count: maxFrameCount)
+        leftMid   = Array(repeating: 0.0, count: maxFrameCount)
+        leftHigh  = Array(repeating: 0.0, count: maxFrameCount)
+        rightLow  = Array(repeating: 0.0, count: maxFrameCount)
+        rightMid  = Array(repeating: 0.0, count: maxFrameCount)
+        rightHigh = Array(repeating: 0.0, count: maxFrameCount)
+
+        // Allocate filter state
+        filterState = Array(repeating: 0.0, count: Self.stateSize)
+
+        // Initialize coefficient arrays with identity (pass-through)
+        let identitySection: (b0: Float, b1: Float, b2: Float, na1: Float, na2: Float) = (1.0, 0.0, 0.0, 0.0, 0.0)
+        activeLowerLP = Array(repeating: identitySection, count: Self.maxSections)
+        activeLowerHP = Array(repeating: identitySection, count: Self.maxSections)
+        activeUpperLP = Array(repeating: identitySection, count: Self.maxSections)
+        activeUpperHP = Array(repeating: identitySection, count: Self.maxSections)
+
+        pendingLowerLP = activeLowerLP
+        pendingLowerHP = activeLowerHP
+        pendingUpperLP = activeUpperLP
+        pendingUpperHP = activeUpperHP
+
+        // FIR engines are initially nil (IIR mode by default)
+        lowerLPConvolution = nil
+        lowerHPConvolution = nil
+        upperLPConvolution = nil
+        upperHPConvolution = nil
+    }
+
+    // MARK: - Processing
+    mutating func process(leftIn: UnsafePointer<Float>, rightIn: UnsafePointer<Float>, frameCount: Int) {
+        guard activeBandCount > 1 else { return }
+
+        // Apply pending IIR update
+        if hasIIRPendingUpdate.exchange(false, ordering: .acquiringAndReleasing) {
+            activeLowerLP = pendingLowerLP
+            activeLowerHP = pendingLowerHP
+            activeUpperLP = pendingUpperLP
+            activeUpperHP = pendingUpperHP
+            activeBandCount = pendingBandCount
+        }
+
+        // Copy inputs to band buffers
+        // For full-range mode (bandCount == 1), we pass through unchanged
+        // For bi-amp mode (bandCount == 2), we split into low and high
+        // For tri-amp mode (bandCount == 3), we split into low, mid, and high
+
+        // Copy input to working buffers
+        var leftWork = Array(repeating: Float(0.0), count: frameCount)
+        var rightWork = Array(repeating: Float(0.0), count: frameCount)
+        for i in 0..<frameCount {
+            leftWork[i] = leftIn[i]
+            rightWork[i] = rightIn[i]
+        }
+
+        // Apply lower LP → leftLow, rightLow
+        applyFilterSections(&leftWork, sections: activeLowerLP, stateOffset: 0, frameCount: frameCount)
+        for i in 0..<frameCount {
+            leftLow[i] = leftWork[i]
+        }
+        // Reset work buffer for HP
+        for i in 0..<frameCount {
+            leftWork[i] = leftIn[i]
+        }
+        applyFilterSections(&rightWork, sections: activeLowerLP, stateOffset: 4, frameCount: frameCount)
+        for i in 0..<frameCount {
+            rightLow[i] = rightWork[i]
+        }
+        for i in 0..<frameCount {
+            rightWork[i] = rightIn[i]
+        }
+
+        // Apply lower HP → leftHigh, rightHigh (mid+high combined)
+        applyFilterSections(&leftWork, sections: activeLowerHP, stateOffset: 2, frameCount: frameCount)
+        for i in 0..<frameCount {
+            leftHigh[i] = leftWork[i]
+        }
+        for i in 0..<frameCount {
+            leftWork[i] = leftIn[i]
+        }
+        applyFilterSections(&rightWork, sections: activeLowerHP, stateOffset: 6, frameCount: frameCount)
+        for i in 0..<frameCount {
+            rightHigh[i] = rightWork[i]
+        }
+        for i in 0..<frameCount {
+            rightWork[i] = rightIn[i]
+        }
+
+        // For tri-amp: apply upper LP → leftMid, rightMid
+        //              apply upper HP → leftHigh, rightHigh (final high)
+        if activeBandCount == 3 {
+            // Apply upper LP to extract mid from the HP output of lower crossover
+            applyFilterSections(&leftWork, sections: activeUpperLP, stateOffset: 8, frameCount: frameCount)
+            for i in 0..<frameCount {
+                leftMid[i] = leftWork[i]
+            }
+            for i in 0..<frameCount {
+                leftWork[i] = leftIn[i]
+            }
+            applyFilterSections(&rightWork, sections: activeUpperLP, stateOffset: 12, frameCount: frameCount)
+            for i in 0..<frameCount {
+                rightMid[i] = rightWork[i]
+            }
+            for i in 0..<frameCount {
+                rightWork[i] = rightIn[i]
+            }
+
+            // Apply upper HP to extract final high
+            applyFilterSections(&leftWork, sections: activeUpperHP, stateOffset: 10, frameCount: frameCount)
+            for i in 0..<frameCount {
+                leftHigh[i] = leftWork[i]
+            }
+            for i in 0..<frameCount {
+                leftWork[i] = leftIn[i]
+            }
+            applyFilterSections(&rightWork, sections: activeUpperHP, stateOffset: 14, frameCount: frameCount)
+            for i in 0..<frameCount {
+                rightHigh[i] = rightWork[i]
+            }
+        }
+    }
+
+    // MARK: - Filter Section Application
+    @inline(__always)
+    private mutating func applyFilterSections(
+        _ buf: inout [Float],
+        sections: SectionArray,
+        stateOffset: Int,
+        frameCount: Int
+    ) {
+        for (sectionIndex, coeffs) in sections.enumerated() {
+            var w1 = filterState[stateOffset + sectionIndex * 2]
+            var w2 = filterState[stateOffset + sectionIndex * 2 + 1]
+            for i in 0..<frameCount {
+                let y = coeffs.b0 * buf[i] + w1
+                w1 = coeffs.b1 * buf[i] + coeffs.na1 * y + w2
+                w2 = coeffs.b2 * buf[i] + coeffs.na2 * y
+                buf[i] = y
+            }
+            filterState[stateOffset + sectionIndex * 2] = w1
+            filterState[stateOffset + sectionIndex * 2 + 1] = w2
+        }
+    }
+
+    // MARK: - Pending Update Application
+    mutating func applyPendingUpdate() {
+        if hasIIRPendingUpdate.exchange(false, ordering: .acquiringAndReleasing) {
+            activeLowerLP = pendingLowerLP
+            activeLowerHP = pendingLowerHP
+            activeUpperLP = pendingUpperLP
+            activeUpperHP = pendingUpperHP
+            activeBandCount = pendingBandCount
+        }
+        // FIR updates are handled by ConvolutionEngine.updateIR's own atomic IR swap
+    }
+
+    // MARK: - Group Delay Computation
+    /// Computes the group delay of one crossover filter block at the given frequencies.
+    /// For IIR sections: analytic computation from biquad coefficients.
+    /// For FIR: numeric differentiation of the phase response.
+    /// Returns group delay in milliseconds at each frequency.
+    static func groupDelay(
+        sections: SectionArray,
+        firKernel: [Float]?,
+        frequencies: [Double],
+        sampleRate: Double
+    ) -> [Double] {
+        // TODO: Implement group delay computation
+        // For IIR: compute phase response and differentiate
+        // For FIR: compute phase response via FFT and differentiate
+        return Array(repeating: 0.0, count: frequencies.count)
+    }
+}

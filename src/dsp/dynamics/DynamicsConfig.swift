@@ -457,6 +457,271 @@ struct BassManagementConfig: Codable, Equatable, Sendable {
     }
 }
 
+// MARK: - Active Crossover Configuration
+
+enum ActiveCrossoverBandCount: Int, Codable, Equatable, Sendable, CaseIterable {
+    case fullRange = 1
+    case biAmp     = 2
+    case triAmp    = 3
+
+    var displayName: String {
+        switch self {
+        case .fullRange: return "Full Range"
+        case .biAmp:     return "Bi-Amp (2-way)"
+        case .triAmp:    return "Tri-Amp (3-way)"
+        }
+    }
+}
+
+enum CrossoverFilterType: Int, Codable, Equatable, Sendable, CaseIterable {
+    case linkwitzRiley = 0
+    case butterworth   = 1
+    case firLinearPhase = 2
+
+    var displayName: String {
+        switch self {
+        case .linkwitzRiley: return "Linkwitz-Riley"
+        case .butterworth:   return "Butterworth"
+        case .firLinearPhase: return "FIR (Linear Phase)"
+        }
+    }
+}
+
+/// Per-crossover-point filter specification. Allows independent slope and type
+/// on the low-pass and high-pass sides of each crossover point.
+struct CrossoverPointConfig: Codable, Equatable, Sendable {
+    /// Whether LP and HP sides use different frequencies (asymmetric crossover).
+    var asymmetricFrequency: Bool = false
+    /// Low-pass frequency for this crossover point (Hz). 20–20000.
+    var lpHz: Float = 300.0
+    /// High-pass frequency for this crossover point (Hz). 20–20000.
+    /// Equals lpHz when asymmetricFrequency is false.
+    var hpHz: Float = 300.0
+
+    /// Whether LP and HP sides use different slopes.
+    var asymmetricSlope: Bool = false
+    var lpSlope: FilterSlope = .db24
+    var hpSlope: FilterSlope = .db24
+
+    /// Whether LP and HP sides use different filter types.
+    var asymmetricType: Bool = false
+    var lpType: CrossoverFilterType = .linkwitzRiley
+    var hpType: CrossoverFilterType = .linkwitzRiley
+
+    /// FIR tap count. Only used when filterType == .firLinearPhase.
+    /// Must be a power of two. Default: 4096 (≈85 ms at 48 kHz).
+    var firTapCount: Int = 4096
+
+    // Convenience accessors when symmetric (the common case)
+    var frequency: Float {
+        get { lpHz }
+        set { lpHz = newValue; if !asymmetricFrequency { hpHz = newValue } }
+    }
+    var slope: FilterSlope {
+        get { lpSlope }
+        set { lpSlope = newValue; if !asymmetricSlope { hpSlope = newValue } }
+    }
+    var filterType: CrossoverFilterType {
+        get { lpType }
+        set { lpType = newValue; if !asymmetricType { hpType = newValue } }
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case asymmetricFrequency, lpHz, hpHz
+        case asymmetricSlope, lpSlope, hpSlope
+        case asymmetricType, lpType, hpType
+        case firTapCount
+    }
+
+    init(
+        asymmetricFrequency: Bool = false,
+        lpHz: Float = 300.0,
+        hpHz: Float = 300.0,
+        asymmetricSlope: Bool = false,
+        lpSlope: FilterSlope = .db24,
+        hpSlope: FilterSlope = .db24,
+        asymmetricType: Bool = false,
+        lpType: CrossoverFilterType = .linkwitzRiley,
+        hpType: CrossoverFilterType = .linkwitzRiley,
+        firTapCount: Int = 4096
+    ) {
+        self.asymmetricFrequency = asymmetricFrequency
+        self.lpHz = lpHz
+        self.hpHz = hpHz
+        self.asymmetricSlope = asymmetricSlope
+        self.lpSlope = lpSlope
+        self.hpSlope = hpSlope
+        self.asymmetricType = asymmetricType
+        self.lpType = lpType
+        self.hpType = hpType
+        self.firTapCount = firTapCount
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        asymmetricFrequency = try c.decodeIfPresent(Bool.self, forKey: .asymmetricFrequency) ?? false
+        lpHz = try c.decodeIfPresent(Float.self, forKey: .lpHz) ?? 300.0
+        hpHz = try c.decodeIfPresent(Float.self, forKey: .hpHz) ?? 300.0
+        asymmetricSlope = try c.decodeIfPresent(Bool.self, forKey: .asymmetricSlope) ?? false
+        lpSlope = try c.decodeIfPresent(FilterSlope.self, forKey: .lpSlope) ?? .db24
+        hpSlope = try c.decodeIfPresent(FilterSlope.self, forKey: .hpSlope) ?? .db24
+        asymmetricType = try c.decodeIfPresent(Bool.self, forKey: .asymmetricType) ?? false
+        lpType = try c.decodeIfPresent(CrossoverFilterType.self, forKey: .lpType) ?? .linkwitzRiley
+        hpType = try c.decodeIfPresent(CrossoverFilterType.self, forKey: .hpType) ?? .linkwitzRiley
+        firTapCount = try c.decodeIfPresent(Int.self, forKey: .firTapCount) ?? 4096
+    }
+
+    enum ValidationError: LocalizedError {
+        case asymmetricLPHzMustBeLessOrEqualHPHz
+        case firTapCountMustBePowerOfTwo
+
+        var errorDescription: String? {
+            switch self {
+            case .asymmetricLPHzMustBeLessOrEqualHPHz:
+                return "Low-pass frequency must be less than or equal to high-pass frequency in asymmetric mode"
+            case .firTapCountMustBePowerOfTwo:
+                return "FIR tap count must be a power of two"
+            }
+        }
+    }
+
+    func validate() -> ValidationError? {
+        if asymmetricFrequency && lpHz > hpHz {
+            return .asymmetricLPHzMustBeLessOrEqualHPHz
+        }
+        if firTapCount & (firTapCount - 1) != 0 { // Check if power of two
+            return .firTapCountMustBePowerOfTwo
+        }
+        return nil
+    }
+}
+
+struct ActiveCrossoverConfig: Codable, Equatable, Sendable {
+    var isEnabled: Bool = false
+    var bandCount: ActiveCrossoverBandCount = .fullRange
+
+    /// Lower crossover point (bi-amp: the single crossover; tri-amp: low/mid split).
+    var lowerPoint: CrossoverPointConfig = CrossoverPointConfig()
+
+    /// Upper crossover point. Tri-amp only (mid/high split).
+    var upperPoint: CrossoverPointConfig = {
+        var p = CrossoverPointConfig()
+        p.frequency = 3000.0
+        return p
+    }()
+
+    // MARK: - Backward-Compatible Convenience Accessors
+    // These mirror the old single-frequency/slope/type interface.
+    // When asymmetric flags are false (the default), these drive both sides.
+    var lowerCrossoverHz: Float {
+        get { lowerPoint.lpHz }
+        set { lowerPoint.frequency = newValue }
+    }
+    var upperCrossoverHz: Float {
+        get { upperPoint.lpHz }
+        set { upperPoint.frequency = newValue }
+    }
+    var slope: FilterSlope {
+        get { lowerPoint.lpSlope }
+        set { lowerPoint.slope = newValue; upperPoint.slope = newValue }
+    }
+    var filterType: CrossoverFilterType {
+        get { lowerPoint.lpType }
+        set { lowerPoint.filterType = newValue; upperPoint.filterType = newValue }
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case isEnabled, bandCount, lowerPoint, upperPoint
+    }
+
+    init(
+        isEnabled: Bool = false,
+        bandCount: ActiveCrossoverBandCount = .fullRange,
+        lowerPoint: CrossoverPointConfig = CrossoverPointConfig(),
+        upperPoint: CrossoverPointConfig = {
+            var p = CrossoverPointConfig()
+            p.frequency = 3000.0
+            return p
+        }()
+    ) {
+        self.isEnabled = isEnabled
+        self.bandCount = bandCount
+        self.lowerPoint = lowerPoint
+        self.upperPoint = upperPoint
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        isEnabled = try c.decodeIfPresent(Bool.self, forKey: .isEnabled) ?? false
+        bandCount = try c.decodeIfPresent(ActiveCrossoverBandCount.self, forKey: .bandCount) ?? .fullRange
+        lowerPoint = try c.decodeIfPresent(CrossoverPointConfig.self, forKey: .lowerPoint) ?? CrossoverPointConfig()
+        upperPoint = try c.decodeIfPresent(CrossoverPointConfig.self, forKey: .upperPoint) ?? {
+            var p = CrossoverPointConfig()
+            p.frequency = 3000.0
+            return p
+        }()
+
+        // Backward compatibility: migrate old flat fields if present
+        if let legacyLowerCrossoverHz = try? c.decode(Float.self, forKey: CodingKeys(stringValue: "lowerCrossoverHz")!) {
+            lowerPoint.frequency = legacyLowerCrossoverHz
+        }
+        if let legacyUpperCrossoverHz = try? c.decode(Float.self, forKey: CodingKeys(stringValue: "upperCrossoverHz")!) {
+            upperPoint.frequency = legacyUpperCrossoverHz
+        }
+        if let legacySlope = try? c.decode(FilterSlope.self, forKey: CodingKeys(stringValue: "slope")!) {
+            slope = legacySlope
+        }
+        if let legacyFilterType = try? c.decode(CrossoverFilterType.self, forKey: CodingKeys(stringValue: "filterType")!) {
+            filterType = legacyFilterType
+        }
+    }
+
+    enum ValidationError: LocalizedError {
+        case upperMustExceedLower
+        case asymmetricLPHzMustBeLessOrEqualHPHz
+        case firNotCompatibleWithLinkwitzRiley
+        case firTapCountMustBePowerOfTwo
+
+        var errorDescription: String? {
+            switch self {
+            case .upperMustExceedLower:
+                return "Upper crossover frequency must exceed lower crossover frequency"
+            case .asymmetricLPHzMustBeLessOrEqualHPHz:
+                return "Low-pass frequency must be less than or equal to high-pass frequency in asymmetric mode"
+            case .firNotCompatibleWithLinkwitzRiley:
+                return "FIR filter type is not compatible with Linkwitz-Riley mode"
+            case .firTapCountMustBePowerOfTwo:
+                return "FIR tap count must be a power of two"
+            }
+        }
+    }
+
+    func validate() -> ValidationError? {
+        if let lowerError = lowerPoint.validate() {
+            switch lowerError {
+            case .asymmetricLPHzMustBeLessOrEqualHPHz:
+                return .asymmetricLPHzMustBeLessOrEqualHPHz
+            case .firTapCountMustBePowerOfTwo:
+                return .firTapCountMustBePowerOfTwo
+            }
+        }
+        if let upperError = upperPoint.validate() {
+            switch upperError {
+            case .asymmetricLPHzMustBeLessOrEqualHPHz:
+                return .asymmetricLPHzMustBeLessOrEqualHPHz
+            case .firTapCountMustBePowerOfTwo:
+                return .firTapCountMustBePowerOfTwo
+            }
+        }
+        if bandCount == .triAmp && upperPoint.lpHz <= lowerPoint.lpHz {
+            return .upperMustExceedLower
+        }
+        return nil
+    }
+
+    static let `default` = ActiveCrossoverConfig()
+}
+
 // MARK: - Dynamic EQ Configuration
 
 /// Single dynamic EQ band configuration.
@@ -821,6 +1086,9 @@ struct AdvancedProcessingConfig: Codable, Equatable, Sendable {
     /// Bass Management — unified subwoofer integration module.
     var bassManagement: BassManagementConfig = BassManagementConfig()
 
+    /// Active Crossover — splits mains into 1/2/3 frequency bands for multi-amp speaker systems.
+    var activeCrossover: ActiveCrossoverConfig = ActiveCrossoverConfig()
+
     /// Excess-Phase Correction — linear-phase FIR filter flattening group delay in modal region.
     var excessPhaseConfig: ExcessPhaseConfig = ExcessPhaseConfig()
 
@@ -885,6 +1153,7 @@ struct AdvancedProcessingConfig: Codable, Equatable, Sendable {
         case roomCorrectionEnabled
         case targetCurveType
         case bassManagement
+        case activeCrossover
         case excessPhaseConfig
         case monoBassEnabled, monoBassCrossover
         case mainsHighPassEnabled, mainsHighPassFrequency
@@ -955,6 +1224,7 @@ struct AdvancedProcessingConfig: Codable, Equatable, Sendable {
         roomCorrectionEnabled: Bool = false,
         targetCurveType: TargetCurveType = .flat,
         bassManagement: BassManagementConfig = BassManagementConfig(),
+        activeCrossover: ActiveCrossoverConfig = ActiveCrossoverConfig(),
         excessPhaseConfig: ExcessPhaseConfig = ExcessPhaseConfig(),
         monoBassEnabled: Bool = false,
         monoBassCrossover: Float = 80.0,
@@ -1017,6 +1287,7 @@ struct AdvancedProcessingConfig: Codable, Equatable, Sendable {
         self.roomCorrectionEnabled            = roomCorrectionEnabled
         self.targetCurveType                  = targetCurveType
         self.bassManagement                   = bassManagement
+        self.activeCrossover                  = activeCrossover
         self.excessPhaseConfig               = excessPhaseConfig
         self.monoBassEnabled                  = monoBassEnabled
         self.monoBassCrossover                = monoBassCrossover
@@ -1083,6 +1354,7 @@ struct AdvancedProcessingConfig: Codable, Equatable, Sendable {
 
         // Decode bassManagement first, then migrate legacy fields if present
         bassManagement                   = try c.decodeIfPresent(BassManagementConfig.self, forKey: .bassManagement) ?? BassManagementConfig()
+        activeCrossover                  = try c.decodeIfPresent(ActiveCrossoverConfig.self,  forKey: .activeCrossover)  ?? ActiveCrossoverConfig()
         excessPhaseConfig               = try c.decodeIfPresent(ExcessPhaseConfig.self,    forKey: .excessPhaseConfig) ?? ExcessPhaseConfig()
 
         // Decode legacy fields for backward compatibility
@@ -1162,6 +1434,7 @@ struct AdvancedProcessingConfig: Codable, Equatable, Sendable {
         try c.encode(roomCorrectionEnabled,              forKey: .roomCorrectionEnabled)
         try c.encode(targetCurveType,                    forKey: .targetCurveType)
         try c.encode(bassManagement,                     forKey: .bassManagement)
+        try c.encode(activeCrossover,                    forKey: .activeCrossover)
         try c.encode(excessPhaseConfig,                  forKey: .excessPhaseConfig)
         // Legacy fields (monoBassEnabled, monoBassCrossover, mainsHighPassEnabled, mainsHighPassFrequency)
         // are NOT encoded - they are decode-only for backward compatibility

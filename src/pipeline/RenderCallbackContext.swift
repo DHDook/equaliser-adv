@@ -516,6 +516,34 @@ final class RenderCallbackContext: @unchecked Sendable {
         }
     }
 
+    // MARK: - Output Channel Matrix
+
+    /// Per-output channel processors. Indexed 0..<OutputChannelMatrixConfig.maxChannels.
+    /// Nil when matrix is disabled. Set once before pipeline starts; read-only on audio thread.
+    nonisolated(unsafe) var outputChannelProcessors: [OutputChannelProcessor?] =
+        Array(repeating: nil, count: OutputChannelMatrixConfig.maxChannels)
+
+    /// Per-output writers for secondary devices (channels 1–7).
+    /// Placeholder type - will be implemented in Task M.
+    nonisolated(unsafe) var outputChannelWriters: [Any?] =
+        Array(repeating: nil, count: OutputChannelMatrixConfig.maxChannels)
+
+    /// Signal source assignment per channel. Written on main thread before start.
+    nonisolated(unsafe) var outputChannelSources: [SignalSource] =
+        Array(repeating: .mainsLeft, count: OutputChannelMatrixConfig.maxChannels)
+
+    /// Number of active output channels (0 = matrix disabled).
+    nonisolated(unsafe) var activeOutputChannelCount: Int = 0
+
+    /// Per-channel stereo scratch buffers (pre-allocated, sized to maxFrameCount).
+    /// Used to hold the copied signal for each output channel before processing.
+    /// Left and right buffers per channel.
+    private let outputScratchLeft:  [UnsafeMutablePointer<Float>]   // [maxChannels]
+    private let outputScratchRight: [UnsafeMutablePointer<Float>?]  // [maxChannels]; nil for mono sources
+
+    /// Sub mono output buffer: written by processBassManagement, read by .subMono output channels.
+    nonisolated(unsafe) var monoLowOutputBuffer: UnsafeMutablePointer<Float>
+
     // MARK: - Initialization
 
     /// Creates a new callback context with ring buffers and pre-allocated audio buffers.
@@ -602,6 +630,20 @@ final class RenderCallbackContext: @unchecked Sendable {
         }
         self.srcOutputBuffers = srcBufs
 
+        // Pre-allocate output channel matrix scratch buffers (one left buffer per channel).
+        // Right buffers are optional (nil for mono sources).
+        var scratchLeft: [UnsafeMutablePointer<Float>] = []
+        var scratchRight: [UnsafeMutablePointer<Float>?] = []
+        for _ in 0..<OutputChannelMatrixConfig.maxChannels {
+            scratchLeft.append(Self.allocateSIMDAlignedBuffer(capacity: framesPerBuffer))
+            scratchRight.append(Self.allocateSIMDAlignedBuffer(capacity: framesPerBuffer))
+        }
+        self.outputScratchLeft = scratchLeft
+        self.outputScratchRight = scratchRight
+
+        // Pre-allocate mono low output buffer for subwoofer sum.
+        self.monoLowOutputBuffer = Self.allocateSIMDAlignedBuffer(capacity: framesPerBuffer)
+
         // Pre-compute output buffer pointers (avoid array allocation on every callback)
         self.outputBufferPointersPrecomputed = outputBufs.map { UnsafePointer($0) }
 
@@ -672,6 +714,19 @@ final class RenderCallbackContext: @unchecked Sendable {
         for buffer in srcOutputBuffers {
             free(UnsafeMutableRawPointer(buffer))
         }
+
+        // Free SIMD-aligned output channel matrix scratch buffers.
+        for buffer in outputScratchLeft {
+            free(UnsafeMutableRawPointer(buffer))
+        }
+        for buffer in outputScratchRight {
+            if let b = buffer {
+                free(UnsafeMutableRawPointer(b))
+            }
+        }
+
+        // Free SIMD-aligned mono low output buffer.
+        free(UnsafeMutableRawPointer(monoLowOutputBuffer))
 
         inputMeterStorage.deinitialize(count: meterChannelCount)
         inputMeterStorage.deallocate()
@@ -962,6 +1017,97 @@ final class RenderCallbackContext: @unchecked Sendable {
     /// - Returns: Pre-computed array of immutable pointers to the active processing buffers.
     var outputBufferPointers: [UnsafePointer<Float>] {
         processingBufferPointers
+    }
+
+    // MARK: - Output Channel Matrix Processing
+
+    /// Processes the output channel matrix, routing signals to multiple output channels.
+    /// Called from the audio render thread after all main processing is complete.
+    /// - Parameters:
+    ///   - dynamicsProcessor: The dynamics processor containing the active crossover engine.
+    ///   - frameCount: Number of frames to process.
+    @inline(__always)
+    func processOutputChannelMatrix(dynamicsProcessor: DynamicsProcessor, frameCount: Int) {
+        guard activeOutputChannelCount > 0 else { return }
+
+        for chIdx in 0..<activeOutputChannelCount {
+            guard let processor = outputChannelProcessors[chIdx] else { continue }
+
+            let source = outputChannelSources[chIdx]
+
+            // Resolve source buffers
+            let (srcLeft, srcRight) = resolveSource(source, dynamics: dynamicsProcessor)
+            guard let srcL = srcLeft else { continue }
+
+            // Copy to scratch (never modify shared crossover/processing buffers)
+            memcpy(outputScratchLeft[chIdx], srcL, frameCount * MemoryLayout<Float>.size)
+            var scratchR: UnsafeMutablePointer<Float>? = nil
+            if let sr = srcRight, let sR = outputScratchRight[chIdx] {
+                memcpy(sR, sr, frameCount * MemoryLayout<Float>.size)
+                scratchR = sR
+            }
+
+            // Run per-output DSP chain (EQ → gain → delay → limiter)
+            processor.process(leftBuf: outputScratchLeft[chIdx],
+                              rightBuf: scratchR,
+                              frameCount: frameCount)
+
+            // Write to output
+            if chIdx == 0 {
+                // Channel 0 writes to primary HAL output buffer
+                writePrimaryChannel(leftBuf: outputScratchLeft[chIdx],
+                                    rightBuf: scratchR,
+                                    frameCount: frameCount)
+            } else {
+                // TODO: Implement SecondaryOutputWriter in Task M
+                // outputChannelWriters[chIdx]?.write(
+                //     left: outputScratchLeft[chIdx],
+                //     right: scratchR,
+                //     frameCount: frameCount
+                // )
+            }
+        }
+    }
+
+    /// Resolves a SignalSource to actual buffer pointers.
+    /// - Parameters:
+    ///   - source: The signal source to resolve.
+    ///   - dynamics: The dynamics processor containing the active crossover engine.
+    /// - Returns: A tuple of (leftBuffer, rightBuffer) pointers.
+    private func resolveSource(
+        _ source: SignalSource,
+        dynamics: DynamicsProcessor
+    ) -> (UnsafeMutablePointer<Float>?, UnsafeMutablePointer<Float>?) {
+        switch source {
+        case .mainsLeft:      return (processingBuffers[0], nil)
+        case .mainsRight:     return (processingBuffers[1], nil)
+        // For mainsLeft/mainsRight used as stereo pair: the output channel
+        // config assigns both to the same processor; see UI pairing note below.
+        // TODO: Integrate ActiveCrossoverEngine into DynamicsProcessor
+        case .mainsLeftHigh:  return (nil, nil)
+        case .mainsLeftMid:   return (nil, nil)
+        case .mainsLeftLow:   return (nil, nil)
+        case .mainsRightHigh: return (nil, nil)
+        case .mainsRightMid:  return (nil, nil)
+        case .mainsRightLow:  return (nil, nil)
+        case .subMono:        return (monoLowOutputBuffer, nil)
+        }
+    }
+
+    /// Writes processed audio to the primary HAL output buffer (channel 0).
+    /// - Parameters:
+    ///   - leftBuf: Left channel buffer to write.
+    ///   - rightBuf: Right channel buffer to write (nil for mono).
+    ///   - frameCount: Number of frames to write.
+    @inline(__always)
+    private func writePrimaryChannel(leftBuf: UnsafeMutablePointer<Float>,
+                                      rightBuf: UnsafeMutablePointer<Float>?,
+                                      frameCount: Int) {
+        // Copy to processing buffers (which will be copied to ioData by the output callback)
+        memcpy(processingBuffers[0], leftBuf, frameCount * MemoryLayout<Float>.size)
+        if let rBuf = rightBuf, channelCount >= 2 {
+            memcpy(processingBuffers[1], rBuf, frameCount * MemoryLayout<Float>.size)
+        }
     }
 
     // MARK: - Dynamics Processing API

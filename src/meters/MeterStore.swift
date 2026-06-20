@@ -3,13 +3,23 @@ import Combine
 import Foundation
 import os.log
 
+// MARK: - Per-Output Channel Meter Data (Part 2 Task AG)
+
+struct OutputChannelMeterData: Sendable {
+    var preLimiterPeakDB: Float     // Pre-limiter peak, dBFS
+    var postLimiterPeakDB: Float    // Post-limiter peak, dBFS
+    var excursionGainReductionDB: Float   // Excursion limiter GR (≤ 0 dB)
+    var brickwallGainReductionDB: Float   // Brickwall limiter GR (≤ 0 dB)
+    var isClipping: Bool            // True when preLimiterPeakDB > –0.5 dBFS
+}
+
 /// Manages meter state and updates observers directly.
 /// Uses Timer for meter updates at 30 FPS.
 /// Updates are pushed directly to observers, bypassing SwiftUI's observation system.
 @MainActor
 final class MeterStore: ObservableObject {
     // MARK: - Observable Properties (for UI controls only)
-    
+
     /// Whether meters are enabled. Published for UI toggle synchronization only.
     @Published var metersEnabled: Bool = true {
         didSet {
@@ -22,7 +32,12 @@ final class MeterStore: ObservableObject {
             }
         }
     }
-    
+
+    // MARK: - Per-Output Channel Metering (Part 2 Task AG)
+
+    /// Per-output channel level data (polled at MeterStore's standard 30 Hz rate)
+    @Published var outputChannelLevels: [Int: OutputChannelMeterData] = [:]
+
     // MARK: - Observer Management
     
     private var observers: [MeterType: [WeakMeterObserver]] = [:]
@@ -261,7 +276,11 @@ final class MeterStore: ObservableObject {
             type: .outputRMSRight,
             dbValue: snapshot.outputRmsDB.indices.contains(1) ? snapshot.outputRmsDB[1] : MeterConstants.meterRange.lowerBound
         )
-        
+
+        // MARK: - Per-Output Channel Metering (Part 2 Task AG)
+        let outputChannelMeters = pipeline.currentOutputChannelMeters()
+        outputChannelLevels = outputChannelMeters
+
         // Check if we should go back to rest
         let inputPeakLeft = lastMeterValues[.inputPeakLeft]?.peak ?? Float(0)
         let inputPeakRight = lastMeterValues[.inputPeakRight]?.peak ?? Float(0)
