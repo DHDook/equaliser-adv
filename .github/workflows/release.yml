@@ -5,7 +5,7 @@ on:
       - main
       - dev
     tags:
-      - 'v*.*.*'
+      - 'v*.*'
 permissions:
   contents: write
 jobs:
@@ -33,12 +33,12 @@ jobs:
             TAG_NAME="${GITHUB_REF_NAME}"
             DMG_NAME="equaliser-adv-${VERSION}"
           elif [[ "${GITHUB_REF_NAME}" == "dev" ]]; then
-            VERSION="0.0.0-dev-$(date -u '+%Y%m%d').${SHORT_SHA}"
+            VERSION="0.1-dev-$(date -u '+%Y%m%d').${SHORT_SHA}"
             PRERELEASE="true"
             TAG_NAME="latest-dev-build"
             DMG_NAME="equaliser-adv-dev-${VERSION}"
           else
-            VERSION="0.0.0-$(date -u '+%Y%m%d').${SHORT_SHA}"
+            VERSION="0.1-$(date -u '+%Y%m%d').${SHORT_SHA}"
             PRERELEASE="true"
             TAG_NAME="latest-build"
             DMG_NAME="equaliser-adv-${VERSION}"
@@ -68,7 +68,6 @@ jobs:
         run: |
           create-dmg \
             --volname "Equaliser Advanced" \
-            --filesystem APFS \
             --app-drop-link 140 120 \
             --icon "Equaliser Advanced.app" 420 120 \
             --window-size 560 400 \
