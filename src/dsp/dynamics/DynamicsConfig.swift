@@ -571,6 +571,20 @@ struct CrossoverPointConfig: Codable, Equatable, Sendable {
         firTapCount = try c.decodeIfPresent(Int.self, forKey: .firTapCount) ?? 4096
     }
 
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(asymmetricFrequency, forKey: .asymmetricFrequency)
+        try c.encode(lpHz,                forKey: .lpHz)
+        try c.encode(hpHz,                forKey: .hpHz)
+        try c.encode(asymmetricSlope,     forKey: .asymmetricSlope)
+        try c.encode(lpSlope,             forKey: .lpSlope)
+        try c.encode(hpSlope,             forKey: .hpSlope)
+        try c.encode(asymmetricType,      forKey: .asymmetricType)
+        try c.encode(lpType,              forKey: .lpType)
+        try c.encode(hpType,              forKey: .hpType)
+        try c.encode(firTapCount,         forKey: .firTapCount)
+    }
+
     enum ValidationError: LocalizedError {
         case asymmetricLPHzMustBeLessOrEqualHPHz
         case firTapCountMustBePowerOfTwo
@@ -632,6 +646,13 @@ struct ActiveCrossoverConfig: Codable, Equatable, Sendable {
 
     private enum CodingKeys: String, CodingKey {
         case isEnabled, bandCount, lowerPoint, upperPoint
+        // Legacy flat-format keys, retained ONLY for backward-compatible decoding
+        // of presets saved before the lowerPoint/upperPoint nested structure existed.
+        // Never written by encode(to:) — see the encode method below.
+        case legacyLowerCrossoverHz = "lowerCrossoverHz"
+        case legacyUpperCrossoverHz = "upperCrossoverHz"
+        case legacySlope            = "slope"
+        case legacyFilterType       = "filterType"
     }
 
     init(
@@ -652,28 +673,39 @@ struct ActiveCrossoverConfig: Codable, Equatable, Sendable {
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        isEnabled = try c.decodeIfPresent(Bool.self, forKey: .isEnabled) ?? false
-        bandCount = try c.decodeIfPresent(ActiveCrossoverBandCount.self, forKey: .bandCount) ?? .fullRange
-        lowerPoint = try c.decodeIfPresent(CrossoverPointConfig.self, forKey: .lowerPoint) ?? CrossoverPointConfig()
-        upperPoint = try c.decodeIfPresent(CrossoverPointConfig.self, forKey: .upperPoint) ?? {
-            var p = CrossoverPointConfig()
-            p.frequency = 3000.0
-            return p
+        isEnabled  = try c.decodeIfPresent(Bool.self,                    forKey: .isEnabled)  ?? false
+        bandCount  = try c.decodeIfPresent(ActiveCrossoverBandCount.self, forKey: .bandCount)  ?? .fullRange
+        lowerPoint = try c.decodeIfPresent(CrossoverPointConfig.self,    forKey: .lowerPoint) ?? CrossoverPointConfig()
+        upperPoint = try c.decodeIfPresent(CrossoverPointConfig.self,    forKey: .upperPoint) ?? {
+            var p = CrossoverPointConfig(); p.frequency = 3000.0; return p
         }()
 
-        // Backward compatibility: migrate old flat fields if present
-        if let legacyLowerCrossoverHz = try? c.decode(Float.self, forKey: CodingKeys(stringValue: "lowerCrossoverHz")!) {
+        // Backward compatibility: migrate old flat fields if present.
+        // decodeIfPresent returns nil safely when the key is absent — no force-unwrap,
+        // no risk of trapping regardless of which keys exist in the JSON.
+        if let legacyLowerCrossoverHz = try c.decodeIfPresent(Float.self, forKey: .legacyLowerCrossoverHz) {
             lowerPoint.frequency = legacyLowerCrossoverHz
         }
-        if let legacyUpperCrossoverHz = try? c.decode(Float.self, forKey: CodingKeys(stringValue: "upperCrossoverHz")!) {
+        if let legacyUpperCrossoverHz = try c.decodeIfPresent(Float.self, forKey: .legacyUpperCrossoverHz) {
             upperPoint.frequency = legacyUpperCrossoverHz
         }
-        if let legacySlope = try? c.decode(FilterSlope.self, forKey: CodingKeys(stringValue: "slope")!) {
+        if let legacySlope = try c.decodeIfPresent(FilterSlope.self, forKey: .legacySlope) {
             slope = legacySlope
         }
-        if let legacyFilterType = try? c.decode(CrossoverFilterType.self, forKey: CodingKeys(stringValue: "filterType")!) {
+        if let legacyFilterType = try c.decodeIfPresent(CrossoverFilterType.self, forKey: .legacyFilterType) {
             filterType = legacyFilterType
         }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(isEnabled,  forKey: .isEnabled)
+        try c.encode(bandCount,  forKey: .bandCount)
+        try c.encode(lowerPoint, forKey: .lowerPoint)
+        try c.encode(upperPoint, forKey: .upperPoint)
+        // Deliberately do NOT encode the legacy* keys. They exist in CodingKeys
+        // only so init(from:) can look them up safely; new saves always use the
+        // current lowerPoint/upperPoint nested format exclusively.
     }
 
     enum ValidationError: LocalizedError {
