@@ -139,7 +139,7 @@ struct OutputChannelMatrixView: View {
     }
     @ViewBuilder private var activeCrossoverSection: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Active Crossover")
+            Text("Mains Active Crossover")
                 .font(.headline)
             HStack {
                 Picker("Mode", selection: $store.activeCrossoverConfig.bandCount) {
@@ -193,6 +193,10 @@ struct OutputChannelMatrixView: View {
             Text("Quick Topology")
                 .font(.headline)
             HStack(spacing: 8) {
+                Button("Single Amp") {
+                    applySingleAmpTemplate()
+                }
+                .buttonStyle(.bordered)
                 Button("Vertical Bi-Amp") {
                     applyVerticalBiAmpTemplate()
                 }
@@ -215,6 +219,14 @@ struct OutputChannelMatrixView: View {
     }
 
     // MARK: - Topology Templates
+
+    private func applySingleAmpTemplate() {
+        store.activeCrossoverConfig.bandCount = .fullRange
+        store.outputChannelMatrix.channels = [
+            OutputChannelConfig(label: "Left", source: .mainsLeft, target: nil, isEnabled: true),
+            OutputChannelConfig(label: "Right", source: .mainsRight, target: nil, isEnabled: true),
+        ]
+    }
 
     private func applyVerticalBiAmpTemplate() {
         store.activeCrossoverConfig.bandCount = .biAmp
