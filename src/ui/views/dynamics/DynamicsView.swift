@@ -116,10 +116,6 @@ struct DynamicsView: View {
             }
             .pickerStyle(.menu)
             .disabled(!store.dynamicsConfig.advanced.infrasonicFilter.isEnabled)
-
-            Text("ⓘ Removes subsonic content below the threshold of hearing. Protects drivers and amplifiers from HVAC turbulence, record warps, and room pressurisation. Does not affect audible content when set at or below 20 Hz.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
         } header: {
             Text("INFRASONIC FILTER")
         }
@@ -2703,10 +2699,10 @@ private struct DynamicsSliderRow: View {
 // MARK: - Inline Header Widget
 
 /// Compact dynamics widget shown inline in the main window header.
-/// Four-column layout (max 6 toggles per column):
-///   Col 1 — core dynamics chain stages
-///   Col 2 — spectral/spatial utilities
-///   Col 3 — LTI processing (late chain)
+/// Six-column layout (max 8 toggles per column):
+///   Col 1 — core dynamics chain stages, in signal-chain order
+///   Col 2 — later dynamics + spatial stages
+///   Col 3 — LTI processing + global processing-mode flags
 ///   Col 4 — Segmented pickers (stereo / latency / dither)
 ///   Col 5 — Analytics meters
 ///   Col 6 — Goniometer
@@ -2760,6 +2756,8 @@ struct DynamicsInlineView: View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 10) {
                         // Column 1 — early signal chain
+                        definitionEntry(title: "Infrasonic Filter", body: "Steep high-pass filter removing subsonic content below the threshold of hearing. Protects drivers and amplifiers from HVAC turbulence, record warps, and room pressurisation. Does not affect audible content when set at or below 20 Hz.")
+                        Divider()
                         definitionEntry(title: "Hi-Res Coef", body: "Enables high-resolution coefficient decoupling for per-sample filter updates at the cost of higher CPU.")
                         Divider()
                         definitionEntry(title: "DC Filter", body: "0.5 Hz single-pole high-pass removing DC bias before the dynamics chain.")
@@ -2841,12 +2839,12 @@ struct DynamicsInlineView: View {
 
     private var column1: some View {
         VStack(alignment: .leading, spacing: 4) {
+            col2Toggle(label: "Infrasonic",  isOn: inlineInfrasonicFilterEnabled)
             col2Toggle(label: "Hi-Res Coef", isOn: inlineCoefficientDecouplingEnabled)
             col2Toggle(label: "DC Filter",   isOn: inlineDcOffsetEnabled)
             col2Toggle(label: "Widener",     isOn: inlineWideEnabled)
             col2Toggle(label: "LUFS",        isOn: inlineLufsEnabled)
             col2Toggle(label: "Contour",     isOn: inlineLoudnessContourEnabled)
-            col2Toggle(label: "4x OS",       isOn: inlineOversamplingBinding)
             col2Toggle(label: "De-Esser",    isOn: deEsserEnabledBinding)
             col2Toggle(label: "M-Band",      isOn: mbEnabledBinding)
         }
@@ -2877,6 +2875,7 @@ struct DynamicsInlineView: View {
             col2Toggle(label: "Rm. Correct.", isOn: inlineRoomCorrectionBinding)
             col2Toggle(label: "Sub Align",   isOn: inlineSubBassEnabled)
             col2Toggle(label: "FIR",         isOn: inlineConvolutionEnabled)
+            col2Toggle(label: "4x OS",       isOn: inlineOversamplingBinding)
         }
     }
 
@@ -3054,6 +3053,19 @@ struct DynamicsInlineView: View {
         Binding(
             get: { store.dynamicsConfig.advanced.loudnessContourEnabled },
             set: { v in var adv = store.dynamicsConfig.advanced; adv.loudnessContourEnabled = v; store.updateAdvancedProcessing(adv) }
+        )
+    }
+
+    // MARK: - Column 1 Bindings
+
+    private var inlineInfrasonicFilterEnabled: Binding<Bool> {
+        Binding(
+            get: { store.dynamicsConfig.advanced.infrasonicFilter.isEnabled },
+            set: { v in
+                var adv = store.dynamicsConfig.advanced
+                adv.infrasonicFilter.isEnabled = v
+                store.updateAdvancedProcessing(adv)
+            }
         )
     }
 

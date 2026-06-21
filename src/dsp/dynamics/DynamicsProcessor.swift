@@ -1362,8 +1362,11 @@ final class DynamicsProcessor: @unchecked Sendable {
             infrasonicPendingCoeffB0[i]  = Float(sections[i].b0)
             infrasonicPendingCoeffB1[i]  = Float(sections[i].b1)
             infrasonicPendingCoeffB2[i]  = Float(sections[i].b2)
-            infrasonicPendingCoeffNA1[i] = Float(sections[i].a1)
-            infrasonicPendingCoeffNA2[i] = Float(sections[i].a2)
+            // BiquadMath.normalise() returns raw a1/a0, a2/a0 (not pre-negated).
+            // processBiquad() requires na1 = −a1/a0, na2 = −a2/a0 — negate here or the
+            // HP poles land outside the unit circle and the filter diverges to ±Inf.
+            infrasonicPendingCoeffNA1[i] = -Float(sections[i].a1)
+            infrasonicPendingCoeffNA2[i] = -Float(sections[i].a2)
         }
         infrasonicPendingSectionCount = n   // write count LAST, after all coefficients are in place
         hasInfrasonicUpdate.store(true, ordering: .releasing)   // publish, with release ordering
@@ -2003,7 +2006,7 @@ final class DynamicsProcessor: @unchecked Sendable {
         // Apply to all channels (stereo L+R)
         for ch in 0..<numCh {
             guard let buf = abl[ch].mData?.assumingMemoryBound(to: Float.self) else { continue }
-            let stateOffset = ch * sectionCount * 2
+            let stateOffset = ch * Self.maxInfrasonicSections * 2
             for idx in 0..<sectionCount {
                 let b0 = infrasonicCoeffB0[idx]
                 let b1 = infrasonicCoeffB1[idx]
@@ -2033,6 +2036,11 @@ final class DynamicsProcessor: @unchecked Sendable {
         // Infrasonic filter — must run first, before any other processing,
         // to protect all downstream stages including the main EQ and dynamics.
         processInfrasonicFilter(abl: abl, numCh: numCh, count: count)
+        // Defensive: if the HP cascade ever diverges (e.g. a future coefficient
+        // regression), zero NaN/Inf before it can propagate into the RTA, meters,
+        // or any downstream stage — mirrors the safety net already used after
+        // processSubBassPhaseAlignment.
+        DSPSafety.sanitizeAudioBufferList(abl.unsafeMutablePointer)
 
         let wideOn    = stereoWidener.isEnabled
         let lufsOn    = lufsProcessor.isEnabled
