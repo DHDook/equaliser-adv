@@ -22,6 +22,11 @@ struct DynamicsView: View {
                 Text("Dynamics")
                     .font(.system(size: 15, weight: .semibold))
                 Spacer()
+                // Master toggle for infrasonic filter (quick-glance enable)
+                Toggle("Infrasonic Filter", isOn: infrasonicFilterEnabled)
+                    .toggleStyle(.switch)
+                    .controlSize(.small)
+                    .font(.system(size: 11))
             }
             .padding(.horizontal, 20)
             .padding(.top, 16)

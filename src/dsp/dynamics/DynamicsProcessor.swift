@@ -162,14 +162,24 @@ final class DynamicsProcessor: @unchecked Sendable {
     /// Infrasonic HPF state for sub path (mono channel).
     /// Sized for worst case: 16th-order (8 sections) × 1 channel × 2 state vars = 16 Floats.
     nonisolated(unsafe) var infrasonicSubState: [Float]
-    /// Active coefficients staged from main thread via atomic flag.
-    nonisolated(unsafe) var activeInfrasonicSections:  [(b0: Float, b1: Float, b2: Float, na1: Float, na2: Float)]
-    nonisolated(unsafe) var activeInfrasonicSectionCount: Int = 0
-    nonisolated(unsafe) var pendingInfrasonicSections: [(b0: Float, b1: Float, b2: Float, na1: Float, na2: Float)]
-    nonisolated(unsafe) var pendingInfrasonicSectionCount: Int = 0
+    /// Active coefficients — pre-allocated fixed-size buffers, never reassigned.
+    nonisolated(unsafe) var infrasonicCoeffB0:  UnsafeMutablePointer<Float>
+    nonisolated(unsafe) var infrasonicCoeffB1:  UnsafeMutablePointer<Float>
+    nonisolated(unsafe) var infrasonicCoeffB2:  UnsafeMutablePointer<Float>
+    nonisolated(unsafe) var infrasonicCoeffNA1: UnsafeMutablePointer<Float>
+    nonisolated(unsafe) var infrasonicCoeffNA2: UnsafeMutablePointer<Float>
+    nonisolated(unsafe) var infrasonicActiveSectionCount: Int = 0
+    /// Pending coefficients — separate buffers for main thread writes.
+    nonisolated(unsafe) var infrasonicPendingCoeffB0:  UnsafeMutablePointer<Float>
+    nonisolated(unsafe) var infrasonicPendingCoeffB1:  UnsafeMutablePointer<Float>
+    nonisolated(unsafe) var infrasonicPendingCoeffB2:  UnsafeMutablePointer<Float>
+    nonisolated(unsafe) var infrasonicPendingCoeffNA1: UnsafeMutablePointer<Float>
+    nonisolated(unsafe) var infrasonicPendingCoeffNA2: UnsafeMutablePointer<Float>
+    nonisolated(unsafe) var infrasonicPendingSectionCount: Int = 0
     private let hasInfrasonicUpdate = ManagedAtomic<Bool>(false)
     private let _infrasonicEnabled  = ManagedAtomic<Int32>(0)
     private let _infrasonicTarget   = ManagedAtomic<Int32>(0)  // InfrasonicFilterConfig.ApplicationTarget rawValue
+    private static let maxInfrasonicSections = 8   // matches FilterSlope.db96.sectionCount
 
     /// Bass Management crossover instance.
     nonisolated(unsafe) var bassManagementCrossover: BassManagementCrossover
@@ -207,6 +217,8 @@ final class DynamicsProcessor: @unchecked Sendable {
     private var lastBassCrossoverType: CrossoverType = .linkwitzRiley
     /// Last applied mains high-pass frequency (for change detection).
     private var lastMainsHighPassHz: Float = 80.0
+    /// Last applied infrasonic filter config (for change detection).
+    private var previousInfrasonicFilter: InfrasonicFilterConfig?
     /// Bass Management enabled flag (atomic).
     private let _bassManagementEnabled: ManagedAtomic<Int32>
     /// Asymmetric crossover enabled flag (atomic).
@@ -845,8 +857,30 @@ final class DynamicsProcessor: @unchecked Sendable {
         // Infrasonic filter state arrays (32 floats for stereo, 16 for sub)
         self.infrasonicState = Array(repeating: 0.0, count: 32)
         self.infrasonicSubState = Array(repeating: 0.0, count: 16)
-        self.activeInfrasonicSections = []
-        self.pendingInfrasonicSections = []
+
+        // Pre-allocate infrasonic coefficient buffers (fixed-size, never reassigned)
+        self.infrasonicCoeffB0 = .allocate(capacity: Self.maxInfrasonicSections)
+        self.infrasonicCoeffB1 = .allocate(capacity: Self.maxInfrasonicSections)
+        self.infrasonicCoeffB2 = .allocate(capacity: Self.maxInfrasonicSections)
+        self.infrasonicCoeffNA1 = .allocate(capacity: Self.maxInfrasonicSections)
+        self.infrasonicCoeffNA2 = .allocate(capacity: Self.maxInfrasonicSections)
+        self.infrasonicPendingCoeffB0 = .allocate(capacity: Self.maxInfrasonicSections)
+        self.infrasonicPendingCoeffB1 = .allocate(capacity: Self.maxInfrasonicSections)
+        self.infrasonicPendingCoeffB2 = .allocate(capacity: Self.maxInfrasonicSections)
+        self.infrasonicPendingCoeffNA1 = .allocate(capacity: Self.maxInfrasonicSections)
+        self.infrasonicPendingCoeffNA2 = .allocate(capacity: Self.maxInfrasonicSections)
+
+        // Initialize all coefficient buffers to zero
+        self.infrasonicCoeffB0.initialize(repeating: 0, count: Self.maxInfrasonicSections)
+        self.infrasonicCoeffB1.initialize(repeating: 0, count: Self.maxInfrasonicSections)
+        self.infrasonicCoeffB2.initialize(repeating: 0, count: Self.maxInfrasonicSections)
+        self.infrasonicCoeffNA1.initialize(repeating: 0, count: Self.maxInfrasonicSections)
+        self.infrasonicCoeffNA2.initialize(repeating: 0, count: Self.maxInfrasonicSections)
+        self.infrasonicPendingCoeffB0.initialize(repeating: 0, count: Self.maxInfrasonicSections)
+        self.infrasonicPendingCoeffB1.initialize(repeating: 0, count: Self.maxInfrasonicSections)
+        self.infrasonicPendingCoeffB2.initialize(repeating: 0, count: Self.maxInfrasonicSections)
+        self.infrasonicPendingCoeffNA1.initialize(repeating: 0, count: Self.maxInfrasonicSections)
+        self.infrasonicPendingCoeffNA2.initialize(repeating: 0, count: Self.maxInfrasonicSections)
 
         // System volume feed atomics
         _systemVolumeBits = ManagedAtomic(floatBits(1.0))
@@ -976,6 +1010,28 @@ final class DynamicsProcessor: @unchecked Sendable {
         subEQBypassBuf.deallocate()
         pendingSubEQBypassBuf.deinitialize(count: BassManagementConfig.maxSubEQBands)
         pendingSubEQBypassBuf.deallocate()
+
+        // Deallocate infrasonic coefficient buffers
+        infrasonicCoeffB0.deinitialize(count: Self.maxInfrasonicSections)
+        infrasonicCoeffB0.deallocate()
+        infrasonicCoeffB1.deinitialize(count: Self.maxInfrasonicSections)
+        infrasonicCoeffB1.deallocate()
+        infrasonicCoeffB2.deinitialize(count: Self.maxInfrasonicSections)
+        infrasonicCoeffB2.deallocate()
+        infrasonicCoeffNA1.deinitialize(count: Self.maxInfrasonicSections)
+        infrasonicCoeffNA1.deallocate()
+        infrasonicCoeffNA2.deinitialize(count: Self.maxInfrasonicSections)
+        infrasonicCoeffNA2.deallocate()
+        infrasonicPendingCoeffB0.deinitialize(count: Self.maxInfrasonicSections)
+        infrasonicPendingCoeffB0.deallocate()
+        infrasonicPendingCoeffB1.deinitialize(count: Self.maxInfrasonicSections)
+        infrasonicPendingCoeffB1.deallocate()
+        infrasonicPendingCoeffB2.deinitialize(count: Self.maxInfrasonicSections)
+        infrasonicPendingCoeffB2.deallocate()
+        infrasonicPendingCoeffNA1.deinitialize(count: Self.maxInfrasonicSections)
+        infrasonicPendingCoeffNA1.deallocate()
+        infrasonicPendingCoeffNA2.deinitialize(count: Self.maxInfrasonicSections)
+        infrasonicPendingCoeffNA2.deallocate()
     }
 
     // MARK: - Parameter Update API (main thread)
@@ -1285,7 +1341,7 @@ final class DynamicsProcessor: @unchecked Sendable {
         _infrasonicTarget.store(Int32(config.target.rawValue), ordering: .releasing)
 
         guard config.isEnabled else {
-            pendingInfrasonicSectionCount = 0
+            infrasonicPendingSectionCount = 0
             hasInfrasonicUpdate.store(true, ordering: .releasing)
             return
         }
@@ -1301,11 +1357,16 @@ final class DynamicsProcessor: @unchecked Sendable {
             gain: 0.0,
             slope: slope
         )
-        pendingInfrasonicSections = sections.map {
-            (Float($0.b0), Float($0.b1), Float($0.b2), Float($0.a1), Float($0.a2))
+        let n = min(sections.count, Self.maxInfrasonicSections)
+        for i in 0..<n {
+            infrasonicPendingCoeffB0[i]  = Float(sections[i].b0)
+            infrasonicPendingCoeffB1[i]  = Float(sections[i].b1)
+            infrasonicPendingCoeffB2[i]  = Float(sections[i].b2)
+            infrasonicPendingCoeffNA1[i] = Float(sections[i].a1)
+            infrasonicPendingCoeffNA2[i] = Float(sections[i].a2)
         }
-        pendingInfrasonicSectionCount = sections.count
-        hasInfrasonicUpdate.store(true, ordering: .releasing)
+        infrasonicPendingSectionCount = n   // write count LAST, after all coefficients are in place
+        hasInfrasonicUpdate.store(true, ordering: .releasing)   // publish, with release ordering
     }
 
     /// Maps InfrasonicFilterConfig.InfrasonicSlope to FilterSlope for coefficient computation.
@@ -1557,7 +1618,11 @@ final class DynamicsProcessor: @unchecked Sendable {
         setSubBassAlignmentFrequencyHz(adv.subBassAlignmentFrequencyHz)
         setSubBassPhaseQ(adv.subBassPhaseAlignmentQ)
         setOversamplingEnabled(adv.oversamplingEnabled)
-        setInfrasonicFilterConfig(adv.infrasonicFilter, sampleRate: sampleRate)
+        // Only recompute infrasonic filter coefficients if the config actually changed
+        if adv.infrasonicFilter != previousInfrasonicFilter {
+            setInfrasonicFilterConfig(adv.infrasonicFilter, sampleRate: sampleRate)
+            previousInfrasonicFilter = adv.infrasonicFilter
+        }
 
         // Bass Management - rebuild crossover only when parameters change
         setBassManagementEnabled(adv.bassManagement.enabled)
@@ -1913,12 +1978,21 @@ final class DynamicsProcessor: @unchecked Sendable {
 
         // Apply pending coefficient update
         if hasInfrasonicUpdate.exchange(false, ordering: .acquiringAndReleasing) {
-            activeInfrasonicSections     = pendingInfrasonicSections
-            activeInfrasonicSectionCount = pendingInfrasonicSectionCount
+            // Copy element-by-element between fixed pointers — no array reassignment,
+            // no retain/release, just raw Float copies.
+            let n = infrasonicPendingSectionCount
+            for i in 0..<n {
+                infrasonicCoeffB0[i]  = infrasonicPendingCoeffB0[i]
+                infrasonicCoeffB1[i]  = infrasonicPendingCoeffB1[i]
+                infrasonicCoeffB2[i]  = infrasonicPendingCoeffB2[i]
+                infrasonicCoeffNA1[i] = infrasonicPendingCoeffNA1[i]
+                infrasonicCoeffNA2[i] = infrasonicPendingCoeffNA2[i]
+            }
+            infrasonicActiveSectionCount = n
             // Do NOT zero infrasonicState: continuity preserved across updates.
         }
 
-        let sectionCount = activeInfrasonicSectionCount
+        let sectionCount = infrasonicActiveSectionCount
         guard sectionCount > 0 else { return }
 
         // Check target: .subOutputOnly is handled in processBassManagement, not here.
@@ -1931,7 +2005,11 @@ final class DynamicsProcessor: @unchecked Sendable {
             guard let buf = abl[ch].mData?.assumingMemoryBound(to: Float.self) else { continue }
             let stateOffset = ch * sectionCount * 2
             for idx in 0..<sectionCount {
-                let (b0, b1, b2, na1, na2) = activeInfrasonicSections[idx]
+                let b0 = infrasonicCoeffB0[idx]
+                let b1 = infrasonicCoeffB1[idx]
+                let b2 = infrasonicCoeffB2[idx]
+                let na1 = infrasonicCoeffNA1[idx]
+                let na2 = infrasonicCoeffNA2[idx]
                 var w1 = infrasonicState[stateOffset + idx * 2]
                 var w2 = infrasonicState[stateOffset + idx * 2 + 1]
                 for i in 0..<count {
@@ -2806,16 +2884,29 @@ final class DynamicsProcessor: @unchecked Sendable {
         if infrasonicEnabled && (infrasonicTarget == .subOutputOnly || infrasonicTarget == .both) {
             // Apply pending coefficient update
             if hasInfrasonicUpdate.exchange(false, ordering: .acquiringAndReleasing) {
-                activeInfrasonicSections     = pendingInfrasonicSections
-                activeInfrasonicSectionCount = pendingInfrasonicSectionCount
+                // Copy element-by-element between fixed pointers — no array reassignment,
+                // no retain/release, just raw Float copies.
+                let n = infrasonicPendingSectionCount
+                for i in 0..<n {
+                    infrasonicCoeffB0[i]  = infrasonicPendingCoeffB0[i]
+                    infrasonicCoeffB1[i]  = infrasonicPendingCoeffB1[i]
+                    infrasonicCoeffB2[i]  = infrasonicPendingCoeffB2[i]
+                    infrasonicCoeffNA1[i] = infrasonicPendingCoeffNA1[i]
+                    infrasonicCoeffNA2[i] = infrasonicPendingCoeffNA2[i]
+                }
+                infrasonicActiveSectionCount = n
             }
 
-            let sectionCount = activeInfrasonicSectionCount
+            let sectionCount = infrasonicActiveSectionCount
             guard sectionCount > 0 else { return }
 
             // Apply to mono low buffer using infrasonicSubState
             for idx in 0..<sectionCount {
-                let (b0, b1, b2, na1, na2) = activeInfrasonicSections[idx]
+                let b0 = infrasonicCoeffB0[idx]
+                let b1 = infrasonicCoeffB1[idx]
+                let b2 = infrasonicCoeffB2[idx]
+                let na1 = infrasonicCoeffNA1[idx]
+                let na2 = infrasonicCoeffNA2[idx]
                 var w1 = infrasonicSubState[idx * 2]
                 var w2 = infrasonicSubState[idx * 2 + 1]
                 for i in 0..<count {
