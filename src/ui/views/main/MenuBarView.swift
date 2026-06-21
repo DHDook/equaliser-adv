@@ -33,8 +33,14 @@ struct MenuBarContentView: View {
 
     private var headerSection: some View {
         HStack(spacing: 8) {
-            Image(systemName: "slider.vertical.3")
-                .font(.title3)
+            Image(nsImage: {
+                let img = NSImage(named: "MenuBarIcon")
+                    ?? NSImage(systemSymbolName: "slider.vertical.3",
+                               accessibilityDescription: "Notch Sixty")!
+                img.isTemplate = true
+                return img
+            }())
+            .frame(width: 18, height: 18)
             Text("Notch Sixty")
                 .font(.headline)
             Spacer()
