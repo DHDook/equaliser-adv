@@ -69,6 +69,11 @@ generate_icon() {
     echo "Error: actool did not produce AppIcon.icns" >&2; exit 1
   fi
 
+  # driver.sh checks for the icon at .build/AppIcon.icns (its conventional
+  # path). Copy it there so driver.sh finds it immediately and never
+  # attempts to regenerate.
+  cp "$ICON_ICNS" "$ROOT_DIR/.build/AppIcon.icns"
+
   echo "Icon assets ready."
 }
 
