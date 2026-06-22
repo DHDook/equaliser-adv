@@ -62,7 +62,6 @@ struct DynamicsView: View {
                         systemUtilitiesSection
                         ltiDenoisingSection
                         bassManagementSection
-                        ltiDynamicEQSection
                         ltiFIRSection
                         ltiRoomCorrectionSection
                         ltiConvolutionSection
@@ -1111,124 +1110,6 @@ struct DynamicsView: View {
             ltiBassManagementUnifiedSection
         } header: {
             Text("Bass Management")
-        }
-    }
-
-    // MARK: - LTI: Dynamic EQ Section
-
-    private var ltiDynamicEQSection: some View {
-        Section {
-            Toggle("Dynamic EQ", isOn: dynamicEQEnabledBinding)
-                .toggleStyle(.switch)
-                .controlSize(.regular)
-                .font(.system(size: 13))
-
-            if store.dynamicsConfig.advanced.dynamicEQ.enabled {
-                Button("Add Band") {
-                    var adv = store.dynamicsConfig.advanced
-                    if adv.dynamicEQ.bands.count < DynamicEQConfig.maxDynamicEQBands {
-                        adv.dynamicEQ.bands.append(DynamicEQBand(
-                            frequency: 1000.0,
-                            q: 1.0,
-                            gain: 0.0,
-                            thresholdDB: -20.0,
-                            ratio: 2.0,
-                            attackMs: 10.0,
-                            releaseMs: 100.0,
-                            bypass: false
-                        ))
-                        store.updateAdvancedProcessing(adv)
-                    }
-                }
-                .font(.system(size: 13))
-                .disabled(store.dynamicsConfig.advanced.dynamicEQ.bands.count >= DynamicEQConfig.maxDynamicEQBands)
-
-                ForEach(store.dynamicsConfig.advanced.dynamicEQ.bands.indices, id: \.self) { bandIndex in
-                    VStack(alignment: .leading, spacing: 4) {
-                        HStack {
-                            Text("Band \(bandIndex + 1)")
-                                .font(.system(size: 13, weight: .medium))
-                            Spacer()
-                            Toggle("", isOn: dynamicEQBandBypassBinding(bandIndex))
-                                .toggleStyle(.switch)
-                                .controlSize(.mini)
-                            Button("Remove") {
-                                var adv = store.dynamicsConfig.advanced
-                                adv.dynamicEQ.bands.remove(at: bandIndex)
-                                store.updateAdvancedProcessing(adv)
-                            }
-                            .font(.system(size: 11))
-                            .foregroundStyle(.red)
-                        }
-
-                        DynamicsSliderRow(
-                            label: "Frequency",
-                            value: dynamicEQBandFrequencyBinding(bandIndex),
-                            range: 20.0...20000.0,
-                            step: 10.0,
-                            formatValue: { String(format: "%.0f Hz", $0) },
-                            isDisabled: false
-                        )
-
-                        DynamicsSliderRow(
-                            label: "Q",
-                            value: dynamicEQBandQBinding(bandIndex),
-                            range: 0.4...8.0,
-                            step: 0.1,
-                            formatValue: { String(format: "%.1f", $0) },
-                            isDisabled: false
-                        )
-
-                        DynamicsSliderRow(
-                            label: "Gain",
-                            value: dynamicEQBandGainBinding(bandIndex),
-                            range: -18.0...6.0,
-                            step: 0.5,
-                            formatValue: { String(format: "%+.1f dB", $0) },
-                            isDisabled: false
-                        )
-
-                        DynamicsSliderRow(
-                            label: "Threshold",
-                            value: dynamicEQBandThresholdBinding(bandIndex),
-                            range: -60.0...0.0,
-                            step: 1.0,
-                            formatValue: { String(format: "%.0f dBFS", $0) },
-                            isDisabled: false
-                        )
-
-                        DynamicsSliderRow(
-                            label: "Ratio",
-                            value: dynamicEQBandRatioBinding(bandIndex),
-                            range: 1.0...10.0,
-                            step: 0.5,
-                            formatValue: { String(format: "%.1f:1", $0) },
-                            isDisabled: false
-                        )
-
-                        DynamicsSliderRow(
-                            label: "Attack",
-                            value: dynamicEQBandAttackBinding(bandIndex),
-                            range: 1.0...100.0,
-                            step: 1.0,
-                            formatValue: { String(format: "%.0f ms", $0) },
-                            isDisabled: false
-                        )
-
-                        DynamicsSliderRow(
-                            label: "Release",
-                            value: dynamicEQBandReleaseBinding(bandIndex),
-                            range: 10.0...1000.0,
-                            step: 10.0,
-                            formatValue: { String(format: "%.0f ms", $0) },
-                            isDisabled: false
-                        )
-                    }
-                    .padding(.vertical, 2)
-                }
-            }
-        } header: {
-            Text("Dynamic EQ")
         }
     }
 
@@ -2429,60 +2310,6 @@ struct DynamicsView: View {
         Binding(
             get: { Double(store.dynamicsConfig.advanced.bassManagement.mainsHighPassHz) },
             set: { val in var adv = store.dynamicsConfig.advanced; adv.bassManagement.mainsHighPassHz = Float(val); store.updateAdvancedProcessing(adv) }
-        )
-    }
-    private var dynamicEQEnabledBinding: Binding<Bool> {
-        Binding(
-            get: { store.dynamicsConfig.advanced.dynamicEQ.enabled },
-            set: { val in var adv = store.dynamicsConfig.advanced; adv.dynamicEQ.enabled = val; store.updateAdvancedProcessing(adv) }
-        )
-    }
-    private func dynamicEQBandBypassBinding(_ index: Int) -> Binding<Bool> {
-        Binding(
-            get: { store.dynamicsConfig.advanced.dynamicEQ.bands[index].bypass },
-            set: { val in var adv = store.dynamicsConfig.advanced; adv.dynamicEQ.bands[index].bypass = val; store.updateAdvancedProcessing(adv) }
-        )
-    }
-    private func dynamicEQBandFrequencyBinding(_ index: Int) -> Binding<Double> {
-        Binding(
-            get: { Double(store.dynamicsConfig.advanced.dynamicEQ.bands[index].frequency) },
-            set: { val in var adv = store.dynamicsConfig.advanced; adv.dynamicEQ.bands[index].frequency = Float(val); store.updateAdvancedProcessing(adv) }
-        )
-    }
-    private func dynamicEQBandQBinding(_ index: Int) -> Binding<Double> {
-        Binding(
-            get: { Double(store.dynamicsConfig.advanced.dynamicEQ.bands[index].q) },
-            set: { val in var adv = store.dynamicsConfig.advanced; adv.dynamicEQ.bands[index].q = Float(val); store.updateAdvancedProcessing(adv) }
-        )
-    }
-    private func dynamicEQBandGainBinding(_ index: Int) -> Binding<Double> {
-        Binding(
-            get: { Double(store.dynamicsConfig.advanced.dynamicEQ.bands[index].gain) },
-            set: { val in var adv = store.dynamicsConfig.advanced; adv.dynamicEQ.bands[index].gain = Float(val); store.updateAdvancedProcessing(adv) }
-        )
-    }
-    private func dynamicEQBandThresholdBinding(_ index: Int) -> Binding<Double> {
-        Binding(
-            get: { Double(store.dynamicsConfig.advanced.dynamicEQ.bands[index].thresholdDB) },
-            set: { val in var adv = store.dynamicsConfig.advanced; adv.dynamicEQ.bands[index].thresholdDB = Float(val); store.updateAdvancedProcessing(adv) }
-        )
-    }
-    private func dynamicEQBandRatioBinding(_ index: Int) -> Binding<Double> {
-        Binding(
-            get: { Double(store.dynamicsConfig.advanced.dynamicEQ.bands[index].ratio) },
-            set: { val in var adv = store.dynamicsConfig.advanced; adv.dynamicEQ.bands[index].ratio = Float(val); store.updateAdvancedProcessing(adv) }
-        )
-    }
-    private func dynamicEQBandAttackBinding(_ index: Int) -> Binding<Double> {
-        Binding(
-            get: { Double(store.dynamicsConfig.advanced.dynamicEQ.bands[index].attackMs) },
-            set: { val in var adv = store.dynamicsConfig.advanced; adv.dynamicEQ.bands[index].attackMs = Float(val); store.updateAdvancedProcessing(adv) }
-        )
-    }
-    private func dynamicEQBandReleaseBinding(_ index: Int) -> Binding<Double> {
-        Binding(
-            get: { Double(store.dynamicsConfig.advanced.dynamicEQ.bands[index].releaseMs) },
-            set: { val in var adv = store.dynamicsConfig.advanced; adv.dynamicEQ.bands[index].releaseMs = Float(val); store.updateAdvancedProcessing(adv) }
         )
     }
     private var firEnabledBinding: Binding<Bool> {

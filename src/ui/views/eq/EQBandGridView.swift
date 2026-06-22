@@ -12,6 +12,7 @@ struct EQBandGridView: View {
                     ForEach(0..<store.bandCount, id: \.self) { index in
                         EQBandSliderView(
                             index: index,
+                            bandNumber: index + 1,
                             band: store.eqConfiguration.bands[index],
                             gain: Binding(
                                 get: { store.eqConfiguration.bands[index].gain },
@@ -27,6 +28,9 @@ struct EQBandGridView: View {
                             filterTypeUpdate: { store.updateBandFilterType(index: index, filterType: $0) },
                             slopeUpdate: { store.updateBandSlope(index: index, slope: $0) },
                             bypassUpdate: { store.updateBandBypass(index: index, bypass: $0) },
+                            onDelete: store.bandCount > 1 ? { store.removeBand(at: index) } : nil,
+                            isDynamicUpdate: { store.updateBandDynamicMode(index: index, isDynamic: $0) },
+                            dynamicParamsUpdate: { store.updateBandDynamicParams(index: index, params: $0) },
                             onNavigateLeft: {
                                 navigateToBand(index - 1)
                             },

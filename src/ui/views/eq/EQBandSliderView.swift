@@ -3,6 +3,7 @@ import SwiftUI
 /// A fully parametric EQ band column.
 struct EQBandSliderView: View {
     let index: Int
+    let bandNumber: Int   // 1-based display label; computed by parent from ForEach index
     let band: EQBandConfiguration
     @Binding var gain: Float
     let frequencyUpdate: (Float) -> Void
@@ -10,6 +11,9 @@ struct EQBandSliderView: View {
     let filterTypeUpdate: (FilterType) -> Void
     let slopeUpdate: (FilterSlope) -> Void
     let bypassUpdate: (Bool) -> Void
+    var onDelete: (() -> Void)? = nil
+    var isDynamicUpdate: ((Bool) -> Void)? = nil
+    var dynamicParamsUpdate: ((DynamicBandParams) -> Void)? = nil
     var onNavigateLeft: (() -> Void)? = nil
     var onNavigateRight: (() -> Void)? = nil
     var startEditing: Bool = false
@@ -50,28 +54,52 @@ struct EQBandSliderView: View {
 
     private var header: some View {
         VStack(alignment: .center, spacing: 4) {
-            Button {
-                isShowingDetail = true
-            } label: {
-                Image(systemName: "gearshape.fill")
-                    .font(.system(size: 12, weight: .bold))
-                    .padding(4)
-            }
-            .buttonStyle(.plain)
-            .popover(isPresented: $isShowingDetail, arrowEdge: .top) {
-                EQBandDetailPopover(
-                    band: band,
-                    gainUpdate: { newGain in
-                        gain = AudioConstants.clampGain(newGain)
-                    },
-                    frequencyUpdate: frequencyUpdate,
-                    qUpdate: qUpdate,
-                    filterTypeUpdate: filterTypeUpdate,
-                    slopeUpdate: slopeUpdate,
-                    bypassUpdate: bypassUpdate,
-                    onClose: { isShowingDetail = false }
-                )
-                .frame(width: 240)
+            Text("\(bandNumber)")
+                .font(.system(size: 9, weight: .medium, design: .rounded))
+                .foregroundStyle(band.isDynamic ? .accent : .tertiary)
+                .monospacedDigit()
+
+            HStack(spacing: 0) {
+                Spacer(minLength: 0)
+                Button {
+                    isShowingDetail = true
+                } label: {
+                    Image(systemName: "gearshape.fill")
+                        .font(.system(size: 12, weight: .bold))
+                        .padding(4)
+                }
+                .buttonStyle(.plain)
+                .popover(isPresented: $isShowingDetail, arrowEdge: .top) {
+                    EQBandDetailPopover(
+                        band: band,
+                        gainUpdate: { newGain in
+                            gain = AudioConstants.clampGain(newGain)
+                        },
+                        frequencyUpdate: frequencyUpdate,
+                        qUpdate: qUpdate,
+                        filterTypeUpdate: filterTypeUpdate,
+                        slopeUpdate: slopeUpdate,
+                        bypassUpdate: bypassUpdate,
+                        isDynamicUpdate: { isDynamic in
+                            isDynamicUpdate?(isDynamic)
+                        },
+                        dynamicParamsUpdate: { params in
+                            dynamicParamsUpdate?(params)
+                        },
+                        onClose: { isShowingDetail = false }
+                    )
+                    .frame(width: 240)
+                }
+                Spacer(minLength: 0)
+                if let onDelete {
+                    Button(role: .destructive, action: onDelete) {
+                        Image(systemName: "trash")
+                            .font(.system(size: 9, weight: .regular))
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Delete band")
+                }
             }
 
             InlineEditableValue(
@@ -164,6 +192,8 @@ struct EQBandDetailPopover: View {
     let filterTypeUpdate: (FilterType) -> Void
     let slopeUpdate: (FilterSlope) -> Void
     let bypassUpdate: (Bool) -> Void
+    let isDynamicUpdate: (Bool) -> Void
+    let dynamicParamsUpdate: (DynamicBandParams) -> Void
     let onClose: () -> Void
 
     @State private var gain: Float
@@ -172,14 +202,23 @@ struct EQBandDetailPopover: View {
     @State private var filterType: FilterType
     @State private var slope: FilterSlope
     @State private var bypass: Bool
+    @State private var isDynamic: Bool
+    @State private var thresholdDB: Float
+    @State private var ratio: Float
+    @State private var attackMs: Float
+    @State private var releaseMs: Float
 
     @State private var gainText: String = ""
     @State private var frequencyText: String = ""
     @State private var bandwidthText: String = ""
+    @State private var thresholdText: String = ""
+    @State private var ratioText: String = ""
+    @State private var attackText: String = ""
+    @State private var releaseText: String = ""
     @FocusState private var focusedField: Field?
 
     enum Field: Hashable {
-        case gain, frequency, bandwidth
+        case gain, frequency, bandwidth, threshold, ratio, attack, release
     }
 
     init(band: EQBandConfiguration,
@@ -189,6 +228,8 @@ struct EQBandDetailPopover: View {
          filterTypeUpdate: @escaping (FilterType) -> Void,
          slopeUpdate: @escaping (FilterSlope) -> Void,
          bypassUpdate: @escaping (Bool) -> Void,
+         isDynamicUpdate: @escaping (Bool) -> Void,
+         dynamicParamsUpdate: @escaping (DynamicBandParams) -> Void,
          onClose: @escaping () -> Void) {
         _gain = State(initialValue: band.gain)
         _frequency = State(initialValue: band.frequency)
@@ -196,16 +237,26 @@ struct EQBandDetailPopover: View {
         _filterType = State(initialValue: band.filterType)
         _slope = State(initialValue: band.slope)
         _bypass = State(initialValue: band.bypass)
+        _isDynamic = State(initialValue: band.isDynamic)
+        _thresholdDB = State(initialValue: band.dynamicParams.thresholdDB)
+        _ratio = State(initialValue: band.dynamicParams.ratio)
+        _attackMs = State(initialValue: band.dynamicParams.attackMs)
+        _releaseMs = State(initialValue: band.dynamicParams.releaseMs)
         _gainText = State(initialValue: String(format: "%.1f", band.gain))
         _frequencyText = State(initialValue: String(format: "%.0f", band.frequency))
-        // Bandwidth text is initialised in onAppear based on display mode
         _bandwidthText = State(initialValue: "")
+        _thresholdText = State(initialValue: String(format: "%.1f", band.dynamicParams.thresholdDB))
+        _ratioText = State(initialValue: String(format: "%.1f", band.dynamicParams.ratio))
+        _attackText = State(initialValue: String(format: "%.0f", band.dynamicParams.attackMs))
+        _releaseText = State(initialValue: String(format: "%.0f", band.dynamicParams.releaseMs))
         self.gainUpdate = gainUpdate
         self.frequencyUpdate = frequencyUpdate
         self.qUpdate = qUpdate
         self.filterTypeUpdate = filterTypeUpdate
         self.slopeUpdate = slopeUpdate
         self.bypassUpdate = bypassUpdate
+        self.isDynamicUpdate = isDynamicUpdate
+        self.dynamicParamsUpdate = dynamicParamsUpdate
         self.onClose = onClose
     }
 
@@ -214,32 +265,15 @@ struct EQBandDetailPopover: View {
             Text("Band Options")
                 .font(.caption)
 
-            // Gain
-            HStack {
-                Text("Gain (dB)")
-                Spacer()
-                TextField("0.0", text: $gainText)
-                    .textFieldStyle(.roundedBorder)
-                    .frame(width: 70)
-                    .multilineTextAlignment(.trailing)
-                    .focused($focusedField, equals: .gain)
-                    .onSubmit {
-                        if let value = Float(gainText) {
-                            let clamped = AudioConstants.clampGain(value)
-                            gain = clamped
-                            gainText = String(format: "%.1f", clamped)
-                            gainUpdate(clamped)
-                        }
-                        focusedField = .frequency
-                    }
-                    .onKeyPress(.upArrow) {
-                        adjustGain(by: 0.1)
-                        return .handled
-                    }
-                    .onKeyPress(.downArrow) {
-                        adjustGain(by: -0.1)
-                        return .handled
-                    }
+            // Mode picker
+            Picker("Mode", selection: $isDynamic) {
+                Text("Parametric").tag(false)
+                Text("Dynamic").tag(true)
+            }
+            .pickerStyle(.segmented)
+            .onChange(of: isDynamic) { _, newValue in
+                isDynamicUpdate(newValue)
+                commitDynamicParams()
             }
 
             // Frequency
@@ -258,7 +292,7 @@ struct EQBandDetailPopover: View {
                             frequencyText = String(format: "%.0f", clamped)
                             frequencyUpdate(clamped)
                         }
-                        focusedField = .bandwidth
+                        focusedField = .gain
                     }
                     .onKeyPress(.upArrow) {
                         adjustFrequency(by: 10)
@@ -266,6 +300,34 @@ struct EQBandDetailPopover: View {
                     }
                     .onKeyPress(.downArrow) {
                         adjustFrequency(by: -10)
+                        return .handled
+                    }
+            }
+
+            // Gain
+            HStack {
+                Text("Gain (dB)")
+                Spacer()
+                TextField("0.0", text: $gainText)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 70)
+                    .multilineTextAlignment(.trailing)
+                    .focused($focusedField, equals: .gain)
+                    .onSubmit {
+                        if let value = Float(gainText) {
+                            let clamped = AudioConstants.clampGain(value)
+                            gain = clamped
+                            gainText = String(format: "%.1f", clamped)
+                            gainUpdate(clamped)
+                        }
+                        focusedField = .bandwidth
+                    }
+                    .onKeyPress(.upArrow) {
+                        adjustGain(by: 0.1)
+                        return .handled
+                    }
+                    .onKeyPress(.downArrow) {
+                        adjustGain(by: -0.1)
                         return .handled
                     }
             }
@@ -314,6 +376,119 @@ struct EQBandDetailPopover: View {
                 bandwidthText = BandwidthConverter.formatForInput(q: q, mode: newMode)
             }
 
+            // Dynamic EQ parameters (shown only when mode == Dynamic)
+            if isDynamic {
+                Divider()
+
+                // Threshold (dB)
+                HStack {
+                    Text("Threshold (dB)")
+                    Spacer()
+                    TextField("-20", text: $thresholdText)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 70)
+                        .multilineTextAlignment(.trailing)
+                        .focused($focusedField, equals: .threshold)
+                        .onSubmit {
+                            if let value = Float(thresholdText) {
+                                let clamped = clampThreshold(value)
+                                thresholdDB = clamped
+                                thresholdText = String(format: "%.1f", clamped)
+                                commitDynamicParams()
+                            }
+                        }
+                        .onKeyPress(.upArrow) {
+                            adjustThreshold(by: 1.0)
+                            return .handled
+                        }
+                        .onKeyPress(.downArrow) {
+                            adjustThreshold(by: -1.0)
+                            return .handled
+                        }
+                }
+
+                // Ratio
+                HStack {
+                    Text("Ratio")
+                    Spacer()
+                    TextField("2.0", text: $ratioText)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 70)
+                        .multilineTextAlignment(.trailing)
+                        .focused($focusedField, equals: .ratio)
+                        .onSubmit {
+                            if let value = Float(ratioText) {
+                                let clamped = clampRatio(value)
+                                ratio = clamped
+                                ratioText = String(format: "%.1f", clamped)
+                                commitDynamicParams()
+                            }
+                        }
+                        .onKeyPress(.upArrow) {
+                            adjustRatio(by: 0.1)
+                            return .handled
+                        }
+                        .onKeyPress(.downArrow) {
+                            adjustRatio(by: -0.1)
+                            return .handled
+                        }
+                }
+
+                // Attack (ms)
+                HStack {
+                    Text("Attack (ms)")
+                    Spacer()
+                    TextField("10", text: $attackText)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 70)
+                        .multilineTextAlignment(.trailing)
+                        .focused($focusedField, equals: .attack)
+                        .onSubmit {
+                            if let value = Float(attackText) {
+                                let clamped = clampAttack(value)
+                                attackMs = clamped
+                                attackText = String(format: "%.0f", clamped)
+                                commitDynamicParams()
+                            }
+                        }
+                        .onKeyPress(.upArrow) {
+                            adjustAttack(by: 1.0)
+                            return .handled
+                        }
+                        .onKeyPress(.downArrow) {
+                            adjustAttack(by: -1.0)
+                            return .handled
+                        }
+                }
+
+                // Release (ms)
+                HStack {
+                    Text("Release (ms)")
+                    Spacer()
+                    TextField("100", text: $releaseText)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 70)
+                        .multilineTextAlignment(.trailing)
+                        .focused($focusedField, equals: .release)
+                        .onSubmit {
+                            if let value = Float(releaseText) {
+                                let clamped = clampRelease(value)
+                                releaseMs = clamped
+                                releaseText = String(format: "%.0f", clamped)
+                                commitDynamicParams()
+                            }
+                        }
+                        .onKeyPress(.upArrow) {
+                            adjustRelease(by: 10.0)
+                            return .handled
+                        }
+                        .onKeyPress(.downArrow) {
+                            adjustRelease(by: -10.0)
+                            return .handled
+                        }
+                }
+            }
+
             Divider()
 
             Picker("Filter Type", selection: $filterType) {
@@ -350,7 +525,7 @@ struct EQBandDetailPopover: View {
             return .handled
         }
         .onAppear {
-            focusedField = .gain
+            focusedField = .frequency
         }
     }
 
@@ -395,5 +570,65 @@ struct EQBandDetailPopover: View {
         q = qValue
         bandwidthText = BandwidthConverter.formatForInput(q: qValue, mode: store.bandwidthDisplayMode)
         qUpdate(qValue)
+    }
+
+    // MARK: - Dynamic EQ helpers
+
+    private func clampThreshold(_ value: Float) -> Float {
+        max(-60.0, min(0.0, value))
+    }
+
+    private func clampRatio(_ value: Float) -> Float {
+        max(1.0, min(10.0, value))
+    }
+
+    private func clampAttack(_ value: Float) -> Float {
+        max(1.0, min(100.0, value))
+    }
+
+    private func clampRelease(_ value: Float) -> Float {
+        max(10.0, min(1000.0, value))
+    }
+
+    private func adjustThreshold(by delta: Float) {
+        let current = Float(thresholdText) ?? thresholdDB
+        let clamped = clampThreshold(current + delta)
+        thresholdDB = clamped
+        thresholdText = String(format: "%.1f", clamped)
+        commitDynamicParams()
+    }
+
+    private func adjustRatio(by delta: Float) {
+        let current = Float(ratioText) ?? ratio
+        let clamped = clampRatio(current + delta)
+        ratio = clamped
+        ratioText = String(format: "%.1f", clamped)
+        commitDynamicParams()
+    }
+
+    private func adjustAttack(by delta: Float) {
+        let current = Float(attackText) ?? attackMs
+        let clamped = clampAttack(current + delta)
+        attackMs = clamped
+        attackText = String(format: "%.0f", clamped)
+        commitDynamicParams()
+    }
+
+    private func adjustRelease(by delta: Float) {
+        let current = Float(releaseText) ?? releaseMs
+        let clamped = clampRelease(current + delta)
+        releaseMs = clamped
+        releaseText = String(format: "%.0f", clamped)
+        commitDynamicParams()
+    }
+
+    private func commitDynamicParams() {
+        let params = DynamicBandParams(
+            thresholdDB: thresholdDB,
+            ratio: ratio,
+            attackMs: attackMs,
+            releaseMs: releaseMs
+        )
+        dynamicParamsUpdate(params)
     }
 }

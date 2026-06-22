@@ -12,6 +12,15 @@ enum ChannelFocus: String, Codable, Sendable {
     case side   // active when channelMode == .midSide
 }
 
+/// Dynamic EQ parameters stored inline on a band.
+/// Only active when `EQBandConfiguration.isDynamic == true`.
+struct DynamicBandParams: Codable, Sendable, Equatable {
+    var thresholdDB: Float = -20.0   // dBFS, –60…0
+    var ratio: Float       = 2.0     // 1.0…10.0
+    var attackMs: Float    = 10.0    // ms, 1…100
+    var releaseMs: Float   = 100.0   // ms, 10…1000
+}
+
 /// Configuration for a single EQ band.
 ///
 /// Q (quality factor) is stored natively. Bandwidth in octaves is a display preference
@@ -26,15 +35,21 @@ struct EQBandConfiguration: Codable, Sendable {
         case filterType
         case bypass
         case slope
+        case isDynamic
+        case dynamicParams
     }
 
-    init(frequency: Float, q: Float, gain: Float, filterType: FilterType, bypass: Bool, slope: FilterSlope = .db12) {
-        self.frequency = frequency
-        self.q = q
-        self.gain = gain
-        self.filterType = filterType
-        self.bypass = bypass
-        self.slope = slope
+    init(frequency: Float, q: Float, gain: Float, filterType: FilterType, bypass: Bool, slope: FilterSlope = .db12,
+         isDynamic: Bool = false,
+         dynamicParams: DynamicBandParams = DynamicBandParams()) {
+        self.frequency     = frequency
+        self.q             = q
+        self.gain          = gain
+        self.filterType    = filterType
+        self.bypass        = bypass
+        self.slope         = slope
+        self.isDynamic     = isDynamic
+        self.dynamicParams = dynamicParams
     }
 
     init(from decoder: Decoder) throws {
@@ -63,6 +78,9 @@ struct EQBandConfiguration: Codable, Sendable {
         } else {
             slope = .db12
         }
+
+        isDynamic     = (try container.decodeIfPresent(Bool.self,             forKey: .isDynamic))     ?? false
+        dynamicParams = (try container.decodeIfPresent(DynamicBandParams.self, forKey: .dynamicParams)) ?? DynamicBandParams()
     }
 
     func encode(to encoder: Encoder) throws {
@@ -73,6 +91,10 @@ struct EQBandConfiguration: Codable, Sendable {
         try container.encode(filterType.rawValue, forKey: .filterType)
         try container.encode(bypass, forKey: .bypass)
         try container.encode(slope.rawValue, forKey: .slope)
+        try container.encode(isDynamic, forKey: .isDynamic)
+        if isDynamic {
+            try container.encode(dynamicParams, forKey: .dynamicParams)
+        }
     }
 
     var frequency: Float
@@ -81,6 +103,11 @@ struct EQBandConfiguration: Codable, Sendable {
     var filterType: FilterType
     var bypass: Bool
     var slope: FilterSlope
+
+    /// When true, this band is processed as a Dynamic EQ band.
+    var isDynamic: Bool = false
+    /// Dynamic envelope parameters. Ignored when `isDynamic == false`.
+    var dynamicParams: DynamicBandParams = DynamicBandParams()
 
     /// Default parametric band configuration.
     static func parametric(frequency: Float, q: Float = EQConfiguration.defaultQ) -> EQBandConfiguration {
@@ -370,6 +397,65 @@ final class EQConfiguration: ObservableObject {
         case .stereo, .midSide:
             activeBandCount = max(leftState.userEQ.activeBandCount, rightState.userEQ.activeBandCount)
         }
+    }
+
+    /// Removes the band at the given index by shifting all subsequent bands
+    /// left by one position in the pre-allocated array, then decrementing
+    /// activeBandCount. The freed slot at the end of the active range is reset
+    /// to a default parametric band to avoid stale data.
+    ///
+    /// In linked mode both channels are modified.
+    /// In stereo/midSide mode only the focused channel is modified.
+    func removeBand(at index: Int) {
+        let currentCount: Int
+        switch channelMode {
+        case .linked:
+            currentCount = activeBandCount
+        case .stereo, .midSide:
+            let editLeft = (channelFocus == .left || channelFocus == .mid)
+            currentCount = editLeft
+                ? leftState.userEQ.activeBandCount
+                : rightState.userEQ.activeBandCount
+        }
+
+        guard currentCount > 1 else { return }  // Minimum 1 band (matches clampBandCount)
+        guard index >= 0 && index < currentCount else { return }
+
+        let newCount = currentCount - 1
+        let defaultBand = EQBandConfiguration.parametric(frequency: 1000, q: EQConfiguration.defaultQ)
+
+        switch channelMode {
+        case .linked:
+            for i in index..<newCount {
+                leftState.userEQ.bands[i]  = leftState.userEQ.bands[i + 1]
+                rightState.userEQ.bands[i] = rightState.userEQ.bands[i + 1]
+            }
+            leftState.userEQ.bands[newCount]  = defaultBand
+            rightState.userEQ.bands[newCount] = defaultBand
+            leftState.userEQ.activeBandCount  = newCount
+            rightState.userEQ.activeBandCount = newCount
+            activeBandCount = newCount
+
+        case .stereo, .midSide:
+            let editLeft = (channelFocus == .left || channelFocus == .mid)
+            if editLeft {
+                for i in index..<newCount {
+                    leftState.userEQ.bands[i] = leftState.userEQ.bands[i + 1]
+                }
+                leftState.userEQ.bands[newCount] = defaultBand
+                leftState.userEQ.activeBandCount = newCount
+            } else {
+                for i in index..<newCount {
+                    rightState.userEQ.bands[i] = rightState.userEQ.bands[i + 1]
+                }
+                rightState.userEQ.bands[newCount] = defaultBand
+                rightState.userEQ.activeBandCount = newCount
+            }
+            activeBandCount = max(leftState.userEQ.activeBandCount,
+                                  rightState.userEQ.activeBandCount)
+        }
+
+        objectWillChange.send()
     }
 
     /// Checks if any bands up to the given count have been modified (non-zero gain).
@@ -694,6 +780,42 @@ final class EQConfiguration: ObservableObject {
         }
         if targetChannel == .both || targetChannel == .right {
             rightState.userEQ.bands[index].slope = slope
+        }
+        objectWillChange.send()
+    }
+
+    /// Sets whether a band operates in dynamic mode.
+    /// In linked mode, updates both channels.
+    func updateBandDynamicMode(index: Int, isDynamic: Bool) {
+        guard isValidIndex(index) else { return }
+        if channelMode == .linked {
+            leftState.userEQ.bands[index].isDynamic  = isDynamic
+            rightState.userEQ.bands[index].isDynamic = isDynamic
+        } else {
+            let editLeft = (channelFocus == .left || channelFocus == .mid)
+            if editLeft {
+                leftState.userEQ.bands[index].isDynamic = isDynamic
+            } else {
+                rightState.userEQ.bands[index].isDynamic = isDynamic
+            }
+        }
+        objectWillChange.send()
+    }
+
+    /// Updates the dynamic envelope parameters for a band.
+    /// In linked mode, updates both channels.
+    func updateBandDynamicParams(index: Int, params: DynamicBandParams) {
+        guard isValidIndex(index) else { return }
+        if channelMode == .linked {
+            leftState.userEQ.bands[index].dynamicParams  = params
+            rightState.userEQ.bands[index].dynamicParams = params
+        } else {
+            let editLeft = (channelFocus == .left || channelFocus == .mid)
+            if editLeft {
+                leftState.userEQ.bands[index].dynamicParams = params
+            } else {
+                rightState.userEQ.bands[index].dynamicParams = params
+            }
         }
         objectWillChange.send()
     }

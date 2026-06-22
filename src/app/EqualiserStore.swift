@@ -589,8 +589,10 @@ final class EqualiserStore: ObservableObject {
     var dynamicsConfig: DynamicsConfig {
         get { eqConfiguration.dynamicsConfig }
         set {
-            eqConfiguration.dynamicsConfig = newValue
-            routingCoordinator.updateDynamicsConfig(newValue)
+            var merged = newValue
+            merged.advanced.dynamicEQ = buildMergedDynamicEQConfig()
+            eqConfiguration.dynamicsConfig = merged
+            routingCoordinator.updateDynamicsConfig(merged)
             presetManager.markAsModified()
         }
     }
@@ -1393,6 +1395,32 @@ final class EqualiserStore: ObservableObject {
         routingCoordinator.updateBandBypass(index: index)
         presetManager.markAsModified()
     }
+
+    /// Removes the band at the given index, shifting subsequent bands left.
+    /// Propagates the change to the audio pipeline.
+    func removeBand(at index: Int) {
+        eqConfiguration.removeBand(at: index)
+        guard routingCoordinator.routingStatus.isActive else { return }
+        routingCoordinator.reapplyConfiguration()
+        presetManager.markAsModified()
+    }
+
+    /// Sets whether an EQ band operates in Dynamic mode and propagates the
+    /// change to the audio pipeline via a full dynamics config push.
+    func updateBandDynamicMode(index: Int, isDynamic: Bool) {
+        eqConfiguration.updateBandDynamicMode(index: index, isDynamic: isDynamic)
+        // Re-assign current config through the setter to trigger buildMergedDynamicEQConfig()
+        dynamicsConfig = eqConfiguration.dynamicsConfig
+        presetManager.markAsModified()
+    }
+
+    /// Updates the dynamic envelope parameters for an EQ band and propagates
+    /// the change to the audio pipeline.
+    func updateBandDynamicParams(index: Int, params: DynamicBandParams) {
+        eqConfiguration.updateBandDynamicParams(index: index, params: params)
+        dynamicsConfig = eqConfiguration.dynamicsConfig
+        presetManager.markAsModified()
+    }
     
     /// Updates the band count and marks the preset as modified.
     func updateBandCount(_ count: Int) {
@@ -1557,6 +1585,42 @@ final class EqualiserStore: ObservableObject {
 
     static func clampGain(_ gain: Float) -> Float {
         AudioConstants.clampGain(gain)
+    }
+
+    /// Builds a `DynamicEQConfig` that merges all inline dynamic bands from the
+    /// current EQ configuration into a single config for the DynamicsProcessor.
+    ///
+    /// Inline bands (from the EQ band strip) are listed first in band-strip order.
+    /// Legacy standalone bands from `dynamicsConfig.advanced.dynamicEQ` follow,
+    /// preserved for backward compatibility with older presets.
+    ///
+    /// The total is clamped to `DynamicEQConfig.maxDynamicEQBands`.
+    func buildMergedDynamicEQConfig() -> DynamicEQConfig {
+        let activeBands = eqConfiguration.bands.prefix(eqConfiguration.activeBandCount)
+
+        let inlineBands: [DynamicEQBand] = activeBands.compactMap { band in
+            guard band.isDynamic else { return nil }
+            return DynamicEQBand(
+                frequency:   band.frequency,
+                q:           band.q,
+                gain:        band.gain,
+                thresholdDB: band.dynamicParams.thresholdDB,
+                ratio:       band.dynamicParams.ratio,
+                attackMs:    band.dynamicParams.attackMs,
+                releaseMs:   band.dynamicParams.releaseMs,
+                bypass:      band.bypass
+            )
+        }
+
+        // Legacy standalone bands — non-zero only when loading old presets
+        let standaloneBands = eqConfiguration.dynamicsConfig.advanced.dynamicEQ.bands
+
+        let allBands = Array((inlineBands + standaloneBands)
+            .prefix(DynamicEQConfig.maxDynamicEQBands))
+
+        let hasActiveBand = allBands.contains { !$0.bypass }
+
+        return DynamicEQConfig(enabled: hasActiveBand, bands: allBands)
     }
 
     // MARK: - RTA

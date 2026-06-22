@@ -197,6 +197,8 @@ struct PresetBand: Codable, Sendable {
         case filterType
         case bypass
         case slope
+        case isDynamic
+        case dynamicParams
     }
 
     var frequency: Float
@@ -205,6 +207,8 @@ struct PresetBand: Codable, Sendable {
     var filterType: FilterType
     var bypass: Bool
     var slope: FilterSlope
+    var isDynamic: Bool = false
+    var dynamicParams: DynamicBandParams = DynamicBandParams()
 
     init(
         frequency: Float,
@@ -256,6 +260,9 @@ struct PresetBand: Codable, Sendable {
         } else {
             slope = .db12
         }
+
+        isDynamic     = (try container.decodeIfPresent(Bool.self,             forKey: .isDynamic))     ?? false
+        dynamicParams = (try container.decodeIfPresent(DynamicBandParams.self, forKey: .dynamicParams)) ?? DynamicBandParams()
     }
 
     init(from decoder: Decoder) throws {
@@ -273,27 +280,35 @@ struct PresetBand: Codable, Sendable {
         try container.encode(filterType.abbreviation, forKey: .filterType)  // v2: String
         try container.encode(bypass, forKey: .bypass)
         try container.encode(slope.rawValue, forKey: .slope)
+        if isDynamic {
+            try container.encode(isDynamic,     forKey: .isDynamic)
+            try container.encode(dynamicParams, forKey: .dynamicParams)
+        }
     }
 
     /// Converts from EQBandConfiguration.
     init(from eqBand: EQBandConfiguration) {
-        self.frequency = eqBand.frequency
-        self.q = eqBand.q
-        self.gain = eqBand.gain
-        self.filterType = eqBand.filterType
-        self.bypass = eqBand.bypass
-        self.slope = eqBand.slope
+        self.frequency     = eqBand.frequency
+        self.q             = eqBand.q
+        self.gain          = eqBand.gain
+        self.filterType    = eqBand.filterType
+        self.bypass        = eqBand.bypass
+        self.slope         = eqBand.slope
+        self.isDynamic     = eqBand.isDynamic
+        self.dynamicParams = eqBand.dynamicParams
     }
 
     /// Converts to EQBandConfiguration.
     func toEQBandConfiguration() -> EQBandConfiguration {
         EQBandConfiguration(
-            frequency: frequency,
-            q: q,
-            gain: gain,
-            filterType: filterType,
-            bypass: bypass,
-            slope: slope
+            frequency:     frequency,
+            q:             q,
+            gain:          gain,
+            filterType:    filterType,
+            bypass:        bypass,
+            slope:         slope,
+            isDynamic:     isDynamic,
+            dynamicParams: dynamicParams
         )
     }
 }
