@@ -1,4 +1,4 @@
-# <img src="./resources/AppIcon.svg" width="36" align="center"> Notch Sixty
+# <img src="./resources/AppIcon-light.svg" width="36" align="center"> Notch Sixty
 
 **Notch Sixty** started as a fork of Equaliser, and eventually evolved into a full DSP and Active Crossover engine. 
 
