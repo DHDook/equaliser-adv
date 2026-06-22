@@ -41,6 +41,16 @@ struct EQBandSliderView: View {
                 onAdjust: AudioConstants.clampGain
             )
             .font(.system(size: 10, weight: .bold, design: .monospaced))
+            if let onDelete {
+                Button(role: .destructive, action: onDelete) {
+                    Image(systemName: "trash")
+                        .font(.system(size: 12, weight: .bold))
+                        .padding(4)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .help("Delete band")
+            }
         }
         .padding(.vertical, 6)
         .padding(.horizontal, 4)
@@ -91,15 +101,6 @@ struct EQBandSliderView: View {
                     .frame(width: 240)
                 }
                 Spacer(minLength: 0)
-                if let onDelete {
-                    Button(role: .destructive, action: onDelete) {
-                        Image(systemName: "trash")
-                            .font(.system(size: 9, weight: .regular))
-                            .foregroundStyle(.secondary)
-                    }
-                    .buttonStyle(.plain)
-                    .help("Delete band")
-                }
             }
 
             InlineEditableValue(
