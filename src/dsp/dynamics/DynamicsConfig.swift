@@ -1517,7 +1517,7 @@ struct AdvancedProcessingConfig: Codable, Equatable, Sendable {
         case speakerIRAlignmentEnabled, speakerIRDelayMs
         case crosstalkCancellationEnabled, crosstalkCancellationAmount
         case multiSeatAveragingEnabled, multiSeatCount
-        case subBassPhaseAlignmentEnabled, subBassAlignmentFrequencyHz
+        case subBassPhaseAlignmentEnabled, subBassAlignmentFrequencyHz, subBassPhaseAlignmentQ
         // highResDecouplingActive is not persisted (runtime-computed)
     }
 
@@ -1700,6 +1700,7 @@ struct AdvancedProcessingConfig: Codable, Equatable, Sendable {
         multiSeatCount                   = try c.decodeIfPresent(Int.self,                   forKey: .multiSeatCount)                   ?? 2
         subBassPhaseAlignmentEnabled     = try c.decodeIfPresent(Bool.self,                  forKey: .subBassPhaseAlignmentEnabled)     ?? false
         subBassAlignmentFrequencyHz      = try c.decodeIfPresent(Float.self,                 forKey: .subBassAlignmentFrequencyHz)      ?? 80.0
+        subBassPhaseAlignmentQ           = try c.decodeIfPresent(Float.self,                 forKey: .subBassPhaseAlignmentQ)           ?? 0.7
         oversamplingEnabled              = try c.decodeIfPresent(Bool.self,                  forKey: .oversamplingEnabled)              ?? false
         linearPhaseEQEnabled             = try c.decodeIfPresent(Bool.self,                  forKey: .linearPhaseEQEnabled)             ?? false
         roomCorrectionEnabled            = try c.decodeIfPresent(Bool.self,                  forKey: .roomCorrectionEnabled)            ?? false
@@ -1783,6 +1784,7 @@ struct AdvancedProcessingConfig: Codable, Equatable, Sendable {
         try c.encode(multiSeatCount,                     forKey: .multiSeatCount)
         try c.encode(subBassPhaseAlignmentEnabled,       forKey: .subBassPhaseAlignmentEnabled)
         try c.encode(subBassAlignmentFrequencyHz,        forKey: .subBassAlignmentFrequencyHz)
+        try c.encode(subBassPhaseAlignmentQ,             forKey: .subBassPhaseAlignmentQ)
         try c.encode(oversamplingEnabled,                forKey: .oversamplingEnabled)
         try c.encode(linearPhaseEQEnabled,               forKey: .linearPhaseEQEnabled)
         try c.encode(roomCorrectionEnabled,              forKey: .roomCorrectionEnabled)

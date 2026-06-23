@@ -361,6 +361,11 @@ final class PresetManager: ObservableObject {
             config.updateBandGain(index: index, gain: band.gain)
             config.updateBandFilterType(index: index, filterType: band.filterType)
             config.updateBandBypass(index: index, bypass: band.bypass)
+            config.updateBandSlope(index: index, slope: band.slope)
+            config.updateBandDynamicMode(index: index, isDynamic: band.isDynamic)
+            if band.isDynamic {
+                config.updateBandDynamicParams(index: index, params: band.dynamicParams)
+            }
         }
 
         // Apply right channel band settings
@@ -371,6 +376,11 @@ final class PresetManager: ObservableObject {
             config.updateBandGain(index: index, gain: band.gain, channel: .right)
             config.updateBandFilterType(index: index, filterType: band.filterType, channel: .right)
             config.updateBandBypass(index: index, bypass: band.bypass, channel: .right)
+            config.updateBandSlope(index: index, slope: band.slope, channel: .right)
+            config.updateBandDynamicMode(index: index, isDynamic: band.isDynamic)
+            if band.isDynamic {
+                config.updateBandDynamicParams(index: index, params: band.dynamicParams)
+            }
         }
 
         // Apply dynamics configuration
