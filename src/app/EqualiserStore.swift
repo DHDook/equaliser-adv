@@ -1358,6 +1358,12 @@ final class EqualiserStore: ObservableObject {
     func updateBandGain(index: Int, gain: Float) {
         eqConfiguration.updateBandGain(index: index, gain: gain)
         routingCoordinator.updateBandGain(index: index)
+        if eqConfiguration.bands[index].isDynamic {
+            let merged = eqConfiguration.buildMergedDynamicEQConfig()
+            var updatedDynamics = dynamicsConfig
+            updatedDynamics.advanced.dynamicEQ = merged
+            routingCoordinator.updateDynamicsConfig(updatedDynamics)
+        }
         presetManager.markAsModified()
     }
     
@@ -1365,6 +1371,12 @@ final class EqualiserStore: ObservableObject {
     func updateBandQ(index: Int, q: Float) {
         eqConfiguration.updateBandQ(index: index, q: q)
         routingCoordinator.updateBandQ(index: index)
+        if eqConfiguration.bands[index].isDynamic {
+            let merged = eqConfiguration.buildMergedDynamicEQConfig()
+            var updatedDynamics = dynamicsConfig
+            updatedDynamics.advanced.dynamicEQ = merged
+            routingCoordinator.updateDynamicsConfig(updatedDynamics)
+        }
         presetManager.markAsModified()
     }
     
@@ -1372,6 +1384,12 @@ final class EqualiserStore: ObservableObject {
     func updateBandFrequency(index: Int, frequency: Float) {
         eqConfiguration.updateBandFrequency(index: index, frequency: frequency)
         routingCoordinator.updateBandFrequency(index: index)
+        if eqConfiguration.bands[index].isDynamic {
+            let merged = eqConfiguration.buildMergedDynamicEQConfig()
+            var updatedDynamics = dynamicsConfig
+            updatedDynamics.advanced.dynamicEQ = merged
+            routingCoordinator.updateDynamicsConfig(updatedDynamics)
+        }
         presetManager.markAsModified()
     }
     
@@ -1393,6 +1411,12 @@ final class EqualiserStore: ObservableObject {
     func updateBandBypass(index: Int, bypass: Bool) {
         eqConfiguration.updateBandBypass(index: index, bypass: bypass)
         routingCoordinator.updateBandBypass(index: index)
+        if eqConfiguration.bands[index].isDynamic {
+            let merged = eqConfiguration.buildMergedDynamicEQConfig()
+            var updatedDynamics = dynamicsConfig
+            updatedDynamics.advanced.dynamicEQ = merged
+            routingCoordinator.updateDynamicsConfig(updatedDynamics)
+        }
         presetManager.markAsModified()
     }
 
@@ -1408,9 +1432,20 @@ final class EqualiserStore: ObservableObject {
     /// Sets whether an EQ band operates in Dynamic mode and propagates the
     /// change to the audio pipeline via a full dynamics config push.
     func updateBandDynamicMode(index: Int, isDynamic: Bool) {
+        // Enforce 8-band cap
+        if isDynamic {
+            let currentDynamicCount = eqConfiguration.bands.filter { $0.isDynamic }.count
+            if currentDynamicCount >= DynamicEQConfig.maxDynamicEQBands {
+                return // Reject toggle - UI should show message
+            }
+        }
+        
         eqConfiguration.updateBandDynamicMode(index: index, isDynamic: isDynamic)
-        // Re-assign current config through the setter to trigger buildMergedDynamicEQConfig()
-        dynamicsConfig = eqConfiguration.dynamicsConfig
+        let merged = eqConfiguration.buildMergedDynamicEQConfig()
+        var updatedDynamics = dynamicsConfig
+        updatedDynamics.advanced.dynamicEQ = merged
+        routingCoordinator.updateDynamicsConfig(updatedDynamics)
+        routingCoordinator.reapplyConfiguration()
         presetManager.markAsModified()
     }
 
@@ -1418,7 +1453,10 @@ final class EqualiserStore: ObservableObject {
     /// the change to the audio pipeline.
     func updateBandDynamicParams(index: Int, params: DynamicBandParams) {
         eqConfiguration.updateBandDynamicParams(index: index, params: params)
-        dynamicsConfig = eqConfiguration.dynamicsConfig
+        let merged = eqConfiguration.buildMergedDynamicEQConfig()
+        var updatedDynamics = dynamicsConfig
+        updatedDynamics.advanced.dynamicEQ = merged
+        routingCoordinator.updateDynamicsConfig(updatedDynamics)
         presetManager.markAsModified()
     }
     

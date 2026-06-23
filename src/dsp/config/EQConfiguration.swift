@@ -19,6 +19,26 @@ struct DynamicBandParams: Codable, Sendable, Equatable {
     var ratio: Float       = 2.0     // 1.0…10.0
     var attackMs: Float    = 10.0    // ms, 1…100
     var releaseMs: Float   = 100.0   // ms, 10…1000
+
+    // NEW — maximum attenuation this band may apply, in dB. Same purpose and
+    // convention as ExpanderConfig.rangeDB and the De-Esser's rangeDB.
+    // Range −24.0…0.0. Default of −24.0 keeps current behavior unchanged for
+    // ratios/thresholds where 24 dB of reduction was never actually reached
+    // in practice — verify this against existing presets before treating it
+    // as a true no-op default; if any saved preset's ratio/threshold
+    // combination could exceed 24 dB of reduction under normal program
+    // material, consider defaulting to a value that provably can't bind
+    // (e.g. −60.0) instead, so this Package is purely additive with zero
+    // behavior change until a user actively tightens it.
+    var rangeDB: Float = -24.0
+
+    // NEW — direction of dynamic processing (stored as String to avoid circular dependency)
+    var direction: String = "cutOnly"
+
+    // NEW — boost-specific parameters (used when direction == .boostOnly or .both)
+    var boostThresholdDB: Float = -40.0
+    var boostRatio: Float = 2.0
+    var maxBoostDB: Float = 6.0
 }
 
 /// Configuration for a single EQ band.
@@ -818,5 +838,60 @@ final class EQConfiguration: ObservableObject {
             }
         }
         objectWillChange.send()
+    }
+}
+
+// MARK: - Dynamic EQ Bridge
+
+extension EQConfiguration {
+    /// Builds a DynamicEQConfig from whichever bands in the currently active
+    /// channel(s) have isDynamic == true. Mirrors the same channel-mode logic
+    /// already used by `bands` (linked / stereo / midSide) so the merged
+    /// config always reflects whichever channel's bands the engine should
+    /// actually be running dynamically.
+    ///
+    /// NOTE ON CHANNEL MODE: DynamicEQConfig has no per-channel concept of
+    /// its own — it's a single flat band list consumed by DynamicsProcessor,
+    /// which runs after L/R (or M/S-decoded-to-L/R) recombination. In
+    /// .stereo or .midSide mode, if left/right (or mid/side) have DIFFERENT
+    /// isDynamic bands or different dynamicParams at the same band index,
+    /// there is no way to apply asymmetric per-channel dynamic processing
+    /// with the current DynamicsProcessor API — it operates identically on
+    /// all channels passed to it. For v1, resolve this by using leftState's
+    /// (or Mid's) dynamic bands as the source of truth when channelMode !=
+    /// .linked, and surface this constraint in the UI (see Package 0, Step 4).
+    /// A true per-channel dynamic EQ would require extending
+    /// DynamicsProcessor itself — out of scope here.
+    func buildMergedDynamicEQConfig() -> DynamicEQConfig {
+        let sourceBands: [EQBandConfiguration] = leftState.userEQ.bands
+        var dynBands: [DynamicEQBand] = []
+        for band in sourceBands where band.isDynamic {
+            guard dynBands.count < DynamicEQConfig.maxDynamicEQBands else { break }
+            let direction: DynamicBandDirection
+            switch band.dynamicParams.direction {
+            case "cutOnly": direction = .cutOnly
+            case "boostOnly": direction = .boostOnly
+            case "both": direction = .both
+            default: direction = .cutOnly
+            }
+            dynBands.append(
+                DynamicEQBand(
+                    frequency: band.frequency,
+                    q: band.q,
+                    gain: band.gain,
+                    thresholdDB: band.dynamicParams.thresholdDB,
+                    ratio: band.dynamicParams.ratio,
+                    attackMs: band.dynamicParams.attackMs,
+                    releaseMs: band.dynamicParams.releaseMs,
+                    bypass: band.bypass,
+                    rangeDB: band.dynamicParams.rangeDB,
+                    direction: direction,
+                    boostThresholdDB: band.dynamicParams.boostThresholdDB,
+                    boostRatio: band.dynamicParams.boostRatio,
+                    maxBoostDB: band.dynamicParams.maxBoostDB
+                )
+            )
+        }
+        return DynamicEQConfig(enabled: !dynBands.isEmpty, bands: dynBands)
     }
 }

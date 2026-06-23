@@ -242,7 +242,7 @@ final class LinearPhaseEQEngine: @unchecked Sendable {
         let N = fftSize
 
         var mag = [Double](repeating: 1.0, count: halfN + 1)
-        for band in bands where !band.bypass {
+        for band in bands where !band.bypass && !band.isDynamic {
             let designRate = BiquadMath.designSampleRate(
                 actualRate: sampleRate,
                 coefficientDecouplingEnabled: true)

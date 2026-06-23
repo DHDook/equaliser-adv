@@ -208,6 +208,11 @@ struct EQBandDetailPopover: View {
     @State private var ratio: Float
     @State private var attackMs: Float
     @State private var releaseMs: Float
+    @State private var rangeDB: Float
+    @State private var direction: String
+    @State private var boostThresholdDB: Float
+    @State private var boostRatio: Float
+    @State private var maxBoostDB: Float
 
     @State private var gainText: String = ""
     @State private var frequencyText: String = ""
@@ -216,10 +221,15 @@ struct EQBandDetailPopover: View {
     @State private var ratioText: String = ""
     @State private var attackText: String = ""
     @State private var releaseText: String = ""
+    @State private var rangeText: String = ""
+    @State private var boostThresholdText: String = ""
+    @State private var boostRatioText: String = ""
+    @State private var maxBoostText: String = ""
+    @State private var dynamicToggleError: String? = nil
     @FocusState private var focusedField: Field?
 
     enum Field: Hashable {
-        case gain, frequency, bandwidth, threshold, ratio, attack, release
+        case gain, frequency, bandwidth, threshold, ratio, attack, release, range, boostThreshold, boostRatio, maxBoost
     }
 
     init(band: EQBandConfiguration,
@@ -243,6 +253,11 @@ struct EQBandDetailPopover: View {
         _ratio = State(initialValue: band.dynamicParams.ratio)
         _attackMs = State(initialValue: band.dynamicParams.attackMs)
         _releaseMs = State(initialValue: band.dynamicParams.releaseMs)
+        _rangeDB = State(initialValue: band.dynamicParams.rangeDB)
+        _direction = State(initialValue: band.dynamicParams.direction)
+        _boostThresholdDB = State(initialValue: band.dynamicParams.boostThresholdDB)
+        _boostRatio = State(initialValue: band.dynamicParams.boostRatio)
+        _maxBoostDB = State(initialValue: band.dynamicParams.maxBoostDB)
         _gainText = State(initialValue: String(format: "%.1f", band.gain))
         _frequencyText = State(initialValue: String(format: "%.0f", band.frequency))
         _bandwidthText = State(initialValue: "")
@@ -250,6 +265,10 @@ struct EQBandDetailPopover: View {
         _ratioText = State(initialValue: String(format: "%.1f", band.dynamicParams.ratio))
         _attackText = State(initialValue: String(format: "%.0f", band.dynamicParams.attackMs))
         _releaseText = State(initialValue: String(format: "%.0f", band.dynamicParams.releaseMs))
+        _rangeText = State(initialValue: String(format: "%.0f", band.dynamicParams.rangeDB))
+        _boostThresholdText = State(initialValue: String(format: "%.1f", band.dynamicParams.boostThresholdDB))
+        _boostRatioText = State(initialValue: String(format: "%.1f", band.dynamicParams.boostRatio))
+        _maxBoostText = State(initialValue: String(format: "%.1f", band.dynamicParams.maxBoostDB))
         self.gainUpdate = gainUpdate
         self.frequencyUpdate = frequencyUpdate
         self.qUpdate = qUpdate
@@ -273,8 +292,37 @@ struct EQBandDetailPopover: View {
             }
             .pickerStyle(.segmented)
             .onChange(of: isDynamic) { _, newValue in
+                if newValue {
+                    // Check if we're at the 8-band cap
+                    let currentDynamicCount = store.eqConfiguration.bands.filter { $0.isDynamic }.count
+                    if currentDynamicCount >= DynamicEQConfig.maxDynamicEQBands {
+                        dynamicToggleError = "Up to 8 bands can be Dynamic at once — turn off Dynamic on another band first."
+                        // Revert the toggle
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                            isDynamic = false
+                        }
+                        return
+                    }
+                }
                 isDynamicUpdate(newValue)
                 commitDynamicParams()
+                dynamicToggleError = nil
+            }
+
+            // Error message for 8-band cap
+            if let error = dynamicToggleError {
+                Text(error)
+                    .font(.caption2)
+                    .foregroundStyle(.red)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            // Channel-mode constraint caption
+            if isDynamic && store.channelMode != .linked {
+                Text("Dynamic EQ currently applies identically to all channels, even in Stereo/Mid-Side mode.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
             // Frequency
@@ -381,9 +429,20 @@ struct EQBandDetailPopover: View {
             if isDynamic {
                 Divider()
 
-                // Threshold (dB)
+                // Direction picker
+                Picker("Direction", selection: $direction) {
+                    Text("Cut").tag("cutOnly")
+                    Text("Boost").tag("boostOnly")
+                    Text("Both").tag("both")
+                }
+                .pickerStyle(.segmented)
+                .onChange(of: direction) { _, _ in
+                    commitDynamicParams()
+                }
+
+                // Threshold (dB) - label changes based on direction
                 HStack {
-                    Text("Threshold (dB)")
+                    Text(direction == "boostOnly" ? "Boost Threshold (dB)" : "Cut Threshold (dB)")
                     Spacer()
                     TextField("-20", text: $thresholdText)
                         .textFieldStyle(.roundedBorder)
@@ -408,9 +467,9 @@ struct EQBandDetailPopover: View {
                         }
                 }
 
-                // Ratio
+                // Ratio - label changes based on direction
                 HStack {
-                    Text("Ratio")
+                    Text(direction == "boostOnly" ? "Boost Ratio" : "Cut Ratio")
                     Spacer()
                     TextField("2.0", text: $ratioText)
                         .textFieldStyle(.roundedBorder)
@@ -435,7 +494,7 @@ struct EQBandDetailPopover: View {
                         }
                 }
 
-                // Attack (ms)
+                // Attack (ms) - shared for both cut and boost
                 HStack {
                     Text("Attack (ms)")
                     Spacer()
@@ -462,7 +521,7 @@ struct EQBandDetailPopover: View {
                         }
                 }
 
-                // Release (ms)
+                // Release (ms) - shared for both cut and boost
                 HStack {
                     Text("Release (ms)")
                     Spacer()
@@ -487,6 +546,64 @@ struct EQBandDetailPopover: View {
                             adjustRelease(by: -10.0)
                             return .handled
                         }
+                }
+
+                // Range (dB) - only for cut side
+                if direction != "boostOnly" {
+                    HStack {
+                        Text("Range (dB)")
+                        Spacer()
+                        TextField("-24", text: $rangeText)
+                            .textFieldStyle(.roundedBorder)
+                            .frame(width: 70)
+                            .multilineTextAlignment(.trailing)
+                            .focused($focusedField, equals: .range)
+                            .onSubmit {
+                                if let value = Float(rangeText) {
+                                    let clamped = clampRange(value)
+                                    rangeDB = clamped
+                                    rangeText = String(format: "%.0f", clamped)
+                                    commitDynamicParams()
+                                }
+                            }
+                            .onKeyPress(.upArrow) {
+                                adjustRange(by: 1.0)
+                                return .handled
+                            }
+                            .onKeyPress(.downArrow) {
+                                adjustRange(by: -1.0)
+                                return .handled
+                            }
+                    }
+                }
+
+                // Max Boost (dB) - only for boost side
+                if direction != "cutOnly" {
+                    HStack {
+                        Text("Max Boost (dB)")
+                        Spacer()
+                        TextField("6.0", text: $maxBoostText)
+                            .textFieldStyle(.roundedBorder)
+                            .frame(width: 70)
+                            .multilineTextAlignment(.trailing)
+                            .focused($focusedField, equals: .maxBoost)
+                            .onSubmit {
+                                if let value = Float(maxBoostText) {
+                                    let clamped = clampMaxBoost(value)
+                                    maxBoostDB = clamped
+                                    maxBoostText = String(format: "%.1f", clamped)
+                                    commitDynamicParams()
+                                }
+                            }
+                            .onKeyPress(.upArrow) {
+                                adjustMaxBoost(by: 0.5)
+                                return .handled
+                            }
+                            .onKeyPress(.downArrow) {
+                                adjustMaxBoost(by: -0.5)
+                                return .handled
+                            }
+                    }
                 }
             }
 
@@ -591,6 +708,14 @@ struct EQBandDetailPopover: View {
         max(10.0, min(1000.0, value))
     }
 
+    private func clampRange(_ value: Float) -> Float {
+        max(-24.0, min(0.0, value))
+    }
+
+    private func clampMaxBoost(_ value: Float) -> Float {
+        max(0.0, min(12.0, value))
+    }
+
     private func adjustThreshold(by delta: Float) {
         let current = Float(thresholdText) ?? thresholdDB
         let clamped = clampThreshold(current + delta)
@@ -623,12 +748,33 @@ struct EQBandDetailPopover: View {
         commitDynamicParams()
     }
 
+    private func adjustRange(by delta: Float) {
+        let current = Float(rangeText) ?? rangeDB
+        let clamped = clampRange(current + delta)
+        rangeDB = clamped
+        rangeText = String(format: "%.0f", clamped)
+        commitDynamicParams()
+    }
+
+    private func adjustMaxBoost(by delta: Float) {
+        let current = Float(maxBoostText) ?? maxBoostDB
+        let clamped = clampMaxBoost(current + delta)
+        maxBoostDB = clamped
+        maxBoostText = String(format: "%.1f", clamped)
+        commitDynamicParams()
+    }
+
     private func commitDynamicParams() {
         let params = DynamicBandParams(
             thresholdDB: thresholdDB,
             ratio: ratio,
             attackMs: attackMs,
-            releaseMs: releaseMs
+            releaseMs: releaseMs,
+            rangeDB: rangeDB,
+            direction: direction,
+            boostThresholdDB: boostThresholdDB,
+            boostRatio: boostRatio,
+            maxBoostDB: maxBoostDB
         )
         dynamicParamsUpdate(params)
     }

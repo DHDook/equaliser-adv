@@ -954,6 +954,13 @@ struct PerBandLoudnessConfig: Codable, Equatable, Sendable {
 
 // MARK: - Dynamic EQ Configuration
 
+/// Direction of dynamic EQ processing.
+enum DynamicBandDirection: String, Codable, Equatable, Sendable {
+    case cutOnly
+    case boostOnly
+    case both
+}
+
 /// Single dynamic EQ band configuration.
 struct DynamicEQBand: Codable, Equatable, Sendable {
     var frequency: Float   // Hz, 20–20,000
@@ -964,6 +971,15 @@ struct DynamicEQBand: Codable, Equatable, Sendable {
     var attackMs: Float    // ms, 1–100
     var releaseMs: Float   // ms, 10–1000
     var bypass: Bool = false
+
+    // NEW
+    var rangeDB: Float = -24.0
+
+    // NEW — direction and boost parameters
+    var direction: DynamicBandDirection = .cutOnly
+    var boostThresholdDB: Float = -40.0
+    var boostRatio: Float = 2.0
+    var maxBoostDB: Float = 6.0
 }
 
 /// Dynamic EQ configuration.

@@ -38,7 +38,7 @@ final class DynamicsProcessor: @unchecked Sendable {
 
     // Dynamic EQ and Sub-EQ state buffer sizes
     private static let maxDynamicEQStateFloats: Int = DynamicEQConfig.maxDynamicEQBands * 5  // 5 coeffs per band
-    private static let maxDynamicEQParamsFloats: Int = DynamicEQConfig.maxDynamicEQBands * 4  // 4 params per band
+    private static let maxDynamicEQParamsFloats: Int = DynamicEQConfig.maxDynamicEQBands * 9  // 9 params per band (thresholdDB, ratio, attackMs, releaseMs, rangeDB, direction, boostThresholdDB, boostRatio, maxBoostDB)
     private static let maxSubEQStateFloats: Int = BassManagementConfig.maxSubEQBands * 5  // 5 coeffs per band
 
     // MARK: - Audio-Thread State
@@ -1508,10 +1508,15 @@ final class DynamicsProcessor: @unchecked Sendable {
             pendingDynEQCoeffsBuf[idx * 5 + 3] = Float(c.a1)
             pendingDynEQCoeffsBuf[idx * 5 + 4] = Float(c.a2)
             pendingDynEQBypassBuf[idx] = band.bypass ? 1 : 0
-            pendingDynEQParamsBuf[idx * 4 + 0] = band.thresholdDB
-            pendingDynEQParamsBuf[idx * 4 + 1] = band.ratio
-            pendingDynEQParamsBuf[idx * 4 + 2] = band.attackMs
-            pendingDynEQParamsBuf[idx * 4 + 3] = band.releaseMs
+            pendingDynEQParamsBuf[idx * 9 + 0] = band.thresholdDB
+            pendingDynEQParamsBuf[idx * 9 + 1] = band.ratio
+            pendingDynEQParamsBuf[idx * 9 + 2] = band.attackMs
+            pendingDynEQParamsBuf[idx * 9 + 3] = band.releaseMs
+            pendingDynEQParamsBuf[idx * 9 + 4] = band.rangeDB
+            pendingDynEQParamsBuf[idx * 9 + 5] = band.direction == .cutOnly ? 0.0 : (band.direction == .boostOnly ? 1.0 : 2.0)
+            pendingDynEQParamsBuf[idx * 9 + 6] = band.boostThresholdDB
+            pendingDynEQParamsBuf[idx * 9 + 7] = band.boostRatio
+            pendingDynEQParamsBuf[idx * 9 + 8] = band.maxBoostDB
         }
         pendingDynamicEQBandCount = n
         recomputeDynamicEQCoeffs()
@@ -1895,7 +1900,7 @@ final class DynamicsProcessor: @unchecked Sendable {
                 memcpy(dynamicEQBypassBuf, pendingDynEQBypassBuf,
                        n * MemoryLayout<Int32>.size)
                 memcpy(dynamicEQParamsBuf, pendingDynEQParamsBuf,
-                       n * 4 * MemoryLayout<Float>.size)
+                       n * 9 * MemoryLayout<Float>.size)
             }
             activeDynamicEQBandCount = n
             // Preserve envelope and GR state for continuity
@@ -1923,10 +1928,15 @@ final class DynamicsProcessor: @unchecked Sendable {
                 let b2 = dynamicEQCoeffsBuf[idx * 5 + 2]
                 let na1 = dynamicEQCoeffsBuf[idx * 5 + 3]
                 let na2 = dynamicEQCoeffsBuf[idx * 5 + 4]
-                let thresholdDB = dynamicEQParamsBuf[idx * 4 + 0]
-                let ratio = dynamicEQParamsBuf[idx * 4 + 1]
-                let attackMs = dynamicEQParamsBuf[idx * 4 + 2]
-                let releaseMs = dynamicEQParamsBuf[idx * 4 + 3]
+                let thresholdDB = dynamicEQParamsBuf[idx * 9 + 0]
+                let ratio = dynamicEQParamsBuf[idx * 9 + 1]
+                let attackMs = dynamicEQParamsBuf[idx * 9 + 2]
+                let releaseMs = dynamicEQParamsBuf[idx * 9 + 3]
+                let rangeDB = dynamicEQParamsBuf[idx * 9 + 4]
+                let directionRaw = dynamicEQParamsBuf[idx * 9 + 5]
+                let boostThresholdDB = dynamicEQParamsBuf[idx * 9 + 6]
+                let boostRatio = dynamicEQParamsBuf[idx * 9 + 7]
+                let maxBoostDB = dynamicEQParamsBuf[idx * 9 + 8]
 
                 // Use cached attack/release coefficients (computed on main thread when sample rate or parameters change)
                 let attackCoeff = dynamicEQAttackCoeffsBuf[idx]
@@ -1935,9 +1945,7 @@ final class DynamicsProcessor: @unchecked Sendable {
                 for i in 0..<count {
                     let input = buf[i]
 
-                    // Run input through the band-detection filter for level sensing only.
-                    // The filter output is used exclusively for envelope detection —
-                    // it is NOT written to the output buffer.
+                    // Run input through the band-detection filter for level sensing.
                     let filtered = Self.processBiquad(input, b0: b0, b1: b1, b2: b2,
                                                      na1: na1, na2: na2, w1: &w1, w2: &w2)
 
@@ -1949,21 +1957,60 @@ final class DynamicsProcessor: @unchecked Sendable {
                         env = releaseCoeff * env + (1.0 - releaseCoeff) * absFiltered
                     }
 
-                    // Gain computer: how much to reduce gain when band energy exceeds threshold.
+                    // Gain computer: compute gain reduction based on direction.
                     let envDB = 20.0 * log10(max(env, 1e-10))
                     let overThreshold = envDB - thresholdDB
                     var targetGR: Float = 0.0
-                    if overThreshold > 0 {
-                        targetGR = -overThreshold * (ratio - 1.0) / ratio
+
+                    // Determine direction from raw value (0=cutOnly, 1=boostOnly, 2=both)
+                    let direction = Int(directionRaw)
+
+                    if direction == 0 {
+                        // cutOnly: only reduce when above threshold
+                        if overThreshold > 0 {
+                            targetGR = -overThreshold * (ratio - 1.0) / ratio
+                        }
+                    } else if direction == 1 {
+                        // boostOnly: only boost when below boost threshold
+                        let underBoostThreshold = boostThresholdDB - envDB
+                        if underBoostThreshold > 0 {
+                            targetGR = underBoostThreshold * (boostRatio - 1.0) / boostRatio
+                        }
+                    } else {
+                        // both: cut above threshold, boost below boost threshold
+                        if overThreshold > 0 {
+                            targetGR = -overThreshold * (ratio - 1.0) / ratio
+                        } else {
+                            let underBoostThreshold = boostThresholdDB - envDB
+                            if underBoostThreshold > 0 {
+                                targetGR = underBoostThreshold * (boostRatio - 1.0) / boostRatio
+                            }
+                        }
+                    }
+
+                    // Apply rangeDB clamp (maximum attenuation ceiling for cut side)
+                    if targetGR < rangeDB {
+                        targetGR = rangeDB
+                    }
+
+                    // Apply maxBoostDB clamp (maximum boost ceiling for boost side)
+                    if targetGR > maxBoostDB {
+                        targetGR = maxBoostDB
                     }
 
                     // Smooth gain reduction.
-                    let grCoeff = overThreshold > 0 ? attackCoeff : releaseCoeff
+                    // Use attack when moving toward more gain reduction (more negative) or more boost (more positive).
+                    // Use release when moving toward less gain reduction (less negative) or less boost (less positive).
+                    let grCoeff = (targetGR < grDB) ? attackCoeff : releaseCoeff
                     grDB = grCoeff * grDB + (1.0 - grCoeff) * targetGR
 
-                    // Apply gain reduction to the ORIGINAL full-bandwidth input signal.
+                    // Apply gain reduction in a frequency-selective manner.
+                    // Extract the band component, shape it, then recombine with residual.
+                    let bandComponent = filtered
+                    let residual = input - bandComponent
                     let gainLinear = pow(10.0, grDB / 20.0)
-                    buf[i] = input * gainLinear
+                    let shapedBand = bandComponent * gainLinear
+                    buf[i] = residual + shapedBand
                 }
 
                 dynamicEQFilterState[ch * maxBands * 2 + idx * 2]     = w1

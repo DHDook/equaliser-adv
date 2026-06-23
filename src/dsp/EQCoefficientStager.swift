@@ -173,7 +173,7 @@ final class EQCoefficientStager {
             actualRate: currentSampleRate,
             coefficientDecouplingEnabled: decoupling)
 
-        for band in leftBands where !band.bypass {
+        for band in leftBands where !band.bypass && !band.isDynamic {
             let freq = designRate != currentSampleRate
                 ? BiquadMath.prewarpFrequency(frequency: Double(band.frequency),
                                               actualRate: currentSampleRate,
@@ -190,7 +190,7 @@ final class EQCoefficientStager {
         if eqConfiguration.channelMode == .linked {
             rightSections = leftSections
         } else {
-            for band in rightBands where !band.bypass {
+            for band in rightBands where !band.bypass && !band.isDynamic {
                 let freq = designRate != currentSampleRate
                     ? BiquadMath.prewarpFrequency(frequency: Double(band.frequency),
                                                   actualRate: currentSampleRate,
