@@ -1601,7 +1601,9 @@ final class EqualiserStore: ObservableObject {
             seatMeasurements: seatMeasurements,
             measuredResponse: measuredResponse.map(TargetCurvePoint.init),
             micCalibration: micCalibration,
-            appliedBands: eqConfiguration.leftState.roomCorrection.bands.map { PresetBand(from: $0) },
+            appliedBands: eqConfiguration.leftState.roomCorrection.bands
+                .prefix(eqConfiguration.leftState.roomCorrection.activeBandCount)
+                .map { PresetBand(from: $0) },
             roomCorrectionEnabled: dynamicsConfig.advanced.roomCorrectionEnabled,
             firTapCount: nil, // FIR correction not yet implemented for room correction presets
             firCorrectionApplied: false
@@ -1637,6 +1639,7 @@ final class EqualiserStore: ObservableObject {
         let bands = preset.settings.appliedBands.map { $0.toEQBandConfiguration() }
         routingCoordinator.eqStager.applyRoomCorrectionBands(bands)
         roomCorrectionBandCount = bands.count
+        routingCoordinator.eqStager.setRoomCorrectionLayerBypass(!preset.settings.roomCorrectionEnabled)
 
         if preset.settings.firCorrectionApplied, let tapCount = preset.settings.firTapCount {
             // Recompute path, per §4.2 recommendation — re-derive rather than store raw samples.

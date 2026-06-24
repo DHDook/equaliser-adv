@@ -600,6 +600,8 @@ struct RoomCalibrationTab: View {
                         var adv = store.dynamicsConfig.advanced
                         adv.roomCorrectionEnabled = val
                         store.updateAdvancedProcessing(adv)
+                        store.routingCoordinator.eqStager.setRoomCorrectionLayerBypass(!val)
+                        store.roomCorrectionPresetManager.markAsModified()
                     }
                 ))
                 Text("Turn off to temporarily bypass correction without losing your calibration. Use \"Discard All\" instead if you want to clear the measurement entirely.")
@@ -607,6 +609,13 @@ struct RoomCalibrationTab: View {
                     .foregroundStyle(.secondary)
             } header: {
                 Text("Room Correction")
+            }
+
+            // ── Room Profile ───────────────────────────────────────────────
+            Section {
+                RoomCorrectionPresetToolbar()
+            } header: {
+                Text("Room Profile")
             }
 
             // ── Target Curve ───────────────────────────────────────────────
@@ -628,6 +637,7 @@ struct RoomCalibrationTab: View {
                         if let curve = TargetCurveLibrary.allCurves.first(where: { $0.name == newValue }) {
                             store.targetCurve = curve.curve
                         }
+                        store.roomCorrectionPresetManager.markAsModified()
                     }
                 }
             } header: {

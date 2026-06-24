@@ -139,6 +139,14 @@ final class EQCoefficientStager {
         refreshMixedPhaseIRIfNeeded()
     }
 
+    func setRoomCorrectionLayerBypass(_ bypass: Bool) {
+        renderPipeline?.stageEQLayerBypass(
+            channel: .both,
+            layerIndex: EQLayerConstants.roomCorrectionLayerIndex,
+            bypass: bypass
+        )
+    }
+
     func refreshLinearPhaseIRIfNeeded() {
         guard let pipeline = renderPipeline,
               let ctx = pipeline.callbackContext,

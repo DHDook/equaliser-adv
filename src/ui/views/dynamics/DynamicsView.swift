@@ -100,7 +100,6 @@ private struct DynamicsSliderRow: View {
 struct DynamicsInlineView: View {
     @EnvironmentObject var store: EqualiserStore
 
-    @State private var showDynamicsPanel = false
     @State private var showDefinitions   = false
     @StateObject private var inlineMeterBridge = InlineMeterBridge()
 
@@ -215,14 +214,177 @@ struct DynamicsInlineView: View {
 
     private var column1: some View {
         VStack(alignment: .leading, spacing: 4) {
-            col2Toggle(label: "Infrasonic",  isOn: inlineInfrasonicFilterEnabled)
-            col2Toggle(label: "Hi-Res Coef", isOn: inlineCoefficientDecouplingEnabled)
-            col2Toggle(label: "DC Filter",   isOn: inlineDcOffsetEnabled)
-            col2Toggle(label: "Widener",     isOn: inlineWideEnabled)
-            col2Toggle(label: "LUFS",        isOn: inlineLufsEnabled)
-            col2Toggle(label: "Contour",     isOn: inlineLoudnessContourEnabled)
-            col2Toggle(label: "De-Esser",    isOn: deEsserEnabledBinding)
-            col2Toggle(label: "M-Band",      isOn: mbEnabledBinding)
+            col2ToggleWithSettings(
+                label: "Infrasonic",
+                isOn: inlineInfrasonicFilterEnabled,
+                fullName: "Infrasonic Filter"
+            ) {
+                DynamicsSliderRow(
+                    label: "Frequency",
+                    value: Binding(
+                        get: { Double(store.dynamicsConfig.advanced.infrasonicFilter.cutoffHz) },
+                        set: { v in var adv = store.dynamicsConfig.advanced; adv.infrasonicFilter.cutoffHz = Float(v); store.updateAdvancedProcessing(adv) }
+                    ),
+                    range: 10.0...30.0,
+                    step: 1.0,
+                    formatValue: { String(format: "%.0f Hz", $0) }
+                )
+            }
+            col2ToggleWithSettings(
+                label: "Hi-Res Coef",
+                isOn: inlineCoefficientDecouplingEnabled,
+                fullName: "Hi-Res Coefficient Decoupling"
+            ) {
+                HStack(spacing: 8) {
+                    Text("Decoupling Active")
+                        .font(.system(size: 13))
+                        .foregroundStyle(.secondary)
+                    Text(store.dynamicsConfig.advanced.highResDecouplingActive ? "Yes (>96 kHz)" : "No")
+                        .font(.system(size: 13, weight: .medium, design: .monospaced))
+                        .foregroundStyle(store.dynamicsConfig.advanced.highResDecouplingActive ? .green : .secondary)
+                }
+            }
+            col2Toggle(label: "DC Filter", isOn: inlineDcOffsetEnabled)
+            col2ToggleWithSettings(
+                label: "Widener",
+                isOn: inlineWideEnabled,
+                fullName: "Stereo Widener"
+            ) {
+                DynamicsSliderRow(
+                    label: "Low Width",
+                    value: Binding(
+                        get: { Double(store.dynamicsConfig.stereoWidener.widthFactorLow) },
+                        set: { v in var c = store.dynamicsConfig.stereoWidener; c.widthFactorLow = Float(v); store.updateStereoWidener(c) }
+                    ),
+                    range: 0.0...1.0,
+                    step: 0.01,
+                    formatValue: { String(format: "%.2f", $0) },
+                    leftEndLabel: "Mono",
+                    rightEndLabel: "Stereo"
+                )
+                DynamicsSliderRow(
+                    label: "Mid Width",
+                    value: Binding(
+                        get: { Double(store.dynamicsConfig.stereoWidener.widthFactorMid) },
+                        set: { v in var c = store.dynamicsConfig.stereoWidener; c.widthFactorMid = Float(v); store.updateStereoWidener(c) }
+                    ),
+                    range: 1.0...2.0,
+                    step: 0.01,
+                    formatValue: { String(format: "%.2f", $0) },
+                    leftEndLabel: "Stereo",
+                    rightEndLabel: "Wide"
+                )
+                DynamicsSliderRow(
+                    label: "High Width",
+                    value: Binding(
+                        get: { Double(store.dynamicsConfig.stereoWidener.widthFactorHigh) },
+                        set: { v in var c = store.dynamicsConfig.stereoWidener; c.widthFactorHigh = Float(v); store.updateStereoWidener(c) }
+                    ),
+                    range: 1.0...2.0,
+                    step: 0.01,
+                    formatValue: { String(format: "%.2f", $0) },
+                    leftEndLabel: "Stereo",
+                    rightEndLabel: "Wide"
+                )
+            }
+            col2ToggleWithSettings(
+                label: "LUFS",
+                isOn: inlineLufsEnabled,
+                fullName: "LUFS Loudness Match"
+            ) {
+                DynamicsSliderRow(
+                    label: "Target",
+                    value: Binding(
+                        get: { Double(store.dynamicsConfig.loudnessMatch.targetLoudnessLUFS) },
+                        set: { v in var c = store.dynamicsConfig.loudnessMatch; c.targetLoudnessLUFS = Float(v); store.updateLoudnessMatch(c) }
+                    ),
+                    range: -24.0...(-10.0),
+                    step: 0.5,
+                    formatValue: { String(format: "%.1f LUFS", $0) }
+                )
+            }
+            col2ToggleWithSettings(
+                label: "Contour",
+                isOn: inlineLoudnessContourEnabled,
+                fullName: "Loudness Contouring"
+            ) {
+                // Loudness Contouring is a simple toggle - no additional parameters
+                Text("Fletcher-Munson compensation curve adding gentle bass and treble lift for low-level listening.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            col2ToggleWithSettings(
+                label: "De-Esser",
+                isOn: deEsserEnabledBinding,
+                fullName: "De-Esser"
+            ) {
+                DynamicsSliderRow(
+                    label: "Threshold",
+                    value: Binding(
+                        get: { Double(store.dynamicsConfig.deEsser.thresholdDB) },
+                        set: { v in var c = store.dynamicsConfig.deEsser; c.thresholdDB = Float(v); store.updateDeEsser(c) }
+                    ),
+                    range: -60.0...0.0,
+                    step: 0.5,
+                    formatValue: { String(format: "%.1f dB", $0) }
+                )
+                DynamicsSliderRow(
+                    label: "Ratio",
+                    value: Binding(
+                        get: { Double(store.dynamicsConfig.deEsser.ratio) },
+                        set: { v in var c = store.dynamicsConfig.deEsser; c.ratio = Float(v); store.updateDeEsser(c) }
+                    ),
+                    range: 1.0...10.0,
+                    step: 0.5,
+                    formatValue: { String(format: "%.1f:1", $0) }
+                )
+                DynamicsSliderRow(
+                    label: "Range",
+                    value: Binding(
+                        get: { Double(store.dynamicsConfig.deEsser.rangeDB) },
+                        set: { v in var c = store.dynamicsConfig.deEsser; c.rangeDB = Float(v); store.updateDeEsser(c) }
+                    ),
+                    range: -24.0...0.0,
+                    step: 1.0,
+                    formatValue: { String(format: "%.0f dB", $0) }
+                )
+            }
+            col2ToggleWithSettings(
+                label: "M-Band",
+                isOn: mbEnabledBinding,
+                fullName: "Multiband Compressor"
+            ) {
+                DynamicsSliderRow(
+                    label: "Low Thresh",
+                    value: Binding(
+                        get: { Double(store.dynamicsConfig.multibandCompressor.thresholdLowDB) },
+                        set: { v in var c = store.dynamicsConfig.multibandCompressor; c.thresholdLowDB = Float(v); store.updateMultibandCompressor(c) }
+                    ),
+                    range: -60.0...0.0,
+                    step: 0.5,
+                    formatValue: { String(format: "%.1f dB", $0) }
+                )
+                DynamicsSliderRow(
+                    label: "Mid Thresh",
+                    value: Binding(
+                        get: { Double(store.dynamicsConfig.multibandCompressor.thresholdMidDB) },
+                        set: { v in var c = store.dynamicsConfig.multibandCompressor; c.thresholdMidDB = Float(v); store.updateMultibandCompressor(c) }
+                    ),
+                    range: -60.0...0.0,
+                    step: 0.5,
+                    formatValue: { String(format: "%.1f dB", $0) }
+                )
+                DynamicsSliderRow(
+                    label: "High Thresh",
+                    value: Binding(
+                        get: { Double(store.dynamicsConfig.multibandCompressor.thresholdHighDB) },
+                        set: { v in var c = store.dynamicsConfig.multibandCompressor; c.thresholdHighDB = Float(v); store.updateMultibandCompressor(c) }
+                    ),
+                    range: -60.0...0.0,
+                    step: 0.5,
+                    formatValue: { String(format: "%.1f dB", $0) }
+                )
+            }
         }
     }
 
@@ -230,14 +392,330 @@ struct DynamicsInlineView: View {
 
     private var column2: some View {
         VStack(alignment: .leading, spacing: 4) {
-            col2Toggle(label: "Comp.",       isOn: compressorEnabledBinding)
-            col2Toggle(label: "Expander",    isOn: expanderEnabledBinding)
-            col2Toggle(label: "Clipper",     isOn: clipperEnabledBinding)
-            col2Toggle(label: "Limiter",     isOn: limiterEnabledBinding)
-            col2Toggle(label: "De-Harsh",    isOn: inlineDeharshEnabled)
-            col2Toggle(label: "Pause Gate",  isOn: inlinePauseGateEnabled)
+            col2ToggleWithSettings(
+                label: "Comp.",
+                isOn: compressorEnabledBinding,
+                fullName: "Compressor"
+            ) {
+                DynamicsSliderRow(
+                    label: "Threshold",
+                    value: Binding(
+                        get: { Double(store.dynamicsConfig.compressor.thresholdDB) },
+                        set: { v in var c = store.dynamicsConfig.compressor; c.thresholdDB = Float(v); store.updateCompressor(c) }
+                    ),
+                    range: -60.0...0.0,
+                    step: 0.5,
+                    formatValue: { String(format: "%.1f dB", $0) }
+                )
+                DynamicsSliderRow(
+                    label: "Ratio",
+                    value: Binding(
+                        get: { Double(store.dynamicsConfig.compressor.ratio) },
+                        set: { v in var c = store.dynamicsConfig.compressor; c.ratio = Float(v); store.updateCompressor(c) }
+                    ),
+                    range: 1.0...20.0,
+                    step: 0.1,
+                    formatValue: { String(format: "%.1f : 1", $0) }
+                )
+                DynamicsSliderRow(
+                    label: "Knee",
+                    value: Binding(
+                        get: { Double(store.dynamicsConfig.compressor.kneeWidthDB) },
+                        set: { v in var c = store.dynamicsConfig.compressor; c.kneeWidthDB = Float(v); store.updateCompressor(c) }
+                    ),
+                    range: 0.0...20.0,
+                    step: 0.5,
+                    formatValue: { String(format: "%.1f dB", $0) },
+                    leftEndLabel: "Hard",
+                    rightEndLabel: "Soft"
+                )
+                DynamicsSliderRow(
+                    label: "Attack",
+                    value: Binding(
+                        get: { Double(store.dynamicsConfig.compressor.attackMs) },
+                        set: { v in var c = store.dynamicsConfig.compressor; c.attackMs = Float(v); store.updateCompressor(c) }
+                    ),
+                    range: 0.1...100.0,
+                    step: 0.5,
+                    formatValue: { String(format: "%.1f ms", $0) }
+                )
+                DynamicsSliderRow(
+                    label: "Release",
+                    value: Binding(
+                        get: { Double(store.dynamicsConfig.compressor.releaseMs) },
+                        set: { v in var c = store.dynamicsConfig.compressor; c.releaseMs = Float(v); store.updateCompressor(c) }
+                    ),
+                    range: 5.0...1000.0,
+                    step: 5.0,
+                    formatValue: { String(format: "%.0f ms", $0) }
+                )
+                DynamicsSliderRow(
+                    label: "Makeup",
+                    value: Binding(
+                        get: { Double(store.dynamicsConfig.compressor.makeupGainDB) },
+                        set: { v in var c = store.dynamicsConfig.compressor; c.makeupGainDB = Float(v); store.updateCompressor(c) }
+                    ),
+                    range: 0.0...24.0,
+                    step: 0.5,
+                    formatValue: { String(format: "%+.1f dB", $0) }
+                )
+            }
+            col2ToggleWithSettings(
+                label: "Expander",
+                isOn: expanderEnabledBinding,
+                fullName: "Expander"
+            ) {
+                DynamicsSliderRow(
+                    label: "Threshold",
+                    value: Binding(
+                        get: { Double(store.dynamicsConfig.expander.thresholdDB) },
+                        set: { v in var c = store.dynamicsConfig.expander; c.thresholdDB = Float(v); store.updateExpander(c) }
+                    ),
+                    range: -60.0...0.0,
+                    step: 0.5,
+                    formatValue: { String(format: "%.1f dB", $0) }
+                )
+                DynamicsSliderRow(
+                    label: "Ratio",
+                    value: Binding(
+                        get: { Double(store.dynamicsConfig.expander.ratio) },
+                        set: { v in var c = store.dynamicsConfig.expander; c.ratio = Float(v); store.updateExpander(c) }
+                    ),
+                    range: 1.0...4.0,
+                    step: 0.1,
+                    formatValue: { String(format: "%.1f : 1", $0) }
+                )
+                DynamicsSliderRow(
+                    label: "Range",
+                    value: Binding(
+                        get: { Double(store.dynamicsConfig.expander.rangeDB) },
+                        set: { v in var c = store.dynamicsConfig.expander; c.rangeDB = Float(v); store.updateExpander(c) }
+                    ),
+                    range: -40.0...0.0,
+                    step: 0.5,
+                    formatValue: { String(format: "%.1f dB", $0) }
+                )
+            }
+            col2ToggleWithSettings(
+                label: "Clipper",
+                isOn: clipperEnabledBinding,
+                fullName: "Clipper"
+            ) {
+                HStack(spacing: 8) {
+                    Text("Curve")
+                        .font(.system(size: 13))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 80, alignment: .leading)
+                    Picker("", selection: Binding(
+                        get: { store.dynamicsConfig.softClipper.curveType },
+                        set: { v in var sc = store.dynamicsConfig.softClipper; sc.curveType = v; store.updateSoftClipper(sc) }
+                    )) {
+                        Text("Quadratic").tag(ClipperCurveType.quadratic)
+                        Text("Cubic").tag(ClipperCurveType.cubic)
+                        Text("Sine").tag(ClipperCurveType.sine)
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                }
+            }
+            col2ToggleWithSettings(
+                label: "Limiter",
+                isOn: limiterEnabledBinding,
+                fullName: "Limiter"
+            ) {
+                DynamicsSliderRow(
+                    label: "Ceiling",
+                    value: Binding(
+                        get: { Double(store.dynamicsConfig.limiter.ceilingDB) },
+                        set: { v in var c = store.dynamicsConfig.limiter; c.ceilingDB = Float(v); store.updateLimiter(c) }
+                    ),
+                    range: -20.0...0.0,
+                    step: 0.5,
+                    formatValue: { String(format: "%.1f dB", $0) }
+                )
+                DynamicsSliderRow(
+                    label: "Attack",
+                    value: Binding(
+                        get: { Double(store.dynamicsConfig.limiter.attackMs) },
+                        set: { v in var c = store.dynamicsConfig.limiter; c.attackMs = Float(v); store.updateLimiter(c) }
+                    ),
+                    range: 0.1...50.0,
+                    step: 0.5,
+                    formatValue: { String(format: "%.1f ms", $0) }
+                )
+                DynamicsSliderRow(
+                    label: "Release",
+                    value: Binding(
+                        get: { Double(store.dynamicsConfig.limiter.releaseMs) },
+                        set: { v in var c = store.dynamicsConfig.limiter; c.releaseMs = Float(v); store.updateLimiter(c) }
+                    ),
+                    range: 5.0...500.0,
+                    step: 5.0,
+                    formatValue: { String(format: "%.0f ms", $0) }
+                )
+                DynamicsSliderRow(
+                    label: "Look-ahead",
+                    value: Binding(
+                        get: { Double(store.dynamicsConfig.limiter.lookAheadMs) },
+                        set: { v in var c = store.dynamicsConfig.limiter; c.lookAheadMs = Float(v); store.updateLimiter(c) }
+                    ),
+                    range: 0.0...20.0,
+                    step: 0.5,
+                    formatValue: { String(format: "%.1f ms", $0) }
+                )
+            }
+            col2ToggleWithSettings(
+                label: "Gain Rider",
+                isOn: inlineAutoHeadroomEnabled,
+                fullName: "Dynamic Gain Rider"
+            ) {
+                DynamicsSliderRow(
+                    label: "Target GR",
+                    value: Binding(
+                        get: { Double(store.dynamicsConfig.advanced.autoHeadroomTargetGRDB) },
+                        set: { v in var adv = store.dynamicsConfig.advanced; adv.autoHeadroomTargetGRDB = Float(v); store.updateAdvancedProcessing(adv) }
+                    ),
+                    range: 0.5...6.0,
+                    step: 0.5,
+                    formatValue: { String(format: "%.1f dB", $0) }
+                )
+                DynamicsSliderRow(
+                    label: "Max Cut",
+                    value: Binding(
+                        get: { Double(store.dynamicsConfig.advanced.autoHeadroomMaxReductionDB) },
+                        set: { v in var adv = store.dynamicsConfig.advanced; adv.autoHeadroomMaxReductionDB = Float(v); store.updateAdvancedProcessing(adv) }
+                    ),
+                    range: 3.0...12.0,
+                    step: 1.0,
+                    formatValue: { String(format: "%.0f dB", $0) }
+                )
+                HStack(spacing: 8) {
+                    Text("Response")
+                        .font(.system(size: 13))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 80, alignment: .leading)
+                    Picker("", selection: Binding(
+                        get: { store.dynamicsConfig.advanced.autoHeadroomSpeed },
+                        set: { v in var adv = store.dynamicsConfig.advanced; adv.autoHeadroomSpeed = v; store.updateAdvancedProcessing(adv) }
+                    )) {
+                        Text("Fast").tag(AutoHeadroomSpeed.fast)
+                        Text("Medium").tag(AutoHeadroomSpeed.medium)
+                        Text("Slow").tag(AutoHeadroomSpeed.slow)
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                }
+                HStack(spacing: 8) {
+                    Text("Rider Gain")
+                        .font(.system(size: 13))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 80, alignment: .leading)
+                    Text(store.liveAutoHeadroomGainDB < -0.05
+                         ? String(format: "%+.1f dB", store.liveAutoHeadroomGainDB)
+                         : "0.0 dB")
+                        .font(.system(size: 12, weight: .medium, design: .monospaced))
+                        .foregroundStyle(store.liveAutoHeadroomGainDB < -0.5 ? .orange : .secondary)
+                }
+            }
+            col2ToggleWithSettings(
+                label: "EQ Headroom",
+                isOn: inlineEqHeadroomCompensationEnabled,
+                fullName: "EQ Headroom Compensation"
+            ) {
+                HStack(spacing: 8) {
+                    Text("Static Preamp")
+                        .font(.system(size: 13))
+                        .foregroundStyle(.secondary)
+                    Text("\(String(format: "%.1f", store.staticPreampDB)) dB applied")
+                        .font(.system(size: 13))
+                        .foregroundStyle(.secondary)
+                }
+            }
+            col2ToggleWithSettings(
+                label: "De-Harsh",
+                isOn: inlineDeharshEnabled,
+                fullName: "De-Harsh Filter"
+            ) {
+                DynamicsSliderRow(
+                    label: "Tilt Amount",
+                    value: Binding(
+                        get: { Double(store.dynamicsConfig.advanced.deharshTiltAmountDB) },
+                        set: { v in var adv = store.dynamicsConfig.advanced; adv.deharshTiltAmountDB = Float(v); store.updateAdvancedProcessing(adv) }
+                    ),
+                    range: -6.0...0.0,
+                    step: 0.5,
+                    formatValue: { String(format: "%+.1f dB", $0) }
+                )
+            }
+            col2ToggleWithSettings(
+                label: "Pause Gate",
+                isOn: inlinePauseGateEnabled,
+                fullName: "Pause Gate"
+            ) {
+                DynamicsSliderRow(
+                    label: "Threshold",
+                    value: Binding(
+                        get: { Double(store.dynamicsConfig.advanced.pauseGateThresholdDBFS) },
+                        set: { v in var adv = store.dynamicsConfig.advanced; adv.pauseGateThresholdDBFS = Float(v); store.updateAdvancedProcessing(adv) }
+                    ),
+                    range: -80.0 ... -40.0,
+                    step: 1.0,
+                    formatValue: { String(format: "%.0f dBFS", $0) },
+                    leftEndLabel: "Quiet",
+                    rightEndLabel: "Loud"
+                )
+                DynamicsSliderRow(
+                    label: "Hold",
+                    value: Binding(
+                        get: { Double(store.dynamicsConfig.advanced.pauseGateHoldMs) },
+                        set: { v in var adv = store.dynamicsConfig.advanced; adv.pauseGateHoldMs = Float(v); store.updateAdvancedProcessing(adv) }
+                    ),
+                    range: 100.0 ... 2000.0,
+                    step: 50.0,
+                    formatValue: { String(format: "%.0f ms", $0) },
+                    leftEndLabel: "Tight",
+                    rightEndLabel: "Loose"
+                )
+            }
             col2Toggle(label: "Sync Buffer", isOn: inlineSyncBufferEnabled)
-            col2Toggle(label: "Sym. Bal.",   isOn: inlineSymmetryBalanceEnabled)
+            col2ToggleWithSettings(
+                label: "Sym. Bal.",
+                isOn: inlineSymmetryBalanceEnabled,
+                fullName: "Symmetry Balance"
+            ) {
+                // TODO: Recover balanceBinding from git history
+                Text("Symmetry Balance uses stereoBalancePosition slider")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            col2ToggleWithSettings(
+                label: "Panning",
+                isOn: inlinePanningEnabled,
+                fullName: "Panning Gain Matrix"
+            ) {
+                DynamicsSliderRow(
+                    label: "Crossfeed",
+                    value: Binding(
+                        get: { Double(store.dynamicsConfig.advanced.panningCrossfeedAmount) },
+                        set: { v in var adv = store.dynamicsConfig.advanced; adv.panningCrossfeedAmount = Float(v); store.updateAdvancedProcessing(adv) }
+                    ),
+                    range: 0.0...1.0,
+                    step: 0.01,
+                    formatValue: { String(format: "%.2f", $0) },
+                    leftEndLabel: "None",
+                    rightEndLabel: "Full"
+                )
+            }
+            col2ToggleWithSettings(
+                label: "Bass Mgmt",
+                isOn: inlineBassManagementEnabled,
+                fullName: "Bass Management"
+            ) {
+                // Bass Management is a simple toggle - no additional parameters in the current implementation
+                Text("Bass management for subwoofer integration. Currently a simple enable/disable.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
     }
 
@@ -245,12 +723,115 @@ struct DynamicsInlineView: View {
 
     private var column3: some View {
         VStack(alignment: .leading, spacing: 4) {
-            col2Toggle(label: "Denoiser",    isOn: inlineDenoisingEnabled)
-            col2Toggle(label: "IR Align",    isOn: inlineIRAlignmentEnabled)
-            col2Toggle(label: "Crosstalk",   isOn: inlineCrosstalkEnabled)
-            col2Toggle(label: "Sub Align",   isOn: inlineSubBassEnabled)
-            col2Toggle(label: "FIR",         isOn: inlineConvolutionEnabled)
-            col2Toggle(label: "4x OS",       isOn: inlineOversamplingBinding)
+            col2ToggleWithSettings(
+                label: "Denoiser",
+                isOn: inlineDenoisingEnabled,
+                fullName: "Linear Denoising Engine"
+            ) {
+                // Linear Denoising is a simple toggle - no additional parameters in the current implementation
+                Text("Linear denoising engine for broadband noise reduction.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            col2ToggleWithSettings(
+                label: "IR Align",
+                isOn: inlineIRAlignmentEnabled,
+                fullName: "Speaker IR Alignment"
+            ) {
+                DynamicsSliderRow(
+                    label: "Fine Delay",
+                    value: Binding(
+                        get: { Double(store.dynamicsConfig.advanced.speakerIRDelayMs) },
+                        set: { v in var adv = store.dynamicsConfig.advanced; adv.speakerIRDelayMs = Float(v); store.updateAdvancedProcessing(adv) }
+                    ),
+                    range: 0.0...5.0,
+                    step: 0.01,
+                    formatValue: { String(format: "%.2f ms", $0) },
+                    leftEndLabel: "0 ms",
+                    rightEndLabel: "5 ms"
+                )
+            }
+            col2ToggleWithSettings(
+                label: "Crosstalk",
+                isOn: inlineCrosstalkEnabled,
+                fullName: "Crosstalk Cancellation Matrix"
+            ) {
+                DynamicsSliderRow(
+                    label: "Amount",
+                    value: Binding(
+                        get: { Double(store.dynamicsConfig.advanced.crosstalkCancellationAmount) },
+                        set: { v in var adv = store.dynamicsConfig.advanced; adv.crosstalkCancellationAmount = Float(v); store.updateAdvancedProcessing(adv) }
+                    ),
+                    range: 0.0...1.0,
+                    step: 0.01,
+                    formatValue: { String(format: "%.2f", $0) },
+                    leftEndLabel: "Off",
+                    rightEndLabel: "Max"
+                )
+            }
+            col2ToggleWithSettings(
+                label: "Sub Align",
+                isOn: inlineSubBassEnabled,
+                fullName: "Sub-Bass Phase Alignment"
+            ) {
+                DynamicsSliderRow(
+                    label: "Frequency",
+                    value: Binding(
+                        get: { Double(store.dynamicsConfig.advanced.subBassAlignmentFrequencyHz) },
+                        set: { v in var adv = store.dynamicsConfig.advanced; adv.subBassAlignmentFrequencyHz = Float(v); store.updateAdvancedProcessing(adv) }
+                    ),
+                    range: 40.0...120.0,
+                    step: 1.0,
+                    formatValue: { String(format: "%.0f Hz", $0) }
+                )
+                DynamicsSliderRow(
+                    label: "Q",
+                    value: Binding(
+                        get: { Double(store.dynamicsConfig.advanced.subBassPhaseAlignmentQ) },
+                        set: { v in var adv = store.dynamicsConfig.advanced; adv.subBassPhaseAlignmentQ = Float(v); store.updateAdvancedProcessing(adv) }
+                    ),
+                    range: 0.5...2.0,
+                    step: 0.1,
+                    formatValue: { String(format: "%.1f", $0) }
+                )
+            }
+            col2ToggleWithSettings(
+                label: "FIR",
+                isOn: inlineConvolutionEnabled,
+                fullName: "FIR Correction"
+            ) {
+                // FIR Correction is a simple toggle - no additional parameters in the current implementation
+                Text("FIR correction filter for speaker/room response. Zero added latency beyond one partition (~43 ms at 48 kHz).")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            col2ToggleWithSettings(
+                label: "FIR IR",
+                isOn: inlineFirImpulseResponseEnabled,
+                fullName: "FIR Impulse Response"
+            ) {
+                // FIR Impulse Response is a simple toggle - no additional parameters in the current implementation
+                Text("Supports headphone frequency response correction profiles (AutoEq, manufacturer measurements) and speaker/room FIR filters exported from measurement systems such as REW.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            col2ToggleWithSettings(
+                label: "Multi-Seat",
+                isOn: inlineMultiSeatEnabled,
+                fullName: "Multi-Seat Complex Averaging"
+            ) {
+                DynamicsSliderRow(
+                    label: "Seat Count",
+                    value: Binding(
+                        get: { Double(store.dynamicsConfig.advanced.multiSeatCount) },
+                        set: { v in var adv = store.dynamicsConfig.advanced; adv.multiSeatCount = Int(v); store.updateAdvancedProcessing(adv) }
+                    ),
+                    range: 1.0...8.0,
+                    step: 1.0,
+                    formatValue: { String(format: "%.0f seats", $0) }
+                )
+            }
+            col2Toggle(label: "4x OS", isOn: inlineOversamplingBinding)
         }
     }
 
@@ -343,6 +924,27 @@ struct DynamicsInlineView: View {
                 .toggleStyle(.switch)
                 .controlSize(.mini)
                 .fixedSize()
+        }
+    }
+
+    @ViewBuilder
+    private func col2ToggleWithSettings<Content: View>(
+        label: String,
+        isOn: Binding<Bool>,
+        fullName: String,
+        @ViewBuilder settings: @escaping () -> Content
+    ) -> some View {
+        HStack(spacing: 4) {
+            Text(label)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .frame(width: 68, alignment: .leading)
+            Toggle("", isOn: isOn)
+                .labelsHidden()
+                .toggleStyle(.switch)
+                .controlSize(.mini)
+                .fixedSize()
+            DynamicsControlSettingsButton(fullName: fullName, content: settings)
         }
     }
 
@@ -565,6 +1167,31 @@ struct DynamicsInlineView: View {
             get: { store.dynamicsConfig.advanced.linearPhaseEQEnabled },
             set: { val in var adv = store.dynamicsConfig.advanced; adv.linearPhaseEQEnabled = val; store.updateAdvancedProcessing(adv) }
         )
+    }
+
+    private var inlineFirImpulseResponseEnabled: Binding<Bool> {
+        Binding(
+            get: { store.dynamicsConfig.advanced.firImpulseResponse.enabled },
+            set: { v in var adv = store.dynamicsConfig.advanced; adv.firImpulseResponse.enabled = v; store.updateAdvancedProcessing(adv) }
+        )
+    }
+
+    private var inlineBassManagementEnabled: Binding<Bool> {
+        Binding(
+            get: { store.dynamicsConfig.advanced.bassManagement.enabled },
+            set: { v in var adv = store.dynamicsConfig.advanced; adv.bassManagement.enabled = v; store.updateAdvancedProcessing(adv) }
+        )
+    }
+
+    private var inlineAutoHeadroomEnabled: Binding<Bool> {
+        Binding(
+            get: { store.dynamicsConfig.advanced.autoHeadroomEnabled },
+            set: { v in var adv = store.dynamicsConfig.advanced; adv.autoHeadroomEnabled = v; store.updateAdvancedProcessing(adv) }
+        )
+    }
+
+    private var inlineEqHeadroomCompensationEnabled: Binding<Bool> {
+        $store.eqHeadroomCompensationEnabled
     }
 }
 
