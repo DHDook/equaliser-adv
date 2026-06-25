@@ -21,17 +21,14 @@ struct DynamicsControlSettingsButton<Content: View>: View {
         .buttonStyle(.plain)
         .help("\(fullName) settings")
         .popover(isPresented: $isPresented, arrowEdge: .trailing) {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 12) {
-                    Text(fullName)
-                        .font(.system(size: 14, weight: .semibold))
-                    Divider()
-                    content()
-                }
-                .padding(16)
+            VStack(alignment: .leading, spacing: 12) {
+                Text(fullName)
+                    .font(.system(size: 14, weight: .semibold))
+                Divider()
+                content()
             }
+            .padding(16)
             .frame(width: 360)
-            .frame(maxHeight: 480)
         }
     }
 }

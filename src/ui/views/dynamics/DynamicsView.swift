@@ -229,6 +229,38 @@ struct DynamicsInlineView: View {
                     step: 1.0,
                     formatValue: { String(format: "%.0f Hz", $0) }
                 )
+                HStack(spacing: 8) {
+                    Text("Slope")
+                        .font(.system(size: 13))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 80, alignment: .leading)
+                    Picker("", selection: Binding(
+                        get: { store.dynamicsConfig.advanced.infrasonicFilter.slope },
+                        set: { v in var adv = store.dynamicsConfig.advanced; adv.infrasonicFilter.slope = v; store.updateAdvancedProcessing(adv) }
+                    )) {
+                        ForEach(InfrasonicFilterConfig.InfrasonicSlope.allCases, id: \.self) { s in
+                            Text(s.displayName).tag(s)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                }
+                HStack(spacing: 8) {
+                    Text("Target")
+                        .font(.system(size: 13))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 80, alignment: .leading)
+                    Picker("", selection: Binding(
+                        get: { store.dynamicsConfig.advanced.infrasonicFilter.target },
+                        set: { v in var adv = store.dynamicsConfig.advanced; adv.infrasonicFilter.target = v; store.updateAdvancedProcessing(adv) }
+                    )) {
+                        ForEach(InfrasonicFilterConfig.ApplicationTarget.allCases, id: \.self) { t in
+                            Text(t.displayName).tag(t)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    .labelsHidden()
+                }
             }
             col2ToggleWithSettings(
                 label: "Denoiser",
@@ -394,6 +426,36 @@ struct DynamicsInlineView: View {
                     step: 0.5,
                     formatValue: { String(format: "%.1f LUFS", $0) }
                 )
+                Toggle("Dialogue Gate", isOn: Binding(
+                    get: { store.dynamicsConfig.advanced.loudnessDialogueGateEnabled },
+                    set: { v in var adv = store.dynamicsConfig.advanced; adv.loudnessDialogueGateEnabled = v; store.updateAdvancedProcessing(adv) }
+                ))
+                Toggle("Volume-Dependent Loudness", isOn: Binding(
+                    get: { store.dynamicsConfig.advanced.volumeDependentLoudnessEnabled },
+                    set: { v in var adv = store.dynamicsConfig.advanced; adv.volumeDependentLoudnessEnabled = v; store.updateAdvancedProcessing(adv) }
+                ))
+                if store.dynamicsConfig.advanced.volumeDependentLoudnessEnabled {
+                    DynamicsSliderRow(
+                        label: "Ref. Level",
+                        value: Binding(
+                            get: { Double(store.dynamicsConfig.advanced.loudnessReferencePhon) },
+                            set: { v in var adv = store.dynamicsConfig.advanced; adv.loudnessReferencePhon = Float(v); store.updateAdvancedProcessing(adv) }
+                        ),
+                        range: 60.0...95.0,
+                        step: 1.0,
+                        formatValue: { String(format: "%.0f phon", $0) }
+                    )
+                    DynamicsSliderRow(
+                        label: "Ref. Volume",
+                        value: Binding(
+                            get: { Double(store.dynamicsConfig.advanced.loudnessReferenceVolume) },
+                            set: { v in var adv = store.dynamicsConfig.advanced; adv.loudnessReferenceVolume = Float(v); store.updateAdvancedProcessing(adv) }
+                        ),
+                        range: 0.0...1.0,
+                        step: 0.01,
+                        formatValue: { String(format: "%.2f", $0) }
+                    )
+                }
             }
             col2Toggle(label: "Contour", isOn: inlineLoudnessContourEnabled)
             col2ToggleWithSettings(
@@ -401,6 +463,26 @@ struct DynamicsInlineView: View {
                 isOn: deEsserEnabledBinding,
                 fullName: "De-Esser"
             ) {
+                DynamicsSliderRow(
+                    label: "Frequency",
+                    value: Binding(
+                        get: { Double(store.dynamicsConfig.deEsser.frequencyHz) },
+                        set: { v in var c = store.dynamicsConfig.deEsser; c.frequencyHz = Float(v); store.updateDeEsser(c) }
+                    ),
+                    range: 2000.0...12000.0,
+                    step: 100.0,
+                    formatValue: { String(format: "%.0f Hz", $0) }
+                )
+                DynamicsSliderRow(
+                    label: "Detect Q",
+                    value: Binding(
+                        get: { Double(store.dynamicsConfig.deEsser.detectionQ) },
+                        set: { v in var c = store.dynamicsConfig.deEsser; c.detectionQ = Float(v); store.updateDeEsser(c) }
+                    ),
+                    range: 0.5...8.0,
+                    step: 0.1,
+                    formatValue: { String(format: "%.1f", $0) }
+                )
                 DynamicsSliderRow(
                     label: "Threshold",
                     value: Binding(
@@ -431,6 +513,26 @@ struct DynamicsInlineView: View {
                     step: 1.0,
                     formatValue: { String(format: "%.0f dB", $0) }
                 )
+                DynamicsSliderRow(
+                    label: "Attack",
+                    value: Binding(
+                        get: { Double(store.dynamicsConfig.deEsser.attackMs) },
+                        set: { v in var c = store.dynamicsConfig.deEsser; c.attackMs = Float(v); store.updateDeEsser(c) }
+                    ),
+                    range: 0.1...20.0,
+                    step: 0.1,
+                    formatValue: { String(format: "%.1f ms", $0) }
+                )
+                DynamicsSliderRow(
+                    label: "Release",
+                    value: Binding(
+                        get: { Double(store.dynamicsConfig.deEsser.releaseMs) },
+                        set: { v in var c = store.dynamicsConfig.deEsser; c.releaseMs = Float(v); store.updateDeEsser(c) }
+                    ),
+                    range: 10.0...300.0,
+                    step: 5.0,
+                    formatValue: { String(format: "%.0f ms", $0) }
+                )
             }
             col2ToggleWithSettings(
                 label: "M-Band",
@@ -438,35 +540,101 @@ struct DynamicsInlineView: View {
                 fullName: "Multiband Compressor"
             ) {
                 DynamicsSliderRow(
-                    label: "Low Thresh",
+                    label: "Low/Mid X-over",
                     value: Binding(
+                        get: { Double(store.dynamicsConfig.multibandCompressor.crossLowMidHz) },
+                        set: { v in var c = store.dynamicsConfig.multibandCompressor; c.crossLowMidHz = Float(v); store.updateMultibandCompressor(c) }
+                    ),
+                    range: 60.0...500.0,
+                    step: 5.0,
+                    formatValue: { String(format: "%.0f Hz", $0) }
+                )
+                DynamicsSliderRow(
+                    label: "Mid/High X-over",
+                    value: Binding(
+                        get: { Double(store.dynamicsConfig.multibandCompressor.crossMidHighHz) },
+                        set: { v in var c = store.dynamicsConfig.multibandCompressor; c.crossMidHighHz = Float(v); store.updateMultibandCompressor(c) }
+                    ),
+                    range: 1000.0...8000.0,
+                    step: 100.0,
+                    formatValue: { String(format: "%.0f Hz", $0) }
+                )
+                DynamicsSliderRow(
+                    label: "Sidechain HP",
+                    value: Binding(
+                        get: { Double(store.dynamicsConfig.multibandCompressor.sidechainHighPassHz) },
+                        set: { v in var c = store.dynamicsConfig.multibandCompressor; c.sidechainHighPassHz = Float(v); store.updateMultibandCompressor(c) }
+                    ),
+                    range: 0.0...300.0,
+                    step: 5.0,
+                    formatValue: { String(format: "%.0f Hz", $0) }
+                )
+                DisclosureGroup("Low Band") {
+                    DynamicsSliderRow(label: "Threshold", value: Binding(
                         get: { Double(store.dynamicsConfig.multibandCompressor.thresholdLowDB) },
                         set: { v in var c = store.dynamicsConfig.multibandCompressor; c.thresholdLowDB = Float(v); store.updateMultibandCompressor(c) }
-                    ),
-                    range: -60.0...0.0,
-                    step: 0.5,
-                    formatValue: { String(format: "%.1f dB", $0) }
-                )
-                DynamicsSliderRow(
-                    label: "Mid Thresh",
-                    value: Binding(
+                    ), range: -60.0...0.0, step: 0.5, formatValue: { String(format: "%.1f dB", $0) })
+                    DynamicsSliderRow(label: "Ratio", value: Binding(
+                        get: { Double(store.dynamicsConfig.multibandCompressor.ratioLow) },
+                        set: { v in var c = store.dynamicsConfig.multibandCompressor; c.ratioLow = Float(v); store.updateMultibandCompressor(c) }
+                    ), range: 1.0...20.0, step: 0.5, formatValue: { String(format: "%.1f:1", $0) })
+                    DynamicsSliderRow(label: "Attack", value: Binding(
+                        get: { Double(store.dynamicsConfig.multibandCompressor.attackLowMs) },
+                        set: { v in var c = store.dynamicsConfig.multibandCompressor; c.attackLowMs = Float(v); store.updateMultibandCompressor(c) }
+                    ), range: 1.0...200.0, step: 1.0, formatValue: { String(format: "%.0f ms", $0) })
+                    DynamicsSliderRow(label: "Release", value: Binding(
+                        get: { Double(store.dynamicsConfig.multibandCompressor.releaseLowMs) },
+                        set: { v in var c = store.dynamicsConfig.multibandCompressor; c.releaseLowMs = Float(v); store.updateMultibandCompressor(c) }
+                    ), range: 10.0...1000.0, step: 10.0, formatValue: { String(format: "%.0f ms", $0) })
+                    DynamicsSliderRow(label: "Knee", value: Binding(
+                        get: { Double(store.dynamicsConfig.multibandCompressor.kneeWidthLowDB) },
+                        set: { v in var c = store.dynamicsConfig.multibandCompressor; c.kneeWidthLowDB = Float(v); store.updateMultibandCompressor(c) }
+                    ), range: 0.0...20.0, step: 0.5, formatValue: { String(format: "%.1f dB", $0) })
+                }
+                DisclosureGroup("Mid Band") {
+                    DynamicsSliderRow(label: "Threshold", value: Binding(
                         get: { Double(store.dynamicsConfig.multibandCompressor.thresholdMidDB) },
                         set: { v in var c = store.dynamicsConfig.multibandCompressor; c.thresholdMidDB = Float(v); store.updateMultibandCompressor(c) }
-                    ),
-                    range: -60.0...0.0,
-                    step: 0.5,
-                    formatValue: { String(format: "%.1f dB", $0) }
-                )
-                DynamicsSliderRow(
-                    label: "High Thresh",
-                    value: Binding(
+                    ), range: -60.0...0.0, step: 0.5, formatValue: { String(format: "%.1f dB", $0) })
+                    DynamicsSliderRow(label: "Ratio", value: Binding(
+                        get: { Double(store.dynamicsConfig.multibandCompressor.ratioMid) },
+                        set: { v in var c = store.dynamicsConfig.multibandCompressor; c.ratioMid = Float(v); store.updateMultibandCompressor(c) }
+                    ), range: 1.0...20.0, step: 0.5, formatValue: { String(format: "%.1f:1", $0) })
+                    DynamicsSliderRow(label: "Attack", value: Binding(
+                        get: { Double(store.dynamicsConfig.multibandCompressor.attackMidMs) },
+                        set: { v in var c = store.dynamicsConfig.multibandCompressor; c.attackMidMs = Float(v); store.updateMultibandCompressor(c) }
+                    ), range: 1.0...200.0, step: 1.0, formatValue: { String(format: "%.0f ms", $0) })
+                    DynamicsSliderRow(label: "Release", value: Binding(
+                        get: { Double(store.dynamicsConfig.multibandCompressor.releaseMidMs) },
+                        set: { v in var c = store.dynamicsConfig.multibandCompressor; c.releaseMidMs = Float(v); store.updateMultibandCompressor(c) }
+                    ), range: 10.0...1000.0, step: 10.0, formatValue: { String(format: "%.0f ms", $0) })
+                    DynamicsSliderRow(label: "Knee", value: Binding(
+                        get: { Double(store.dynamicsConfig.multibandCompressor.kneeWidthMidDB) },
+                        set: { v in var c = store.dynamicsConfig.multibandCompressor; c.kneeWidthMidDB = Float(v); store.updateMultibandCompressor(c) }
+                    ), range: 0.0...20.0, step: 0.5, formatValue: { String(format: "%.1f dB", $0) })
+                }
+                DisclosureGroup("High Band") {
+                    DynamicsSliderRow(label: "Threshold", value: Binding(
                         get: { Double(store.dynamicsConfig.multibandCompressor.thresholdHighDB) },
                         set: { v in var c = store.dynamicsConfig.multibandCompressor; c.thresholdHighDB = Float(v); store.updateMultibandCompressor(c) }
-                    ),
-                    range: -60.0...0.0,
-                    step: 0.5,
-                    formatValue: { String(format: "%.1f dB", $0) }
-                )
+                    ), range: -60.0...0.0, step: 0.5, formatValue: { String(format: "%.1f dB", $0) })
+                    DynamicsSliderRow(label: "Ratio", value: Binding(
+                        get: { Double(store.dynamicsConfig.multibandCompressor.ratioHigh) },
+                        set: { v in var c = store.dynamicsConfig.multibandCompressor; c.ratioHigh = Float(v); store.updateMultibandCompressor(c) }
+                    ), range: 1.0...20.0, step: 0.5, formatValue: { String(format: "%.1f:1", $0) })
+                    DynamicsSliderRow(label: "Attack", value: Binding(
+                        get: { Double(store.dynamicsConfig.multibandCompressor.attackHighMs) },
+                        set: { v in var c = store.dynamicsConfig.multibandCompressor; c.attackHighMs = Float(v); store.updateMultibandCompressor(c) }
+                    ), range: 1.0...200.0, step: 1.0, formatValue: { String(format: "%.0f ms", $0) })
+                    DynamicsSliderRow(label: "Release", value: Binding(
+                        get: { Double(store.dynamicsConfig.multibandCompressor.releaseHighMs) },
+                        set: { v in var c = store.dynamicsConfig.multibandCompressor; c.releaseHighMs = Float(v); store.updateMultibandCompressor(c) }
+                    ), range: 10.0...1000.0, step: 10.0, formatValue: { String(format: "%.0f ms", $0) })
+                    DynamicsSliderRow(label: "Knee", value: Binding(
+                        get: { Double(store.dynamicsConfig.multibandCompressor.kneeWidthHighDB) },
+                        set: { v in var c = store.dynamicsConfig.multibandCompressor; c.kneeWidthHighDB = Float(v); store.updateMultibandCompressor(c) }
+                    ), range: 0.0...20.0, step: 0.5, formatValue: { String(format: "%.1f dB", $0) })
+                }
             }
         }
     }
@@ -541,6 +709,20 @@ struct DynamicsInlineView: View {
                     range: 0.0...24.0,
                     step: 0.5,
                     formatValue: { String(format: "%+.1f dB", $0) }
+                )
+                Toggle("Program-Dependent Release", isOn: Binding(
+                    get: { store.dynamicsConfig.compressor.programDependentRelease },
+                    set: { v in var c = store.dynamicsConfig.compressor; c.programDependentRelease = v; store.updateCompressor(c) }
+                ))
+                DynamicsSliderRow(
+                    label: "Sidechain HP",
+                    value: Binding(
+                        get: { Double(store.dynamicsConfig.compressor.sidechainHighPassHz) },
+                        set: { v in var c = store.dynamicsConfig.compressor; c.sidechainHighPassHz = Float(v); store.updateCompressor(c) }
+                    ),
+                    range: 0.0...300.0,
+                    step: 5.0,
+                    formatValue: { String(format: "%.0f Hz", $0) }
                 )
             }
             col2ToggleWithSettings(
@@ -624,6 +806,48 @@ struct DynamicsInlineView: View {
                     get: { store.dynamicsConfig.advanced.bassManagement.lowBandPolarityInverted },
                     set: { v in var adv = store.dynamicsConfig.advanced; adv.bassManagement.lowBandPolarityInverted = v; store.updateAdvancedProcessing(adv) }
                 ))
+                HStack(spacing: 8) {
+                    Text("X-over Type")
+                        .font(.system(size: 13))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 80, alignment: .leading)
+                    Picker("", selection: Binding(
+                        get: { store.dynamicsConfig.advanced.bassManagement.crossoverType },
+                        set: { v in var adv = store.dynamicsConfig.advanced; adv.bassManagement.crossoverType = v; store.updateAdvancedProcessing(adv) }
+                    )) {
+                        Text("Linkwitz-Riley").tag(CrossoverType.linkwitzRiley)
+                        Text("Butterworth").tag(CrossoverType.butterworth)
+                        Text("Bessel").tag(CrossoverType.bessel)
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                }
+                Toggle("Asymmetric Crossover", isOn: Binding(
+                    get: { store.dynamicsConfig.advanced.bassManagement.asymmetricCrossoverEnabled },
+                    set: { v in var adv = store.dynamicsConfig.advanced; adv.bassManagement.asymmetricCrossoverEnabled = v; store.updateAdvancedProcessing(adv) }
+                ))
+                if store.dynamicsConfig.advanced.bassManagement.asymmetricCrossoverEnabled {
+                    DynamicsSliderRow(
+                        label: "Mains HP",
+                        value: Binding(
+                            get: { Double(store.dynamicsConfig.advanced.bassManagement.mainsHighPassHz) },
+                            set: { v in var adv = store.dynamicsConfig.advanced; adv.bassManagement.mainsHighPassHz = Float(v); store.updateAdvancedProcessing(adv) }
+                        ),
+                        range: 40.0...200.0,
+                        step: 1.0,
+                        formatValue: { String(format: "%.0f Hz", $0) }
+                    )
+                }
+                DynamicsSliderRow(
+                    label: "Sub Delay",
+                    value: Binding(
+                        get: { Double(store.dynamicsConfig.advanced.bassManagement.lowBandDelaySamples) },
+                        set: { v in var adv = store.dynamicsConfig.advanced; adv.bassManagement.lowBandDelaySamples = Float(v); store.updateAdvancedProcessing(adv) }
+                    ),
+                    range: 0.0...500.0,
+                    step: 1.0,
+                    formatValue: { String(format: "%.0f samples", $0) }
+                )
                 // TODO: Expose lowBandLowShelfEnabled/FreqHz/GainDB, leftSpeakerDistanceM/rightSpeakerDistanceM/subwooferDistanceM, subEQBands
             }
             col2ToggleWithSettings(
@@ -684,6 +908,38 @@ struct DynamicsInlineView: View {
                 isOn: clipperEnabledBinding,
                 fullName: "Clipper"
             ) {
+                DynamicsSliderRow(
+                    label: "Drive",
+                    value: Binding(
+                        get: { Double(store.dynamicsConfig.softClipper.driveDB) },
+                        set: { v in var sc = store.dynamicsConfig.softClipper; sc.driveDB = Float(v); store.updateSoftClipper(sc) }
+                    ),
+                    range: 0.0...12.0,
+                    step: 0.5,
+                    formatValue: { String(format: "%+.1f dB", $0) }
+                )
+                DynamicsSliderRow(
+                    label: "Threshold",
+                    value: Binding(
+                        get: { Double(store.dynamicsConfig.softClipper.thresholdDB) },
+                        set: { v in var sc = store.dynamicsConfig.softClipper; sc.thresholdDB = Float(v); store.updateSoftClipper(sc) }
+                    ),
+                    range: -6.0...0.0,
+                    step: 0.1,
+                    formatValue: { String(format: "%.1f dB", $0) }
+                )
+                DynamicsSliderRow(
+                    label: "Knee",
+                    value: Binding(
+                        get: { Double(store.dynamicsConfig.softClipper.kneeSmooth) },
+                        set: { v in var sc = store.dynamicsConfig.softClipper; sc.kneeSmooth = Float(v); store.updateSoftClipper(sc) }
+                    ),
+                    range: 0.0...1.0,
+                    step: 0.05,
+                    formatValue: { String(format: "%.2f", $0) },
+                    leftEndLabel: "Hard",
+                    rightEndLabel: "Soft"
+                )
                 HStack(spacing: 8) {
                     Text("Curve")
                         .font(.system(size: 13))
@@ -700,6 +956,10 @@ struct DynamicsInlineView: View {
                     .pickerStyle(.segmented)
                     .labelsHidden()
                 }
+                Toggle("Auto-Compensate Gain", isOn: Binding(
+                    get: { store.dynamicsConfig.softClipper.autoCompensateGain },
+                    set: { v in var sc = store.dynamicsConfig.softClipper; sc.autoCompensateGain = v; store.updateSoftClipper(sc) }
+                ))
             }
             col2ToggleWithSettings(
                 label: "Limiter",
@@ -746,6 +1006,10 @@ struct DynamicsInlineView: View {
                     step: 0.5,
                     formatValue: { String(format: "%.1f ms", $0) }
                 )
+                Toggle("TP Guard", isOn: Binding(
+                    get: { store.dynamicsConfig.advanced.limiterTruePeakGuardEnabled },
+                    set: { v in var adv = store.dynamicsConfig.advanced; adv.limiterTruePeakGuardEnabled = v; store.updateAdvancedProcessing(adv) }
+                ))
             }
             col2ToggleWithSettings(
                 label: "De-Harsh",
@@ -847,11 +1111,50 @@ struct DynamicsInlineView: View {
                 isOn: inlinePauseGateEnabled,
                 fullName: "Pause Gate"
             ) {
+                HStack(spacing: 8) {
+                    Text("Preset")
+                        .font(.system(size: 13))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 80, alignment: .leading)
+                    Picker("", selection: Binding(
+                        get: { store.dynamicsConfig.advanced.pauseGatePreset },
+                        set: { v in
+                            var adv = store.dynamicsConfig.advanced
+                            adv.pauseGatePreset = v
+                            if let bundle = v.parameters {
+                                adv.pauseGateThresholdDBFS = bundle.thresholdDBFS
+                                adv.pauseGateHoldMs        = bundle.holdMs
+                                adv.pauseGateAttackMs      = bundle.attackMs
+                                adv.pauseGateReleaseMs     = bundle.releaseMs
+                                adv.pauseGateHysteresisDB  = bundle.hysteresisDB
+                            }
+                            store.updateAdvancedProcessing(adv)
+                        }
+                    )) {
+                        ForEach(PauseGatePreset.allCases, id: \.self) { p in
+                            Text(p.rawValue).tag(p)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                }
                 DynamicsSliderRow(
                     label: "Threshold",
                     value: Binding(
                         get: { Double(store.dynamicsConfig.advanced.pauseGateThresholdDBFS) },
-                        set: { v in var adv = store.dynamicsConfig.advanced; adv.pauseGateThresholdDBFS = Float(v); store.updateAdvancedProcessing(adv) }
+                        set: { v in
+                            var adv = store.dynamicsConfig.advanced
+                            adv.pauseGateThresholdDBFS = Float(v)
+                            if let bundle = adv.pauseGatePreset.parameters,
+                               adv.pauseGateThresholdDBFS != bundle.thresholdDBFS ||
+                               adv.pauseGateHoldMs != bundle.holdMs ||
+                               adv.pauseGateAttackMs != bundle.attackMs ||
+                               adv.pauseGateReleaseMs != bundle.releaseMs ||
+                               adv.pauseGateHysteresisDB != bundle.hysteresisDB {
+                                adv.pauseGatePreset = .custom
+                            }
+                            store.updateAdvancedProcessing(adv)
+                        }
                     ),
                     range: -80.0 ... -40.0,
                     step: 1.0,
@@ -863,13 +1166,91 @@ struct DynamicsInlineView: View {
                     label: "Hold",
                     value: Binding(
                         get: { Double(store.dynamicsConfig.advanced.pauseGateHoldMs) },
-                        set: { v in var adv = store.dynamicsConfig.advanced; adv.pauseGateHoldMs = Float(v); store.updateAdvancedProcessing(adv) }
+                        set: { v in
+                            var adv = store.dynamicsConfig.advanced
+                            adv.pauseGateHoldMs = Float(v)
+                            if let bundle = adv.pauseGatePreset.parameters,
+                               adv.pauseGateThresholdDBFS != bundle.thresholdDBFS ||
+                               adv.pauseGateHoldMs != bundle.holdMs ||
+                               adv.pauseGateAttackMs != bundle.attackMs ||
+                               adv.pauseGateReleaseMs != bundle.releaseMs ||
+                               adv.pauseGateHysteresisDB != bundle.hysteresisDB {
+                                adv.pauseGatePreset = .custom
+                            }
+                            store.updateAdvancedProcessing(adv)
+                        }
                     ),
                     range: 100.0 ... 2000.0,
                     step: 50.0,
                     formatValue: { String(format: "%.0f ms", $0) },
                     leftEndLabel: "Tight",
                     rightEndLabel: "Loose"
+                )
+                DynamicsSliderRow(
+                    label: "Attack",
+                    value: Binding(
+                        get: { Double(store.dynamicsConfig.advanced.pauseGateAttackMs) },
+                        set: { v in
+                            var adv = store.dynamicsConfig.advanced
+                            adv.pauseGateAttackMs = Float(v)
+                            if let bundle = adv.pauseGatePreset.parameters,
+                               adv.pauseGateThresholdDBFS != bundle.thresholdDBFS ||
+                               adv.pauseGateHoldMs != bundle.holdMs ||
+                               adv.pauseGateAttackMs != bundle.attackMs ||
+                               adv.pauseGateReleaseMs != bundle.releaseMs ||
+                               adv.pauseGateHysteresisDB != bundle.hysteresisDB {
+                                adv.pauseGatePreset = .custom
+                            }
+                            store.updateAdvancedProcessing(adv)
+                        }
+                    ),
+                    range: 1.0...100.0,
+                    step: 1.0,
+                    formatValue: { String(format: "%.0f ms", $0) }
+                )
+                DynamicsSliderRow(
+                    label: "Release",
+                    value: Binding(
+                        get: { Double(store.dynamicsConfig.advanced.pauseGateReleaseMs) },
+                        set: { v in
+                            var adv = store.dynamicsConfig.advanced
+                            adv.pauseGateReleaseMs = Float(v)
+                            if let bundle = adv.pauseGatePreset.parameters,
+                               adv.pauseGateThresholdDBFS != bundle.thresholdDBFS ||
+                               adv.pauseGateHoldMs != bundle.holdMs ||
+                               adv.pauseGateAttackMs != bundle.attackMs ||
+                               adv.pauseGateReleaseMs != bundle.releaseMs ||
+                               adv.pauseGateHysteresisDB != bundle.hysteresisDB {
+                                adv.pauseGatePreset = .custom
+                            }
+                            store.updateAdvancedProcessing(adv)
+                        }
+                    ),
+                    range: 10.0...500.0,
+                    step: 10.0,
+                    formatValue: { String(format: "%.0f ms", $0) }
+                )
+                DynamicsSliderRow(
+                    label: "Hysteresis",
+                    value: Binding(
+                        get: { Double(store.dynamicsConfig.advanced.pauseGateHysteresisDB) },
+                        set: { v in
+                            var adv = store.dynamicsConfig.advanced
+                            adv.pauseGateHysteresisDB = Float(v)
+                            if let bundle = adv.pauseGatePreset.parameters,
+                               adv.pauseGateThresholdDBFS != bundle.thresholdDBFS ||
+                               adv.pauseGateHoldMs != bundle.holdMs ||
+                               adv.pauseGateAttackMs != bundle.attackMs ||
+                               adv.pauseGateReleaseMs != bundle.releaseMs ||
+                               adv.pauseGateHysteresisDB != bundle.hysteresisDB {
+                                adv.pauseGatePreset = .custom
+                            }
+                            store.updateAdvancedProcessing(adv)
+                        }
+                    ),
+                    range: 0.0...10.0,
+                    step: 0.5,
+                    formatValue: { String(format: "%.1f dB", $0) }
                 )
             }
             col2ToggleWithSettings(
