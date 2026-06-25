@@ -452,7 +452,7 @@ final class SpectralDenoiser: @unchecked Sendable {
                         var sc = DSPSplitComplex(realp: rp.baseAddress!, imagp: ip.baseAddress!)
                         rp.baseAddress!.withMemoryRebound(to: DSPComplex.self,
                                                            capacity: halfN) { cBuf in
-                            vDSP_ctoz(cBuf, 2, &sc, 1, vDSP_Length(halfN))
+                            vDSP_ctoz(cBuf, 1, &sc, 1, vDSP_Length(halfN))
                         }
 
                         // Forward FFT.
@@ -585,7 +585,7 @@ final class SpectralDenoiser: @unchecked Sendable {
                         // Convert split-complex back to interleaved real (ztoc).
                         rp.baseAddress!.withMemoryRebound(to: DSPComplex.self,
                                                            capacity: halfN) { cBuf in
-                            vDSP_ztoc(&sc, 1, cBuf, 2, vDSP_Length(halfN))
+                            vDSP_ztoc(&sc, 1, cBuf, 1, vDSP_Length(halfN))
                         }
                     }
                 }
