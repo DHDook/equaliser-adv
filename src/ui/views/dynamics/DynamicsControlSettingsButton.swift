@@ -43,6 +43,16 @@ struct DynamicsControlSettingsButton<Content: View>: View {
             // the bottom of popovers containing bare Picker rows (Pause Gate,
             // Infrasonic Filter) that don't contribute a clear height anchor.
             .fixedSize(horizontal: false, vertical: true)
+            .focused($focusedFieldToken, equals: false)
+            .onAppear {
+                // Don't try to win a same-frame race against SwiftUI's own
+                // default-focus assignment. Let it happen, then explicitly
+                // un-focus everything one runloop tick later, after the
+                // popover's content (including every DynamicsSliderRow's
+                // own onAppear) has finished its first layout pass.
+                DispatchQueue.main.async {
+                    focusedFieldToken = false
+                }
         }
     }
 }

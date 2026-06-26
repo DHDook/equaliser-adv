@@ -23,7 +23,7 @@ private struct DynamicsSliderRow: View {
     var isDisabled: Bool = false
 
     @State private var textValue: String = ""
-    @State private var textValueAtFocusStart: String = ""
+    @State private var isUserEditing: Bool = false   // new — tracks an in-progress edit, not raw focus state
     @FocusState private var isFieldFocused: Bool
 
     var body: some View {
@@ -42,7 +42,7 @@ private struct DynamicsSliderRow: View {
             Slider(value: $value, in: range, step: step)
                 .controlSize(.small)
                 .onChange(of: value) { _, newVal in
-                    if !isFieldFocused {
+                    if !isUserEditing {
                         textValue = formatValue(newVal)
                     }
                 }
@@ -52,25 +52,33 @@ private struct DynamicsSliderRow: View {
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
             }
-
-            TextField("", text: $textValue)
+            
+           TextField("", text: $textValue)
                 .font(.system(size: 12, design: .monospaced))
                 .multilineTextAlignment(.trailing)
                 .frame(width: 74)
                 .textFieldStyle(.roundedBorder)
                 .focused($isFieldFocused)
                 .onAppear { textValue = formatValue(value) }
-                .onSubmit { commitTextEdit() }
+                .onChange(of: textValue) { _, _ in
+                    // Only true once the user has actually typed a keystroke
+                    // while this field is focused — not set merely by gaining
+                    // focus, and not set by the programmatic textValue
+                    // assignments above (see ordering note below).
+                    if isFieldFocused {
+                        isUserEditing = true
+                    }
+                }
+                .onSubmit {
+                    commitTextEdit()
+                    isUserEditing = false
+                }
                 .onChange(of: isFieldFocused) { _, focused in
-                    if focused {
-                        textValueAtFocusStart = textValue   // snapshot on gaining focus
-                    } else if textValue != textValueAtFocusStart {
-                        // Only commit if the user actually typed something different —
-                        // an incidental focus loss (e.g. clicking this row's own slider,
-                        // or the popover's initial auto-focus moving away) must never
-                        // write a stale, unedited value back into `value`, since that
-                        // would fight the slider's own concurrent writes during a drag.
-                        commitTextEdit()
+                    if !focused {
+                        if isUserEditing {
+                            commitTextEdit()
+                        }
+                        isUserEditing = false
                     }
                 }
         }
