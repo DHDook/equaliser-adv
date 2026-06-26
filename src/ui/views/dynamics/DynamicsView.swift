@@ -52,7 +52,7 @@ private struct DynamicsSliderRow: View {
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
             }
-            
+
            TextField("", text: $textValue)
                 .font(.system(size: 12, design: .monospaced))
                 .multilineTextAlignment(.trailing)
@@ -268,7 +268,7 @@ struct DynamicsInlineView: View {
                             Text(s.displayName).tag(s)
                         }
                     }
-                    .pickerStyle(.segmented)
+                    .pickerStyle(.menu)
                     .labelsHidden()
                 }
                 HStack(spacing: 8) {
