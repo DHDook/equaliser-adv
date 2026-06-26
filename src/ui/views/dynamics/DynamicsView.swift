@@ -23,6 +23,7 @@ private struct DynamicsSliderRow: View {
     var isDisabled: Bool = false
 
     @State private var textValue: String = ""
+    @State private var textValueAtFocusStart: String = ""
     @FocusState private var isFieldFocused: Bool
 
     var body: some View {
@@ -38,7 +39,7 @@ private struct DynamicsSliderRow: View {
                     .foregroundStyle(.tertiary)
             }
 
-            Slider(value: $value, in: range)
+            Slider(value: $value, in: range, step: step)
                 .controlSize(.small)
                 .onChange(of: value) { _, newVal in
                     if !isFieldFocused {
@@ -61,7 +62,16 @@ private struct DynamicsSliderRow: View {
                 .onAppear { textValue = formatValue(value) }
                 .onSubmit { commitTextEdit() }
                 .onChange(of: isFieldFocused) { _, focused in
-                    if !focused { commitTextEdit() }
+                    if focused {
+                        textValueAtFocusStart = textValue   // snapshot on gaining focus
+                    } else if textValue != textValueAtFocusStart {
+                        // Only commit if the user actually typed something different —
+                        // an incidental focus loss (e.g. clicking this row's own slider,
+                        // or the popover's initial auto-focus moving away) must never
+                        // write a stale, unedited value back into `value`, since that
+                        // would fight the slider's own concurrent writes during a drag.
+                        commitTextEdit()
+                    }
                 }
         }
         .disabled(isDisabled)

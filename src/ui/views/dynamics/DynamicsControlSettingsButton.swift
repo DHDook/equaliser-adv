@@ -27,13 +27,6 @@ struct DynamicsControlSettingsButton<Content: View>: View {
         .help("\(fullName) settings")
         .popover(isPresented: $isPresented, arrowEdge: .trailing) {
             VStack(alignment: .leading, spacing: 12) {
-                // Invisible zero-size focusable element that claims default focus,
-                // preventing the first real TextField from being auto-focused.
-                Color.clear
-                    .frame(width: 0, height: 0)
-                    .focused($popoverDefaultFocus, equals: true)
-                    .onAppear { popoverDefaultFocus = true }
-
                 Text(fullName)
                     .font(.system(size: 14, weight: .semibold))
                     .focused($popoverDefaultFocus, equals: true)
