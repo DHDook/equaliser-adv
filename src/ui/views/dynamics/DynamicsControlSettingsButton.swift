@@ -41,7 +41,7 @@ struct DynamicsControlSettingsButton<Content: View>: View {
                 content()
             }
             .padding(16)
-            .frame(width: 360)
+            .frame(width: 400)
             // Force the popover to size to the content's actual layout pass rather
             // than relying on ambiguous intrinsic-size measurement, which can clip
             // the bottom of popovers containing bare Picker rows (Pause Gate,

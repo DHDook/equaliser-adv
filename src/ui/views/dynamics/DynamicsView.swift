@@ -1191,7 +1191,7 @@ struct DynamicsInlineView: View {
                             Text(p.rawValue).tag(p)
                         }
                     }
-                    .pickerStyle(.segmented)
+                    .pickerStyle(.menu)
                     .labelsHidden()
                 }
                 DynamicsSliderRow(
