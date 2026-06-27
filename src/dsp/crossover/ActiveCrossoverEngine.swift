@@ -24,6 +24,12 @@ struct ActiveCrossoverEngine {
     nonisolated(unsafe) var rightMid:  [Float]
     nonisolated(unsafe) var rightHigh: [Float]
 
+    /// Scratch working buffers for crossover processing. Pre-allocated as raw pointers
+    /// to avoid audio-thread heap allocation and Swift exclusivity violations.
+    /// Written and discarded within each `process()` call.
+    private let leftWorkBuf:  UnsafeMutablePointer<Float>
+    private let rightWorkBuf: UnsafeMutablePointer<Float>
+
     // MARK: - Flat IIR Filter State
     // 8 blocks × 8 max sections × 2 state vars = 128 Floats
     // Each block: lower LP left, lower LP right, lower HP left, lower HP right,
@@ -71,6 +77,13 @@ struct ActiveCrossoverEngine {
         rightMid  = Array(repeating: 0.0, count: maxFrameCount)
         rightHigh = Array(repeating: 0.0, count: maxFrameCount)
 
+        // Allocate scratch work buffers as raw pointers to avoid exclusivity violations
+        // when passing them to mutating filter-section helpers alongside self.filterState.
+        leftWorkBuf  = UnsafeMutablePointer<Float>.allocate(capacity: maxFrameCount)
+        rightWorkBuf = UnsafeMutablePointer<Float>.allocate(capacity: maxFrameCount)
+        leftWorkBuf.initialize(repeating: 0.0, count: maxFrameCount)
+        rightWorkBuf.initialize(repeating: 0.0, count: maxFrameCount)
+
         // Allocate filter state
         filterState = Array(repeating: 0.0, count: Self.stateSize)
 
@@ -106,90 +119,63 @@ struct ActiveCrossoverEngine {
             activeBandCount = pendingBandCount
         }
 
-        // Copy inputs to band buffers
-        // For full-range mode (bandCount == 1), we pass through unchanged
-        // For bi-amp mode (bandCount == 2), we split into low and high
-        // For tri-amp mode (bandCount == 3), we split into low, mid, and high
-
-        // Copy input to working buffers
-        var leftWork = Array(repeating: Float(0.0), count: frameCount)
-        var rightWork = Array(repeating: Float(0.0), count: frameCount)
+        // Load input into pre-allocated work buffers (no heap allocation).
         for i in 0..<frameCount {
-            leftWork[i] = leftIn[i]
-            rightWork[i] = rightIn[i]
+            leftWorkBuf[i]  = leftIn[i]
+            rightWorkBuf[i] = rightIn[i]
         }
 
         // Apply lower LP → leftLow, rightLow
-        applyFilterSections(&leftWork, sections: activeLowerLP, stateOffset: 0, frameCount: frameCount)
-        for i in 0..<frameCount {
-            leftLow[i] = leftWork[i]
-        }
-        // Reset work buffer for HP
-        for i in 0..<frameCount {
-            leftWork[i] = leftIn[i]
-        }
-        applyFilterSections(&rightWork, sections: activeLowerLP, stateOffset: 4, frameCount: frameCount)
-        for i in 0..<frameCount {
-            rightLow[i] = rightWork[i]
-        }
-        for i in 0..<frameCount {
-            rightWork[i] = rightIn[i]
-        }
+        applyFilterSections(leftWorkBuf, sections: activeLowerLP, stateOffset: 0, frameCount: frameCount)
+        for i in 0..<frameCount { leftLow[i] = leftWorkBuf[i] }
+
+        // Reset left work buffer from input for HP pass
+        for i in 0..<frameCount { leftWorkBuf[i] = leftIn[i] }
+
+        applyFilterSections(rightWorkBuf, sections: activeLowerLP, stateOffset: 4, frameCount: frameCount)
+        for i in 0..<frameCount { rightLow[i] = rightWorkBuf[i] }
+
+        // Reset right work buffer from input for HP pass
+        for i in 0..<frameCount { rightWorkBuf[i] = rightIn[i] }
 
         // Apply lower HP → leftHigh, rightHigh (mid+high combined)
-        applyFilterSections(&leftWork, sections: activeLowerHP, stateOffset: 2, frameCount: frameCount)
-        for i in 0..<frameCount {
-            leftHigh[i] = leftWork[i]
-        }
-        for i in 0..<frameCount {
-            leftWork[i] = leftIn[i]
-        }
-        applyFilterSections(&rightWork, sections: activeLowerHP, stateOffset: 6, frameCount: frameCount)
-        for i in 0..<frameCount {
-            rightHigh[i] = rightWork[i]
-        }
-        for i in 0..<frameCount {
-            rightWork[i] = rightIn[i]
-        }
+        applyFilterSections(leftWorkBuf, sections: activeLowerHP, stateOffset: 2, frameCount: frameCount)
+        for i in 0..<frameCount { leftHigh[i] = leftWorkBuf[i] }
 
-        // For tri-amp: apply upper LP → leftMid, rightMid
-        //              apply upper HP → leftHigh, rightHigh (final high)
+        for i in 0..<frameCount { leftWorkBuf[i] = leftIn[i] }
+
+        applyFilterSections(rightWorkBuf, sections: activeLowerHP, stateOffset: 6, frameCount: frameCount)
+        for i in 0..<frameCount { rightHigh[i] = rightWorkBuf[i] }
+
+        for i in 0..<frameCount { rightWorkBuf[i] = rightIn[i] }
+
+        // For tri-amp: extract mid and final high from upper crossover
         if activeBandCount == 3 {
-            // Apply upper LP to extract mid from the HP output of lower crossover
-            applyFilterSections(&leftWork, sections: activeUpperLP, stateOffset: 8, frameCount: frameCount)
-            for i in 0..<frameCount {
-                leftMid[i] = leftWork[i]
-            }
-            for i in 0..<frameCount {
-                leftWork[i] = leftIn[i]
-            }
-            applyFilterSections(&rightWork, sections: activeUpperLP, stateOffset: 12, frameCount: frameCount)
-            for i in 0..<frameCount {
-                rightMid[i] = rightWork[i]
-            }
-            for i in 0..<frameCount {
-                rightWork[i] = rightIn[i]
-            }
+            applyFilterSections(leftWorkBuf, sections: activeUpperLP, stateOffset: 8, frameCount: frameCount)
+            for i in 0..<frameCount { leftMid[i] = leftWorkBuf[i] }
 
-            // Apply upper HP to extract final high
-            applyFilterSections(&leftWork, sections: activeUpperHP, stateOffset: 10, frameCount: frameCount)
-            for i in 0..<frameCount {
-                leftHigh[i] = leftWork[i]
-            }
-            for i in 0..<frameCount {
-                leftWork[i] = leftIn[i]
-            }
-            applyFilterSections(&rightWork, sections: activeUpperHP, stateOffset: 14, frameCount: frameCount)
-            for i in 0..<frameCount {
-                rightHigh[i] = rightWork[i]
-            }
+            for i in 0..<frameCount { leftWorkBuf[i] = leftIn[i] }
+
+            applyFilterSections(rightWorkBuf, sections: activeUpperLP, stateOffset: 12, frameCount: frameCount)
+            for i in 0..<frameCount { rightMid[i] = rightWorkBuf[i] }
+
+            for i in 0..<frameCount { rightWorkBuf[i] = rightIn[i] }
+
+            applyFilterSections(leftWorkBuf, sections: activeUpperHP, stateOffset: 10, frameCount: frameCount)
+            for i in 0..<frameCount { leftHigh[i] = leftWorkBuf[i] }
+
+            for i in 0..<frameCount { leftWorkBuf[i] = leftIn[i] }
+
+            applyFilterSections(rightWorkBuf, sections: activeUpperHP, stateOffset: 14, frameCount: frameCount)
+            for i in 0..<frameCount { rightHigh[i] = rightWorkBuf[i] }
         }
     }
 
     // MARK: - Filter Section Application
+
     @inline(__always)
     private mutating func applyFilterSections(
-        _ buf: inout [Float],
+        _ buf: UnsafeMutablePointer<Float>,
         sections: SectionArray,
         stateOffset: Int,
         frameCount: Int
