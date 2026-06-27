@@ -609,3 +609,180 @@ final class BiquadMathTests: XCTestCase {
         XCTAssertLessThan(abs(coeffs.a1), 2.0 + tolerance)
     }
 }
+
+// MARK: - Multi-Section Shelf Cascade Tests
+
+extension BiquadMathTests {
+
+    /// For any multi-section shelf, the combined DC gain must equal the target.
+    /// This is the core invariant the gain correction must satisfy.
+    func testLowShelfCascade_DCGainMatchesTarget_24dBSlope() {
+        let targetGainDB = 6.0
+        let sections = BiquadMath.calculateSections(
+            type: .lowShelf,
+            sampleRate: sampleRate,
+            frequency: 200.0,
+            q: 0.7071,
+            gain: targetGainDB,
+            slope: .db24
+        )
+        XCTAssertEqual(sections.count, 2)
+
+        // Combined DC gain: product of H_DC = (b0+b1+b2)/(1+a1+a2) per section
+        var combinedDCGain = 1.0
+        for s in sections {
+            let num = s.b0 + s.b1 + s.b2
+            let den = 1.0 + s.a1 + s.a2
+            combinedDCGain *= num / den
+        }
+        let combinedDCdB = 20.0 * log10(abs(combinedDCGain))
+
+        XCTAssertEqual(combinedDCdB, targetGainDB, accuracy: 0.01,
+            "24 dB/oct low shelf cascade DC gain must equal target \(targetGainDB) dB; got \(combinedDCdB) dB")
+    }
+
+    func testHighShelfCascade_DCGainMatchesTarget_24dBSlope() {
+        let targetGainDB = -9.0
+        let sections = BiquadMath.calculateSections(
+            type: .highShelf,
+            sampleRate: sampleRate,
+            frequency: 8000.0,
+            q: 0.7071,
+            gain: targetGainDB,
+            slope: .db24
+        )
+        XCTAssertEqual(sections.count, 2)
+
+        var combinedDCGain = 1.0
+        for s in sections {
+            let num = s.b0 + s.b1 + s.b2
+            let den = 1.0 + s.a1 + s.a2
+            combinedDCGain *= num / den
+        }
+
+        // For a high shelf the DC gain should be unity (0 dB), not targetGainDB.
+        // The targetGainDB applies at Nyquist (high frequencies), not DC.
+        // Verify DC unity:
+        let combinedDCdB = 20.0 * log10(abs(combinedDCGain))
+        XCTAssertEqual(combinedDCdB, 0.0, accuracy: 0.01,
+            "High shelf DC gain must be 0 dB; got \(combinedDCdB) dB")
+
+        // Also verify Nyquist gain. At z = −1 (ω = π): H_Nyq = (b0−b1+b2)/(1−a1+a2)
+        var combinedNyqGain = 1.0
+        for s in sections {
+            let num = s.b0 - s.b1 + s.b2
+            let den = 1.0 - s.a1 + s.a2
+            combinedNyqGain *= num / den
+        }
+        let combinedNyqdB = 20.0 * log10(abs(combinedNyqGain))
+        XCTAssertEqual(combinedNyqdB, targetGainDB, accuracy: 0.1,
+            "24 dB/oct high shelf Nyquist gain must equal target \(targetGainDB) dB; got \(combinedNyqdB) dB")
+    }
+
+    func testLowShelfCascade_DCGainMatchesTarget_48dBSlope() {
+        let targetGainDB = 12.0
+        let sections = BiquadMath.calculateSections(
+            type: .lowShelf,
+            sampleRate: sampleRate,
+            frequency: 100.0,
+            q: 0.7071,
+            gain: targetGainDB,
+            slope: .db48
+        )
+        XCTAssertEqual(sections.count, 4)
+
+        var combinedDCGain = 1.0
+        for s in sections {
+            let num = s.b0 + s.b1 + s.b2
+            let den = 1.0 + s.a1 + s.a2
+            combinedDCGain *= num / den
+        }
+        let combinedDCdB = 20.0 * log10(abs(combinedDCGain))
+
+        XCTAssertEqual(combinedDCdB, targetGainDB, accuracy: 0.05,
+            "48 dB/oct low shelf cascade DC gain must equal target \(targetGainDB) dB; got \(combinedDCdB) dB")
+    }
+
+    func testLowShelfCascade_DCGainMatchesTarget_AllSlopes() {
+        // Verify DC gain accuracy across all multi-section slopes for a +6 dB low shelf.
+        let targetGainDB = 6.0
+        let multiSectionSlopes: [FilterSlope] = [.db18, .db24, .db36, .db48, .db60, .db72, .db84, .db96]
+
+        for slope in multiSectionSlopes {
+            let sections = BiquadMath.calculateSections(
+                type: .lowShelf,
+                sampleRate: sampleRate,
+                frequency: 200.0,
+                q: 0.7071,
+                gain: targetGainDB,
+                slope: slope
+            )
+
+            var combinedDCGain = 1.0
+            for s in sections {
+                let num = s.b0 + s.b1 + s.b2
+                let den = 1.0 + s.a1 + s.a2
+                guard abs(den) > 1e-12 else { continue }
+                combinedDCGain *= num / den
+            }
+            let combinedDCdB = 20.0 * log10(abs(combinedDCGain))
+
+            XCTAssertEqual(combinedDCdB, targetGainDB, accuracy: 0.1,
+                "\(slope.displayName) low shelf cascade DC gain must be \(targetGainDB) dB; got \(combinedDCdB) dB")
+        }
+    }
+
+    /// Single-section shelves (db6, db12) are unchanged by this fix.
+    /// Verify they still pass (non-regression).
+    func testSingleSectionShelf_DCGainUnchanged() {
+        for slope in [FilterSlope.db6, FilterSlope.db12] {
+            let targetGainDB = 6.0
+            let sections = BiquadMath.calculateSections(
+                type: .lowShelf,
+                sampleRate: sampleRate,
+                frequency: 200.0,
+                q: 0.7071,
+                gain: targetGainDB,
+                slope: slope
+            )
+            XCTAssertEqual(sections.count, 1, "\(slope.displayName) should produce 1 section")
+
+            let s = sections[0]
+            let num = s.b0 + s.b1 + s.b2
+            let den = 1.0 + s.a1 + s.a2
+            let dcGaindB = 20.0 * log10(abs(num / den))
+            XCTAssertEqual(dcGaindB, targetGainDB, accuracy: 0.01,
+                "\(slope.displayName) single-section low shelf DC gain should be \(targetGainDB) dB")
+        }
+    }
+
+    /// Verify that corrected multi-section shelf coefficients are all valid (non-NaN, stable).
+    func testShelfCascade_CorrectedCoefficientsAreStable() {
+        let allSlopes = FilterSlope.allCases
+        let types: [FilterType] = [.lowShelf, .highShelf]
+        let gains = [-12.0, -6.0, 0.0, 6.0, 12.0]
+
+        for filterType in types {
+            for slope in allSlopes {
+                for gain in gains {
+                    let sections = BiquadMath.calculateSections(
+                        type: filterType,
+                        sampleRate: sampleRate,
+                        frequency: 1000.0,
+                        q: 0.7071,
+                        gain: gain,
+                        slope: slope
+                    )
+                    for (i, s) in sections.enumerated() {
+                        XCTAssertFalse(s.b0.isNaN, "\(filterType) \(slope.displayName) gain=\(gain) section \(i) b0 is NaN")
+                        XCTAssertFalse(s.a1.isNaN, "\(filterType) \(slope.displayName) gain=\(gain) section \(i) a1 is NaN")
+                        XCTAssertFalse(s.b0.isInfinite, "\(filterType) \(slope.displayName) gain=\(gain) section \(i) b0 is Inf")
+                        // Stability: |a2| < 1, |a1| < 2
+                        XCTAssertLessThan(abs(s.a2), 1.0 + 1e-6,
+                            "\(filterType) \(slope.displayName) gain=\(gain) section \(i) unstable (|a2| >= 1)")
+                    }
+                }
+            }
+        }
+    }
+}

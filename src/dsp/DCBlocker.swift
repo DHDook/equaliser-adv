@@ -40,6 +40,13 @@ struct DCBlocker {
     // MARK: - Runtime updates
 
     /// Retunes the filter for a new sample rate and flushes all state.
+    ///
+    /// The pole radius R = exp(−π / fs) is recomputed from the new sample rate,
+    /// maintaining the cutoff frequency at 0.5 Hz regardless of the rate.
+    /// At 44.1 kHz R ≈ 0.999929; at 192 kHz R ≈ 0.999984 — the cutoff in Hz
+    /// stays constant because the angular frequency ω_c = π / fs scales inversely
+    /// with fs, so the bilinear mapping preserves the absolute Hz cutoff.
+    ///
     /// Call this when the pipeline sample rate changes.
     /// - Parameter sampleRate: New sample rate in Hz.
     mutating func updateSampleRate(_ sampleRate: Double) {

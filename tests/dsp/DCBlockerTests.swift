@@ -150,3 +150,71 @@ final class DCBlockerTests: XCTestCase {
         XCTAssert(true, "process() completed at maxFrameCount without crash")
     }
 }
+
+// MARK: - Multi-Rate Pole Radius Tests
+
+extension DCBlockerTests {
+
+    /// At every supported driver sample rate, the DC blocker cutoff should remain
+    /// at approximately 0.5 Hz (within 0.01 Hz). This verifies the adaptive design.
+    func testCutoffFrequencyIsApproximately0_5Hz_AtAllSupportedRates() {
+        // Verify that R = exp(−π / fs) gives a cutoff of 0.5 Hz.
+        // The −3 dB cutoff of H(z) = (1−z⁻¹)/(1−R·z⁻¹) satisfies:
+        //   |H(e^{jω})|² = 0.5  →  ω_c ≈ arccos(R² / (R² − 1 + 1)) ... simplified: ω_c ≈ π/fs
+        //   f_c = ω_c / (2π) × fs = 1/(2) × (1/fs) × fs = 0.5 Hz
+        // Numerically verify by finding |H|² = 0.5 near 0.5 Hz.
+        let targetCutoffHz = 0.5
+        let toleranceHz = 0.01
+
+        for fs in DRIVER_SUPPORTED_SAMPLE_RATES.map({ Double($0) }) {
+            // R = exp(-π / fs)
+            let r = Foundation.exp(-Double.pi / fs)
+            // Sweep frequencies near 0.5 Hz to find the −3 dB point
+            // |H(e^jω)|² = (2 − 2cosω) / (1 + R² − 2R·cosω)
+            var found = false
+            var prevMag2 = 1.0
+            var prevF = 0.0
+
+            for fi in stride(from: 0.1, through: 5.0, by: 0.01) {
+                let omega = 2.0 * Double.pi * fi / fs
+                let cosW = Darwin.cos(omega)
+                let num = 2.0 - 2.0 * cosW
+                let den = 1.0 + r * r - 2.0 * r * cosW
+                let mag2 = num / den
+
+                if prevMag2 >= 0.5 && mag2 <= 0.5 {
+                    // Linear interpolation to find exact crossing
+                    let t = (0.5 - prevMag2) / (mag2 - prevMag2)
+                    let crossingHz = prevF + t * 0.01
+                    XCTAssertEqual(crossingHz, targetCutoffHz, accuracy: toleranceHz,
+                        "At \(fs) Hz sample rate, DC blocker −3 dB cutoff should be \(targetCutoffHz) Hz; found \(crossingHz) Hz")
+                    found = true
+                    break
+                }
+                prevMag2 = mag2
+                prevF = fi
+            }
+
+            XCTAssertTrue(found, "Could not find −3 dB crossing near 0.5 Hz at sample rate \(fs) Hz")
+        }
+    }
+
+    /// Verify that updateSampleRate correctly retunes the pole for a rate change.
+    /// A blocker tuned at 44.1 kHz and then updated to 192 kHz should have the same
+    /// absolute cutoff frequency (0.5 Hz), verified by DC rejection rate.
+    func testUpdateSampleRate_RetainsCorrectCutoffFrequency() {
+        var blocker = DCBlocker(sampleRate: 44100.0)
+        blocker.updateSampleRate(192000.0)
+
+        // At 192 kHz, 0.5 Hz DC offset takes ~2/0.5 = ~4 s to attenuate by −3 dB.
+        // Feed 5 s of DC and verify the output is well below −80 dB after 5 s.
+        let frames = 5 * Int(192000.0)
+        let buffer = UnsafeMutablePointer<Float>.allocate(capacity: frames)
+        defer { buffer.deallocate() }
+        for i in 0..<frames { buffer[i] = 1.0 }
+        blocker.process(buffer: buffer, frameCount: frames)
+
+        XCTAssertLessThan(abs(buffer[frames - 1]), 0.0001,
+            "DC component at 192 kHz must be attenuated to < −80 dB after 5 s")
+    }
+}

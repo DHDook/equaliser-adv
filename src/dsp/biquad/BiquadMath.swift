@@ -231,8 +231,6 @@ enum BiquadMath {
         gain: Double,
         slope: FilterSlope
     ) -> [BiquadCoefficients] {
-        // Clamp frequency strictly below Nyquist. At or above Nyquist, the bilinear
-        // transform produces degenerate or numerically unstable coefficients.
         let clampedFrequency = min(frequency, sampleRate * 0.499)
         switch slope {
         case .db6:
@@ -240,18 +238,23 @@ enum BiquadMath {
         case .db12:
             return [lowShelf(sampleRate: sampleRate, frequency: clampedFrequency, gain: gain, q: 0.7071067811865476)]
         case .db18:
-            // 3rd-order: split gain equally across first-order stage + one biquad section (Q = 1.0).
-            let perSectionGain = gain / Double(slope.sectionCount)
-            return [
-                firstOrderLowShelf(sampleRate: sampleRate, frequency: clampedFrequency, gain: perSectionGain),
-                lowShelf(sampleRate: sampleRate, frequency: clampedFrequency, gain: perSectionGain, q: 1.0)
+            // 3rd-order: first-order shelf + one 2nd-order shelf section.
+            // Each section is designed with the full gain; apply a DC correction
+            // multiplier so the combined plateau equals the target gain.
+            let rawSections: [BiquadCoefficients] = [
+                firstOrderLowShelf(sampleRate: sampleRate, frequency: clampedFrequency, gain: gain),
+                lowShelf(sampleRate: sampleRate, frequency: clampedFrequency, gain: gain, q: 1.0)
             ]
+            return applyShelfGainCorrection(sections: rawSections, targetGainDB: gain)
         default:
-            // All even-order slopes (db24 … db96): split gain equally across all sections.
-            let perSectionGain = gain / Double(slope.sectionCount)
-            return (0..<slope.sectionCount).map { _ in
-                lowShelf(sampleRate: sampleRate, frequency: clampedFrequency, gain: perSectionGain, q: 0.7071067811865476)
+            // Even-order slopes: cascade N sections, each with the full gain and its
+            // Butterworth Q. This produces the correct slope shape in the transition region.
+            // Apply DC gain correction so the combined plateau exactly equals the target.
+            let qs = slope.butterworthQValues
+            let rawSections = qs.map { q in
+                lowShelf(sampleRate: sampleRate, frequency: clampedFrequency, gain: gain, q: q)
             }
+            return applyShelfGainCorrection(sections: rawSections, targetGainDB: gain)
         }
     }
 
@@ -263,8 +266,6 @@ enum BiquadMath {
         gain: Double,
         slope: FilterSlope
     ) -> [BiquadCoefficients] {
-        // Clamp frequency strictly below Nyquist. At or above Nyquist, the bilinear
-        // transform produces degenerate or numerically unstable coefficients.
         let clampedFrequency = min(frequency, sampleRate * 0.499)
         switch slope {
         case .db6:
@@ -272,18 +273,80 @@ enum BiquadMath {
         case .db12:
             return [highShelf(sampleRate: sampleRate, frequency: clampedFrequency, gain: gain, q: 0.7071067811865476)]
         case .db18:
-            // 3rd-order: split gain equally across first-order stage + one biquad section (Q = 1.0).
-            let perSectionGain = gain / Double(slope.sectionCount)
-            return [
-                firstOrderHighShelf(sampleRate: sampleRate, frequency: clampedFrequency, gain: perSectionGain),
-                highShelf(sampleRate: sampleRate, frequency: clampedFrequency, gain: perSectionGain, q: 1.0)
+            // 3rd-order: first-order shelf + one 2nd-order shelf section.
+            // Each section is designed with the full gain; apply a DC correction
+            // multiplier so the combined plateau equals the target gain.
+            let rawSections: [BiquadCoefficients] = [
+                firstOrderHighShelf(sampleRate: sampleRate, frequency: clampedFrequency, gain: gain),
+                highShelf(sampleRate: sampleRate, frequency: clampedFrequency, gain: gain, q: 1.0)
             ]
+            return applyShelfGainCorrection(sections: rawSections, targetGainDB: gain)
         default:
-            // All even-order slopes (db24 … db96): split gain equally across all sections.
-            let perSectionGain = gain / Double(slope.sectionCount)
-            return (0..<slope.sectionCount).map { _ in
-                highShelf(sampleRate: sampleRate, frequency: clampedFrequency, gain: perSectionGain, q: 0.7071067811865476)
+            // Even-order slopes: cascade N sections, each with the full gain and its
+            // Butterworth Q. This produces the correct slope shape in the transition region.
+            // Apply DC gain correction so the combined plateau exactly equals the target.
+            let qs = slope.butterworthQValues
+            let rawSections = qs.map { q in
+                highShelf(sampleRate: sampleRate, frequency: clampedFrequency, gain: gain, q: q)
             }
+            return applyShelfGainCorrection(sections: rawSections, targetGainDB: gain)
+        }
+    }
+
+    // MARK: - Shelf Cascade Gain Correction
+
+    /// Corrects the DC plateau gain of a cascaded shelf section array so that
+    /// the combined plateau exactly equals `targetGainDB`.
+    ///
+    /// When multiple shelf sections are designed with the full gain (rather than
+    /// a split fraction), the cascade produces a plateau N times higher than intended
+    /// (where N is the section count). This function computes the actual combined DC
+    /// gain, then applies a uniform per-section correction multiplier to b0, b1, b2
+    /// so that the product of all section gains at DC equals `10^(targetGainDB / 20)`.
+    ///
+    /// The correction is applied uniformly across sections, preserving the relative
+    /// gain contribution of each section so the slope shape in the transition region
+    /// is unchanged.
+    ///
+    /// - Parameters:
+    ///   - sections: Array of shelf biquad coefficients designed at full gain.
+    ///   - targetGainDB: Desired combined DC plateau gain in dB.
+    /// - Returns: Corrected coefficients with the same slope shape but correct plateau gain.
+    private static func applyShelfGainCorrection(
+        sections: [BiquadCoefficients],
+        targetGainDB: Double
+    ) -> [BiquadCoefficients] {
+        guard sections.count > 1 else { return sections }
+
+        // Compute the combined DC gain of the cascade.
+        // At DC (z = 1, ω = 0): H_DC = (b0 + b1 + b2) / (1 + a1 + a2)
+        var combinedDCGain = 1.0
+        for s in sections {
+            let num = s.b0 + s.b1 + s.b2
+            let den = 1.0 + s.a1 + s.a2
+            guard abs(den) > 1e-12 else { continue }
+            combinedDCGain *= num / den
+        }
+
+        let targetDCGain = pow(10.0, targetGainDB / 20.0)
+
+        // Guard: if target is unity (0 dB) or cascade gain is already correct, return as-is.
+        guard abs(targetGainDB) > 0.001, abs(combinedDCGain) > 1e-12 else { return sections }
+
+        // Per-section correction multiplier applied to b0, b1, b2.
+        // The Nth root of the ratio distributes the correction equally.
+        let ratio = targetDCGain / combinedDCGain
+        let perSectionMultiplier = pow(abs(ratio), 1.0 / Double(sections.count))
+            * (ratio < 0 ? -1.0 : 1.0)  // preserve sign (cuts produce ratio < 1, not < 0, but guard included for safety)
+
+        return sections.map { s in
+            BiquadCoefficients(
+                b0: s.b0 * perSectionMultiplier,
+                b1: s.b1 * perSectionMultiplier,
+                b2: s.b2 * perSectionMultiplier,
+                a1: s.a1,
+                a2: s.a2
+            )
         }
     }
 
