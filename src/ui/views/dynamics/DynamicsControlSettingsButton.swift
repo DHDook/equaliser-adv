@@ -32,13 +32,13 @@ struct DynamicsControlSettingsButton<Content: View>: View {
             .padding(16)
             .frame(width: 400)
             .background(
-+               Button("") { }
-+                   .buttonStyle(.plain)
-+                   .frame(width: 1, height: 1)
-+                   .opacity(0.001)
-+                   .focused($popoverDefaultFocus, equals: true)
-+                   .accessibilityHidden(true)
-+           )
+                Button("") { }
+                    .buttonStyle(.plain)
+                    .frame(width: 1, height: 1)
+                    .opacity(0.001)
+                    .focused($popoverDefaultFocus, equals: true)
+                    .accessibilityHidden(true)
+           )
             // Force the popover to size to the content's actual layout pass rather
             // than relying on ambiguous intrinsic-size measurement, which can clip
             // the bottom of popovers containing bare Picker rows (Pause Gate,
