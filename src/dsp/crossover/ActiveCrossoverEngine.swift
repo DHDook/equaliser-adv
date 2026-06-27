@@ -207,19 +207,104 @@ struct ActiveCrossoverEngine {
     }
 
     // MARK: - Group Delay Computation
+
     /// Computes the group delay of one crossover filter block at the given frequencies.
-    /// For IIR sections: analytic computation from biquad coefficients.
-    /// For FIR: numeric differentiation of the phase response.
-    /// Returns group delay in milliseconds at each frequency.
+    ///
+    /// For IIR sections: sums the group delay of each non-identity biquad section
+    /// using numerical phase differentiation (finite differences at ±0.5 Hz).
+    /// For FIR: constant group delay = (tapCount − 1) / 2 samples.
+    /// Both contributions are summed when both are non-nil.
+    ///
+    /// - Parameters:
+    ///   - sections: IIR biquad sections (b0, b1, b2, na1, na2). Identity sections
+    ///     (b0=1, others=0) are skipped — they contribute zero group delay.
+    ///   - firKernel: Optional FIR impulse response. If non-nil, adds constant
+    ///     linear-phase delay of (tapCount−1)/2 samples.
+    ///   - frequencies: Frequencies in Hz at which to compute group delay.
+    ///   - sampleRate: Sample rate in Hz.
+    /// - Returns: Group delay in milliseconds at each frequency.
     static func groupDelay(
         sections: SectionArray,
         firKernel: [Float]?,
         frequencies: [Double],
         sampleRate: Double
     ) -> [Double] {
-        // TODO: Implement group delay computation
-        // For IIR: compute phase response and differentiate
-        // For FIR: compute phase response via FFT and differentiate
-        return Array(repeating: 0.0, count: frequencies.count)
+        var result = [Double](repeating: 0.0, count: frequencies.count)
+
+        // IIR contribution: sum phase differentiation across non-identity sections
+        let deltaF = 1.0  // 1 Hz finite-difference step
+        let identityEps: Float = 1e-6
+
+        for section in sections {
+            // Skip identity sections — they contribute zero group delay
+            guard !(abs(section.b0 - 1.0) < identityEps &&
+                    abs(section.b1) < identityEps &&
+                    abs(section.b2) < identityEps &&
+                    abs(section.na1) < identityEps &&
+                    abs(section.na2) < identityEps) else { continue }
+
+            let b0 = Double(section.b0)
+            let b1 = Double(section.b1)
+            let b2 = Double(section.b2)
+            let a1 = Double(section.na1)  // na1 == a1 in standard notation
+            let a2 = Double(section.na2)  // na2 == a2 in standard notation
+
+            for (i, f) in frequencies.enumerated() {
+                let omega1 = 2.0 * Double.pi * (f - deltaF * 0.5) / sampleRate
+                let omega2 = 2.0 * Double.pi * (f + deltaF * 0.5) / sampleRate
+
+                let phase1 = biquadPhase(b0: b0, b1: b1, b2: b2, a1: a1, a2: a2, omega: omega1)
+                let phase2 = biquadPhase(b0: b0, b1: b1, b2: b2, a1: a1, a2: a2, omega: omega2)
+
+                // Unwrap phase difference to (−π, π]
+                var deltaPhase = phase2 - phase1
+                while deltaPhase >  Double.pi { deltaPhase -= 2.0 * Double.pi }
+                while deltaPhase < -Double.pi { deltaPhase += 2.0 * Double.pi }
+
+                // Group delay in samples = −dφ/dω; convert to ms
+                let delaySamples = -deltaPhase / (2.0 * Double.pi * deltaF / sampleRate)
+                result[i] += delaySamples / sampleRate * 1000.0
+            }
+        }
+
+        // FIR contribution: constant linear-phase delay
+        if let kernel = firKernel, !kernel.isEmpty {
+            let firDelaySamples = Double(kernel.count - 1) / 2.0
+            let firDelayMs = firDelaySamples / sampleRate * 1000.0
+            for i in result.indices { result[i] += firDelayMs }
+        }
+
+        return result
+    }
+
+    // MARK: - Phase Computation (private helper)
+
+    /// Evaluates the phase response of a normalised biquad at the given angular frequency.
+    ///
+    /// H(e^{jω}) = (b0 + b1·e^{−jω} + b2·e^{−2jω}) / (1 + a1·e^{−jω} + a2·e^{−2jω})
+    /// Returns atan2(Im(H), Re(H)).
+    private static func biquadPhase(
+        b0: Double, b1: Double, b2: Double,
+        a1: Double, a2: Double,
+        omega: Double
+    ) -> Double {
+        let cosW  = cos(omega)
+        let sinW  = sin(omega)
+        let cos2W = cos(2.0 * omega)
+        let sin2W = sin(2.0 * omega)
+
+        let numReal = b0 + b1 * cosW  + b2 * cos2W
+        let numImag =      b1 * sinW  + b2 * sin2W   // negative convention: e^{−jω} = cos−j·sin
+        let denReal = 1.0 + a1 * cosW + a2 * cos2W
+        let denImag =       a1 * sinW + a2 * sin2W
+
+        // Complex division: (num / den)
+        let denMagSq = denReal * denReal + denImag * denImag
+        guard denMagSq > 1e-30 else { return 0.0 }
+
+        let real = (numReal * denReal + numImag * denImag) / denMagSq
+        let imag = (numImag * denReal - numReal * denImag) / denMagSq
+
+        return atan2(imag, real)
     }
 }
