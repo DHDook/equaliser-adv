@@ -427,6 +427,7 @@ final class DynamicsProcessor: @unchecked Sendable {
     private let _dcOffsetEnabled:        ManagedAtomic<Int32>
     private let _dialogueGateEnabled:    ManagedAtomic<Int32>
     private let _loudnessContourEnabled: ManagedAtomic<Int32>
+    private let _loudnessStrengthBits:   ManagedAtomic<Int32>  // Float bits, 0.0–1.0
     private let _loudnessRefPhonBits:    ManagedAtomic<Int32>  // Float bits, phons
     private let _loudnessRefVolBits:     ManagedAtomic<Int32>  // Float bits, 0–1
     private let _volumeDependentBits:    ManagedAtomic<Int32>
@@ -908,6 +909,7 @@ final class DynamicsProcessor: @unchecked Sendable {
         _dcOffsetEnabled        = ManagedAtomic(0)
         _dialogueGateEnabled    = ManagedAtomic(0)
         _loudnessContourEnabled = ManagedAtomic(0)
+        _loudnessStrengthBits   = ManagedAtomic(floatBits(1.0))
         _loudnessRefPhonBits    = ManagedAtomic(floatBits(83.0))
         _loudnessRefVolBits     = ManagedAtomic(floatBits(0.85))
         _volumeDependentBits    = ManagedAtomic(0)
@@ -1337,6 +1339,9 @@ final class DynamicsProcessor: @unchecked Sendable {
     }
     func setLoudnessContourEnabled(_ v: Bool) {
         _loudnessContourEnabled.store(v ? 1 : 0, ordering: .relaxed)
+    }
+    func setLoudnessContourStrength(_ v: Float) {
+        _loudnessStrengthBits.store(floatBits(max(0.0, min(1.0, v))), ordering: .relaxed)
     }
     func setLoudnessReferencePhon(_ v: Float) {
         _loudnessRefPhonBits.store(floatBits(v), ordering: .relaxed)
@@ -1785,6 +1790,7 @@ final class DynamicsProcessor: @unchecked Sendable {
         setDenoisingEnabled(adv.linearDenoisingEnabled)
         setDialogueGateEnabled(adv.loudnessDialogueGateEnabled)
         setLoudnessContourEnabled(adv.loudnessContourEnabled)
+        setLoudnessContourStrength(adv.loudnessContourStrength)
         setLoudnessReferencePhon(adv.loudnessReferencePhon)
         setLoudnessReferenceVolume(adv.loudnessReferenceVolume)
         setVolumeDependentLoudnessEnabled(adv.volumeDependentLoudnessEnabled)
@@ -2518,14 +2524,24 @@ final class DynamicsProcessor: @unchecked Sendable {
         let deltaDB       = 20.0 * log10(volumeScl)
         let listeningPhon = max(20.0, refPhon + deltaDB)
 
-        let (lowShelfGain, highShelfGain): (Float, Float) =
+        let strength = bitsToFloat(_loudnessStrengthBits.load(ordering: .relaxed))
+
+        let (rawLowGain, rawHighGain): (Float, Float) =
             bitsToFloat(_volumeDependentBits.load(ordering: .relaxed)) != 0
                 ? Self.iso226CorrectionGains(listeningPhon: listeningPhon, referencePhon: refPhon)
                 : (3.0 * Float(1.0 - Double(volume) * 0.5),   // legacy linear mode when vol-dep off
                    1.5 * Float(1.0 - Double(volume) * 0.5))
 
-        let (b0ls, b1ls, b2ls, a1ls, a2ls) = Self.lowShelfCoeffs(fc: 80.0, gainDB: lowShelfGain, sr: sr)
-        let (b0hs, b1hs, b2hs, a1hs, a2hs) = Self.highShelfCoeffs(fc: 6000.0, gainDB: highShelfGain, sr: sr)
+        // Scale correction by strength (0 = flat, 1 = full ISO 226 correction).
+        let lowShelfGain  = rawLowGain  * strength
+        let highShelfGain = rawHighGain * strength
+
+        // Bass shelf at 60 Hz: centres the correction in the most sharply curved
+        // region of the ISO 226 equal-loudness contour (40–70 Hz band).
+        // Treble shelf at 9 kHz: captures the high-frequency roll-off region where
+        // sensitivity reduction at lower levels is most audible (8–12 kHz band).
+        let (b0ls, b1ls, b2ls, a1ls, a2ls) = Self.lowShelfCoeffs(fc: 60.0,   gainDB: lowShelfGain,  sr: sr)
+        let (b0hs, b1hs, b2hs, a1hs, a2hs) = Self.highShelfCoeffs(fc: 9000.0, gainDB: highShelfGain, sr: sr)
         for ch in 0..<numCh {
             guard let buf = abl[ch].mData?.assumingMemoryBound(to: Float.self) else { continue }
             var w1ls = contourState[ch * 4]
@@ -3020,7 +3036,7 @@ final class DynamicsProcessor: @unchecked Sendable {
     /// - Parameters:
     ///   - listeningPhon: Estimated listening level in phons (derived from volume scalar).
     ///   - referencePhon: Phon level at which the system is calibrated (no correction applied).
-    private static func iso226CorrectionGains(
+    static func iso226CorrectionGains(
         listeningPhon: Double,
         referencePhon: Double
     ) -> (bass: Float, treble: Float) {
@@ -4009,7 +4025,7 @@ final class DynamicsProcessor: @unchecked Sendable {
 
     /// 2nd-order low shelf (Audio EQ Cookbook, S=1 matched slope).
     /// Returns (b0, b1, b2, na1, na2) where na1/na2 are pre-negated for processBiquad.
-    private static func lowShelfCoeffs(fc: Float, gainDB: Float, sr: Double) -> (Float, Float, Float, Float, Float) {
+    static func lowShelfCoeffs(fc: Float, gainDB: Float, sr: Double) -> (Float, Float, Float, Float, Float) {
         let A    = pow(10.0, Double(gainDB) / 40.0)
         let w0   = 2.0 * Double.pi * Double(max(fc, 10.0)) / sr
         let cosW = cos(w0); let sinW = sin(w0)
@@ -4029,7 +4045,7 @@ final class DynamicsProcessor: @unchecked Sendable {
 
     /// 2nd-order high shelf (Audio EQ Cookbook, S=1 matched slope).
     /// Returns (b0, b1, b2, na1, na2) where na1/na2 are pre-negated for processBiquad.
-    private static func highShelfCoeffs(fc: Float, gainDB: Float, sr: Double) -> (Float, Float, Float, Float, Float) {
+    static func highShelfCoeffs(fc: Float, gainDB: Float, sr: Double) -> (Float, Float, Float, Float, Float) {
         let A    = pow(10.0, Double(gainDB) / 40.0)
         let w0   = 2.0 * Double.pi * Double(max(fc, 10.0)) / sr
         let cosW = cos(w0); let sinW = sin(w0)
@@ -4059,6 +4075,19 @@ final class DynamicsProcessor: @unchecked Sendable {
     static func computeAlpha(tauSeconds: Float, sampleRate: Double) -> Float {
         Float(exp(-1.0 / (Double(tauSeconds) * sampleRate)))
     }
+
+    // MARK: - Test Helpers
+
+#if DEBUG
+    /// Test-only entry point for processLoudnessContour.
+    /// Not callable from production code paths.
+    func processLoudnessContourForTest(
+        abl: inout AudioBufferList, count: Int
+    ) {
+        let ptr = UnsafeMutableAudioBufferListPointer(&abl)
+        processLoudnessContour(abl: ptr, numCh: ptr.count, count: count)
+    }
+#endif
 }
 
 // MARK: - Bit-casting helpers (inline, no boxing)

@@ -1272,6 +1272,12 @@ struct AdvancedProcessingConfig: Codable, Equatable, Sendable {
     // ── E. Loudness Contouring ────────────────────────────────────────
     var loudnessContourEnabled: Bool = false
 
+    /// Scales the ISO 226 correction gains linearly.
+    /// 0.0 = no correction (contour enabled but flat), 1.0 = full ISO 226 correction.
+    /// Useful for users who find full correction excessive at low volumes.
+    /// Default: 1.0 (full correction).
+    var loudnessContourStrength: Float = 1.0
+
     // ── E. True-Peak Auto-Guard ───────────────────────────────────────
     var limiterTruePeakGuardEnabled: Bool = false
 
@@ -1448,6 +1454,7 @@ struct AdvancedProcessingConfig: Codable, Equatable, Sendable {
         case deharshFilterEnabled, deharshTiltAmountDB
         case stereoBalancePosition
         case loudnessContourEnabled
+        case loudnessContourStrength
         case limiterTruePeakGuardEnabled
         case autoHeadroomEnabled
         case autoHeadroomTargetGRDB
@@ -1505,6 +1512,7 @@ struct AdvancedProcessingConfig: Codable, Equatable, Sendable {
         deharshTiltAmountDB: Float = -1.5,
         stereoBalancePosition: Float = 0.0,
         loudnessContourEnabled: Bool = false,
+        loudnessContourStrength: Float = 1.0,
         limiterTruePeakGuardEnabled:  Bool              = false,
         autoHeadroomEnabled:          Bool              = false,
         autoHeadroomTargetGRDB:       Float             = 3.0,
@@ -1572,6 +1580,7 @@ struct AdvancedProcessingConfig: Codable, Equatable, Sendable {
         self.deharshTiltAmountDB              = deharshTiltAmountDB
         self.stereoBalancePosition            = stereoBalancePosition
         self.loudnessContourEnabled           = loudnessContourEnabled
+        self.loudnessContourStrength          = loudnessContourStrength
         self.limiterTruePeakGuardEnabled      = limiterTruePeakGuardEnabled
         self.autoHeadroomEnabled              = autoHeadroomEnabled
         self.autoHeadroomTargetGRDB           = autoHeadroomTargetGRDB
@@ -1641,6 +1650,7 @@ struct AdvancedProcessingConfig: Codable, Equatable, Sendable {
         deharshTiltAmountDB              = try c.decodeIfPresent(Float.self,                 forKey: .deharshTiltAmountDB)              ?? -1.5
         stereoBalancePosition            = try c.decodeIfPresent(Float.self,                 forKey: .stereoBalancePosition)            ?? 0.0
         loudnessContourEnabled           = try c.decodeIfPresent(Bool.self,                  forKey: .loudnessContourEnabled)           ?? false
+        loudnessContourStrength          = try c.decodeIfPresent(Float.self,                 forKey: .loudnessContourStrength)          ?? 1.0
         limiterTruePeakGuardEnabled      = try c.decodeIfPresent(Bool.self,                  forKey: .limiterTruePeakGuardEnabled)      ?? false
         autoHeadroomEnabled              = try c.decodeIfPresent(Bool.self,                  forKey: .autoHeadroomEnabled)              ?? false
         autoHeadroomTargetGRDB           = try c.decodeIfPresent(Float.self,                 forKey: .autoHeadroomTargetGRDB)           ?? 3.0
@@ -1730,6 +1740,7 @@ struct AdvancedProcessingConfig: Codable, Equatable, Sendable {
         try c.encode(deharshTiltAmountDB,                forKey: .deharshTiltAmountDB)
         try c.encode(stereoBalancePosition,              forKey: .stereoBalancePosition)
         try c.encode(loudnessContourEnabled,             forKey: .loudnessContourEnabled)
+        try c.encode(loudnessContourStrength,            forKey: .loudnessContourStrength)
         try c.encode(limiterTruePeakGuardEnabled,        forKey: .limiterTruePeakGuardEnabled)
         try c.encode(autoHeadroomEnabled,                forKey: .autoHeadroomEnabled)
         try c.encode(autoHeadroomTargetGRDB,             forKey: .autoHeadroomTargetGRDB)

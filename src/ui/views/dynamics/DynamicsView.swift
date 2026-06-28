@@ -545,6 +545,20 @@ struct DynamicsInlineView: View {
                         step: 0.01,
                         formatValue: { String(format: "%.2f", $0) }
                     )
+                    DynamicsSliderRow(
+                        label: "Strength",
+                        value: Binding(
+                            get: { Double(store.dynamicsConfig.advanced.loudnessContourStrength) },
+                            set: { v in
+                                var adv = store.dynamicsConfig.advanced
+                                adv.loudnessContourStrength = Float(v)
+                                store.updateAdvancedProcessing(adv)
+                            }
+                        ),
+                        range: 0.0...1.0,
+                        step: 0.05,
+                        formatValue: { String(format: "%.0f%%", $0 * 100) }
+                    )
                 }
             }
             col2Toggle(label: "Contour", isOn: inlineLoudnessContourEnabled)

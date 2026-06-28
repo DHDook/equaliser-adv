@@ -262,6 +262,7 @@ final class RenderCallbackContext: @unchecked Sendable {
         let clamped = max(1, linear)
         let bits = Int32(bitPattern: clamped.bitPattern)
         targetBoostGainAtomic.store(bits, ordering: .relaxed)
+        dynamicsProcessor.setSystemVolume(clamped)   // forward to loudness contour (HAL input mode)
     }
 
     /// Updates the target volume gain for shared memory mode (called from main thread).
@@ -270,6 +271,7 @@ final class RenderCallbackContext: @unchecked Sendable {
         let clamped = max(0, min(1, linear))
         let bits = Int32(bitPattern: clamped.bitPattern)
         targetVolumeGainAtomic.store(bits, ordering: .relaxed)
+        dynamicsProcessor.setSystemVolume(clamped)   // forward to loudness contour
     }
 
     /// Updates the meters enabled state (called from main thread).
@@ -598,6 +600,12 @@ final class RenderCallbackContext: @unchecked Sendable {
         let dp = DynamicsProcessor(channelCount: channelCount, sampleRate: sampleRate, maxFrameCount: Int(maxFrameCount))
         dp.applyConfig(dynamicsConfig, sampleRate: sampleRate)
         self.dynamicsProcessor = dp
+
+        // Sync current system volume so loudness contour starts with the correct value.
+        // VolumeManager callbacks only fire on change; we need the initial value immediately.
+        // Default to 1.0 (unity) — VolumeManager.setupVolumeSync() will fire a callback
+        // with the actual value as soon as the pipeline is live.
+        dp.setSystemVolume(1.0)
 
         // Initialise one DC-blocker per channel, tuned to the current sample rate.
         // The pole is computed once here and stored; no allocation occurs in the render loop.
