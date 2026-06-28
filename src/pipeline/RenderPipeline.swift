@@ -809,6 +809,12 @@ final class RenderPipeline {
     var truePeakLimiterTripped: Bool {
         callbackContext?.dynamicsProcessor.truePeakLimiterTripped ?? false
     }
+    var liveTruePeakDB: Float {
+        callbackContext?.dynamicsProcessor.liveTruePeakDB ?? -90.0
+    }
+    var isOversamplingActive: Bool {
+        callbackContext?.dynamicsProcessor.isOversamplingActive ?? false
+    }
     func clearTruePeakFlags() {
         callbackContext?.dynamicsProcessor.clearTruePeakFlags()
     }

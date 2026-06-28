@@ -512,6 +512,7 @@ final class DynamicsProcessor: @unchecked Sendable {
     private let _balanceMeterBits:       ManagedAtomic<Int32>  // Float bits, −1 to +1
     private let _truePeakClipperTripped: ManagedAtomic<Int32>  // sticky 0 / 1
     private let _truePeakLimiterTripped: ManagedAtomic<Int32>  // sticky 0 / 1
+    private let _truePeakDBBits:         ManagedAtomic<Int32>  // Float bits, dBTP, final output
 
     // MARK: - Public GR Accessors
 
@@ -564,6 +565,18 @@ final class DynamicsProcessor: @unchecked Sendable {
     /// True if the brickwall limiter ceiling was breached since the last `clearTruePeakFlags()`.
     var truePeakLimiterTripped: Bool {
         _truePeakLimiterTripped.load(ordering: .relaxed) != 0
+    }
+    /// Continuous inter-sample true-peak level (dBTP) measured on the final output signal,
+    /// via 4-point FIR interpolation (ITU-R BS.1770-4 Annex 2). Updated every callback,
+    /// independent of whether the limiter's own true-peak guard is engaged.
+    var liveTruePeakDB: Float {
+        Float(bitPattern: UInt32(bitPattern: _truePeakDBBits.load(ordering: .relaxed)))
+    }
+    /// Whether the signal path is currently running through the 4× oversampled clipper/limiter.
+    /// When false, `liveTruePeakDB` is a same-rate FIR-interpolated approximation rather than
+    /// a measurement on a genuinely oversampled signal.
+    var isOversamplingActive: Bool {
+        _oversamplingEnabled.load(ordering: .relaxed) != 0
     }
     /// Resets the sticky true-peak trip flags. Call from the main thread after showing the indicator.
     func clearTruePeakFlags() {
@@ -1054,6 +1067,7 @@ final class DynamicsProcessor: @unchecked Sendable {
         _balanceMeterBits       = ManagedAtomic(floatBits(0.0))
         _truePeakClipperTripped = ManagedAtomic(0)
         _truePeakLimiterTripped = ManagedAtomic(0)
+        _truePeakDBBits         = ManagedAtomic(floatBits(-90.0))
 
         // Initialize cached coefficients after all properties are set
         recomputeCompSidechainHPCoeffs()
@@ -2244,6 +2258,7 @@ final class DynamicsProcessor: @unchecked Sendable {
         corrAccLR       = 0.0
         corrSmoothed    = 0.0
         _phaseCorrelationBits.store(floatBits(0.0), ordering: .relaxed)
+        _truePeakDBBits.store(floatBits(-90.0), ordering: .relaxed)
         pauseGateLevel  = 0.0
         pauseGateIsOpen = true
         ditherPrevRand  = 0.0
@@ -2386,6 +2401,7 @@ final class DynamicsProcessor: @unchecked Sendable {
             // passing straight through, so measure them rather than zeroing outright.
             measureCrestFactor(abl: abl, numCh: numCh, count: count)
             measurePhaseCorrelation(abl: abl, numCh: numCh, count: count)
+            measureTruePeak(abl: abl, numCh: numCh, count: count)
             return
         }
 
@@ -2466,6 +2482,9 @@ final class DynamicsProcessor: @unchecked Sendable {
         // Runs unconditionally, independent of which stages are enabled, so the meter
         // always reflects the true output — mirroring how crest factor is measured above.
         measurePhaseCorrelation(abl: abl, numCh: numCh, count: count)
+
+        // True-peak measurement on the same final signal, for the continuous True Peak meter.
+        measureTruePeak(abl: abl, numCh: numCh, count: count)
 
         // Stage 7.5: Panning Gain Matrix crossfeed.
         if panningOn { processPanningMatrix(abl: abl, numCh: numCh, count: count) }
@@ -2650,6 +2669,25 @@ final class DynamicsProcessor: @unchecked Sendable {
         let corrAlpha: Float = Float(exp(-1.0 / (storedSampleRate * 0.1)))
         corrSmoothed = corrAlpha * corrSmoothed + (1.0 - corrAlpha) * max(-1.0, min(1.0, corrRaw))
         _phaseCorrelationBits.store(floatBits(corrSmoothed), ordering: .relaxed)
+    }
+
+    /// Continuous inter-sample true-peak measurement on the final output signal, using the
+    /// same 4-point FIR interpolator (`scanPeak`) as the main-chain limiter's true-peak guard.
+    /// Runs unconditionally so the True Peak meter always reflects the true output, regardless
+    /// of which stages (including the limiter's own guard) are enabled.
+    @inline(__always)
+    private func measureTruePeak(
+        abl: UnsafeMutableAudioBufferListPointer, numCh: Int, count: Int
+    ) {
+        guard count > 1 else { return }
+        var peak: Float = 0.0
+        for ch in 0..<numCh {
+            guard let buf = abl[ch].mData?.assumingMemoryBound(to: Float.self) else { continue }
+            let p = scanPeak(buf, size: count)
+            if p > peak { peak = p }
+        }
+        let db: Float = peak > 1e-9 ? 20.0 * log10(peak) : -90.0
+        _truePeakDBBits.store(floatBits(db), ordering: .relaxed)
     }
 
     /// High-frequency tilt filter applied after the brickwall limiter (de-harsh mode).

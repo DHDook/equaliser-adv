@@ -1478,7 +1478,7 @@ struct DynamicsInlineView: View {
             InlineBitStreamView(bridge: inlineMeterBridge)
             InlineBitRateView()
             InlineTruePeakView(bridge: inlineMeterBridge)
-            TruePeakMeterView(truePeakDB: -90.0, isOversampled: false)
+            InlineTruePeakMeterView()
         }
         .frame(minWidth: 110)
     }
@@ -2026,6 +2026,23 @@ struct InlinePhaseCorrelationView: View {
         if correlation >= 0.5 { return .green }
         if correlation >= 0   { return .yellow }
         return .red
+    }
+}
+
+// MARK: - Continuous True Peak Meter (live data wrapper)
+
+/// Live-data wrapper around `TruePeakMeterView`, reading the continuous dBTP
+/// measurement and oversampling state from the store at 30 fps.
+struct InlineTruePeakMeterView: View {
+    @EnvironmentObject private var store: EqualiserStore
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 1.0 / 30.0)) { _ in
+            TruePeakMeterView(
+                truePeakDB: store.liveTruePeakDB,
+                isOversampled: store.isOversamplingActive
+            )
+        }
     }
 }
 

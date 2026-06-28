@@ -784,6 +784,14 @@ final class EqualiserStore: ObservableObject {
     var truePeakLimiterTripped: Bool {
         routingCoordinator.pipelineManager.renderPipeline?.truePeakLimiterTripped ?? false
     }
+    /// Continuous inter-sample true-peak level (dBTP) measured on the final output signal.
+    var liveTruePeakDB: Float {
+        routingCoordinator.pipelineManager.renderPipeline?.liveTruePeakDB ?? -90.0
+    }
+    /// Whether the signal path is currently running through the 4× oversampled clipper/limiter.
+    var isOversamplingActive: Bool {
+        routingCoordinator.pipelineManager.renderPipeline?.isOversamplingActive ?? false
+    }
     /// Resets sticky true-peak trip indicators (call from main thread after displaying).
     func clearTruePeakFlags() {
         routingCoordinator.pipelineManager.renderPipeline?.clearTruePeakFlags()
