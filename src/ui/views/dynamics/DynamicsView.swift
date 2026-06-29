@@ -559,6 +559,48 @@ struct DynamicsInlineView: View {
                         step: 0.05,
                         formatValue: { String(format: "%.0f%%", $0 * 100) }
                     )
+                    // Real-time correction preview — re-evaluates whenever liveSystemVolumeGain changes
+                    let _ = store.liveSystemVolumeGain  // observed to trigger re-render on volume change
+                    let previewTuple = store.routingCoordinator.pipelineManager.renderPipeline?
+                        .callbackContext?.dynamicsProcessor.previewContourGains() ?? (0, 0)
+                    let previewBass   = previewTuple.0
+                    let previewTreble = previewTuple.1
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Current correction")
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                        HStack(spacing: 16) {
+                            HStack(spacing: 4) {
+                                Text("Bass")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                                Text(previewBass == 0
+                                    ? "—"
+                                    : String(format: "%+.1f dB", previewBass))
+                                    .font(.caption2)
+                                    .monospacedDigit()
+                                    .foregroundStyle(previewBass > 0 ? .primary : .secondary)
+                            }
+                            HStack(spacing: 4) {
+                                Text("Treble")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                                Text(previewTreble == 0
+                                    ? "—"
+                                    : String(format: "%+.1f dB", previewTreble))
+                                    .font(.caption2)
+                                    .monospacedDigit()
+                                    .foregroundStyle(previewTreble > 0 ? .primary : .secondary)
+                            }
+                            Spacer()
+                            if previewBass == 0 && previewTreble == 0 {
+                                Text("At reference level")
+                                    .font(.caption2)
+                                    .foregroundStyle(.tertiary)
+                            }
+                        }
+                    }
+                    .padding(.top, 2)
                 }
             }
             col2Toggle(label: "Contour", isOn: inlineLoudnessContourEnabled)

@@ -91,6 +91,10 @@ final class EqualiserStore: ObservableObject {
     /// User preference for displaying bandwidth as octaves or Q factor.
     @Published var bandwidthDisplayMode: BandwidthDisplayMode = .qFactor
 
+    /// Live normalised system volume gain (0.0–1.0), updated whenever the volume changes.
+    /// Published so SwiftUI views (e.g. the loudness contour preview) re-render on volume change.
+    @Published var liveSystemVolumeGain: Float = 1.0
+
     /// Convolution engine configuration.
     @Published var convolutionConfig: ConvolutionConfig = ConvolutionConfig()
     /// Error message from the most recent IR load attempt.
@@ -999,6 +1003,12 @@ final class EqualiserStore: ObservableObject {
 
         compareModeTimer.onRevert = { [weak self] in
             self?.compareMode = .eq
+        }
+
+        // Wire liveSystemVolumeGain: update the published property whenever volume changes
+        // so the loudness contour preview in DynamicsView re-renders automatically.
+        routingCoordinator.pipelineManager.onVolumeGainDidChange = { [weak self] volumeGain in
+            self?.liveSystemVolumeGain = volumeGain
         }
 
         persistence.setStore(self)

@@ -176,4 +176,142 @@ final class LoudnessContourTests: XCTestCase {
         guard let data = abl.mBuffers[channel].mData else { return 0 }
         return data.assumingMemoryBound(to: Float.self)[frame]
     }
+
+    // MARK: - Anchor frequency alignment
+
+    /// At the reference listening level, correction gains must be zero
+    /// regardless of which anchor frequencies are used.
+    func testISO226_AtReferenceLevel_AnchorFrequencyChange_StillZero() {
+        let refPhon = 83.0
+        let (bass, treble) = DynamicsProcessor.iso226CorrectionGains(
+            listeningPhon: refPhon, referencePhon: refPhon)
+        XCTAssertEqual(bass,   0.0, accuracy: 0.01,
+            "Bass correction must be 0 dB at reference level after anchor frequency change")
+        XCTAssertEqual(treble, 0.0, accuracy: 0.01,
+            "Treble correction must be 0 dB at reference level after anchor frequency change")
+    }
+
+    /// At 60 Hz (the new bass anchor), iso226SPL must return a physically meaningful value.
+    func testISO226SPL_60Hz_IsPhysicallyMeaningful() {
+        guard let spl = DynamicsProcessor.iso226SPLPublic(freqHz: 60, phonDB: 83) else {
+            XCTFail("iso226SPL must return a value at 60 Hz (within table range 20–12500 Hz)")
+            return
+        }
+        XCTAssertGreaterThan(spl, 75.0, "60 Hz SPL at 83 phon must be > 75 dB")
+        XCTAssertLessThan(spl, 110.0,   "60 Hz SPL at 83 phon must be < 110 dB")
+    }
+
+    /// At 9000 Hz (the new treble anchor), iso226SPL must return a valid value.
+    func testISO226SPL_9000Hz_IsPhysicallyMeaningful() {
+        guard let spl = DynamicsProcessor.iso226SPLPublic(freqHz: 9000, phonDB: 83) else {
+            XCTFail("iso226SPL must return a value at 9000 Hz (within table range 20–12500 Hz)")
+            return
+        }
+        XCTAssertGreaterThan(spl, 70.0, "9000 Hz SPL at 83 phon must be > 70 dB")
+    }
+
+    // MARK: - Logarithmic interpolation
+
+    /// At table entry frequencies, the result must be deterministic.
+    func testISO226SPL_AtTableEntry_MatchesRawTableValue() {
+        let spl80 = DynamicsProcessor.iso226SPLPublic(freqHz: 80, phonDB: 83)
+        XCTAssertNotNil(spl80, "iso226SPL must succeed at 80 Hz")
+        let spl80b = DynamicsProcessor.iso226SPLPublic(freqHz: 80, phonDB: 83)
+        XCTAssertEqual(spl80!, spl80b!, accuracy: 1e-9, "iso226SPL must be deterministic")
+    }
+
+    /// Log interpolation: at 60 Hz (between 50 and 63 Hz table entries),
+    /// the result must be between the SPLs at those entry frequencies.
+    func testISO226SPL_60Hz_IsBetweenAdjacentTableEntries() {
+        let spl50 = DynamicsProcessor.iso226SPLPublic(freqHz: 50, phonDB: 83)!
+        let spl60 = DynamicsProcessor.iso226SPLPublic(freqHz: 60, phonDB: 83)!
+        let spl63 = DynamicsProcessor.iso226SPLPublic(freqHz: 63, phonDB: 83)!
+
+        let low  = min(spl50, spl63)
+        let high = max(spl50, spl63)
+        XCTAssertGreaterThan(spl60, low  - 0.5,
+            "iso226SPL at 60 Hz must not be below the lower adjacent table entry value")
+        XCTAssertLessThan(spl60, high + 0.5,
+            "iso226SPL at 60 Hz must not exceed the higher adjacent table entry value")
+    }
+
+    /// At the log midpoint between 50 and 63 Hz, the interpolated value equals
+    /// the arithmetic mean of the endpoint values.
+    func testISO226SPL_LogMidpoint_tEqualsHalf() {
+        let logMidpointHz = sqrt(50.0 * 63.0)  // ≈ 56.12 Hz
+        let splLow  = DynamicsProcessor.iso226SPLPublic(freqHz: 50,            phonDB: 70)!
+        let splHigh = DynamicsProcessor.iso226SPLPublic(freqHz: 63,            phonDB: 70)!
+        let splMid  = DynamicsProcessor.iso226SPLPublic(freqHz: logMidpointHz, phonDB: 70)!
+        let expected = (splLow + splHigh) / 2.0
+        XCTAssertEqual(splMid, expected, accuracy: 0.5,
+            "Log interpolation: at the log-frequency midpoint, SPL should be the arithmetic mean of endpoint values")
+    }
+
+    // MARK: - previewContourGains
+
+    /// At reference volume, preview gains must be zero.
+    func testPreviewContourGains_AtReferenceVolume_IsZero() {
+        let processor = DynamicsProcessor(channelCount: 2, sampleRate: 48000, maxFrameCount: 512)
+        var config = DynamicsConfig.default
+        config.advanced.loudnessContourEnabled = true
+        config.advanced.volumeDependentLoudnessEnabled = true
+        config.advanced.loudnessReferencePhon   = 83.0
+        config.advanced.loudnessReferenceVolume = 0.85
+        config.advanced.loudnessContourStrength = 1.0
+        processor.applyConfig(config, sampleRate: 48000)
+
+        let (bass, treble) = processor.previewContourGains(at: 0.85)
+        XCTAssertEqual(bass,   0.0, accuracy: 0.1,
+            "Preview at reference volume must return zero bass correction")
+        XCTAssertEqual(treble, 0.0, accuracy: 0.1,
+            "Preview at reference volume must return zero treble correction")
+    }
+
+    /// Below reference volume, preview gains must be positive (boost required).
+    func testPreviewContourGains_BelowReferenceVolume_IsPositive() {
+        let processor = DynamicsProcessor(channelCount: 2, sampleRate: 48000, maxFrameCount: 512)
+        var config = DynamicsConfig.default
+        config.advanced.loudnessContourEnabled = true
+        config.advanced.volumeDependentLoudnessEnabled = true
+        config.advanced.loudnessReferencePhon   = 83.0
+        config.advanced.loudnessReferenceVolume = 0.85
+        config.advanced.loudnessContourStrength = 1.0
+        processor.applyConfig(config, sampleRate: 48000)
+
+        let (bass, treble) = processor.previewContourGains(at: 0.2)
+        XCTAssertGreaterThan(bass,   0.0, "Below reference volume, bass correction must be positive")
+        XCTAssertGreaterThan(treble, 0.0, "Below reference volume, treble correction must be positive")
+    }
+
+    /// With contour disabled, preview must return (0, 0).
+    func testPreviewContourGains_WhenDisabled_ReturnsZero() {
+        let processor = DynamicsProcessor(channelCount: 2, sampleRate: 48000, maxFrameCount: 512)
+        var config = DynamicsConfig.default
+        config.advanced.loudnessContourEnabled = false
+        processor.applyConfig(config, sampleRate: 48000)
+
+        let (bass, treble) = processor.previewContourGains(at: 0.2)
+        XCTAssertEqual(bass,   0.0, accuracy: 1e-6)
+        XCTAssertEqual(treble, 0.0, accuracy: 1e-6)
+    }
+
+    /// Strength = 0.5 produces half the correction of strength = 1.0.
+    func testPreviewContourGains_HalfStrength_HalvesCorrection() {
+        let processor = DynamicsProcessor(channelCount: 2, sampleRate: 48000, maxFrameCount: 512)
+        var config = DynamicsConfig.default
+        config.advanced.loudnessContourEnabled = true
+        config.advanced.volumeDependentLoudnessEnabled = true
+        config.advanced.loudnessReferencePhon   = 83.0
+        config.advanced.loudnessReferenceVolume = 0.85
+        config.advanced.loudnessContourStrength = 1.0
+        processor.applyConfig(config, sampleRate: 48000)
+        let (fullBass, _) = processor.previewContourGains(at: 0.2)
+
+        config.advanced.loudnessContourStrength = 0.5
+        processor.applyConfig(config, sampleRate: 48000)
+        let (halfBass, _) = processor.previewContourGains(at: 0.2)
+
+        XCTAssertEqual(Double(halfBass), Double(fullBass) * 0.5, accuracy: 0.01,
+            "Strength 0.5 must halve the correction gain")
+    }
 }

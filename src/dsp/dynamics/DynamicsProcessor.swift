@@ -3114,11 +3114,14 @@ final class DynamicsProcessor: @unchecked Sendable {
     private static func iso226SPL(freqHz: Double, phonDB: Double) -> Double? {
         let table = iso226Table
         guard freqHz >= table.first!.f && freqHz <= table.last!.f else { return nil }
-        // Linear interpolation of table parameters at freqHz.
+        // Logarithmic interpolation of table parameters at freqHz.
+        // The ISO 226 table is defined at 1/3-octave steps; log interpolation follows the
+        // smooth shape of the equal-loudness curves between entries more accurately than
+        // linear interpolation over unequal linear frequency spans.
         var af = 0.0, lu = 0.0
         for i in 0..<(table.count - 1) {
             if freqHz >= table[i].f && freqHz <= table[i+1].f {
-                let t  = (freqHz - table[i].f) / (table[i+1].f - table[i].f)
+                let t = log(freqHz / table[i].f) / log(table[i+1].f / table[i].f)
                 af = table[i].af + t * (table[i+1].af - table[i].af)
                 lu = table[i].Lu + t * (table[i+1].Lu - table[i].Lu)
                 break
@@ -3135,24 +3138,27 @@ final class DynamicsProcessor: @unchecked Sendable {
         return Lp
     }
 
-    /// Computes the ISO 226 loudness correction gains at bass and treble shelf frequencies.
-    /// Returns (bassGainDB, trebleGainDB) — the additional EQ correction to apply
-    /// relative to the reference level.
+    /// Computes the ISO 226 loudness correction gains at the bass and treble shelf frequencies.
     ///
-    /// - Parameters:
-    ///   - listeningPhon: Estimated listening level in phons (derived from volume scalar).
-    ///   - referencePhon: Phon level at which the system is calibrated (no correction applied).
+    /// Anchor frequencies: 60 Hz (bass shelf) and 9000 Hz (treble shelf).
+    /// These match the shelf corner frequencies applied in processLoudnessContour() exactly,
+    /// so the computed gain is appropriate for the shelf being driven.
+    ///
+    /// Returns (bassGainDB, trebleGainDB) — the EQ correction to apply relative to refPhon.
+    /// Positive values mean the ear needs more of that frequency at the listening level.
     static func iso226CorrectionGains(
         listeningPhon: Double,
         referencePhon: Double
     ) -> (bass: Float, treble: Float) {
-        // Compute SPL at the bass shelf and treble shelf frequencies.
-        // Bass: 80 Hz (representative low-frequency anchor).
-        // Treble: 6000 Hz (representative high-frequency anchor).
-        let refBass   = iso226SPL(freqHz: 80,   phonDB: referencePhon) ?? 0
-        let lisBass   = iso226SPL(freqHz: 80,   phonDB: listeningPhon) ?? 0
-        let refTreble = iso226SPL(freqHz: 6000, phonDB: referencePhon) ?? 0
-        let lisTreble = iso226SPL(freqHz: 6000, phonDB: listeningPhon) ?? 0
+        // Anchor frequencies match the shelf frequencies used in processLoudnessContour:
+        // Bass shelf at 60 Hz (set by Chunk 5 from 80 Hz) and treble shelf at 9000 Hz (from 6000 Hz).
+        // The ISO 226 correction must be evaluated at the same frequency as the shelf it will drive,
+        // otherwise the gain computed at 80 Hz would be applied at 60 Hz where the equal-loudness
+        // contour has a different curvature.
+        let refBass    = iso226SPL(freqHz: 60,   phonDB: referencePhon) ?? 0
+        let lisBass    = iso226SPL(freqHz: 60,   phonDB: listeningPhon) ?? 0
+        let refTreble  = iso226SPL(freqHz: 9000, phonDB: referencePhon) ?? 0
+        let lisTreble  = iso226SPL(freqHz: 9000, phonDB: listeningPhon) ?? 0
         let refMid    = iso226SPL(freqHz: 1000, phonDB: referencePhon) ?? referencePhon
         let lisMid    = iso226SPL(freqHz: 1000, phonDB: listeningPhon) ?? listeningPhon
 
@@ -3166,6 +3172,47 @@ final class DynamicsProcessor: @unchecked Sendable {
         let bassGain   = Float(max(-12.0, min(12.0, -bassCorr)))
         let trebleGain = Float(max(-12.0, min(12.0, -trebleCorr)))
         return (bassGain, trebleGain)
+    }
+
+    #if DEBUG
+    /// Test-only exposure of iso226SPL. Not callable from production paths.
+    static func iso226SPLPublic(freqHz: Double, phonDB: Double) -> Double? {
+        iso226SPL(freqHz: freqHz, phonDB: phonDB)
+    }
+    #endif
+
+    /// Delta solo: outputs the difference (processed − original) so you can hear what the chain adds.
+
+    /// Returns the loudness correction gains that would be applied at the given volume,
+    /// using the current reference phon and reference volume settings.
+    ///
+    /// Main-thread read of current stored parameters — safe because only the audio thread
+    /// writes to `_systemVolumeBits`, and this method is only called from the main thread
+    /// for display purposes.
+    ///
+    /// - Parameter volume: Normalised volume scalar (0.0–1.0). Pass nil to use the
+    ///   current stored system volume.
+    /// - Returns: `(bass, treble)` in dB — positive values indicate a boost is being applied.
+    ///   Returns `(0, 0)` when the loudness contour is disabled.
+    func previewContourGains(at volume: Float? = nil) -> (bass: Float, treble: Float) {
+        guard _loudnessContourEnabled.load(ordering: .relaxed) != 0 else { return (0, 0) }
+
+        let vol      = volume ?? bitsToFloat(_systemVolumeBits.load(ordering: .relaxed))
+        let refPhon  = Double(bitsToFloat(_loudnessRefPhonBits.load(ordering: .relaxed)))
+        let refVol   = bitsToFloat(_loudnessRefVolBits.load(ordering: .relaxed))
+        let strength = bitsToFloat(_loudnessStrengthBits.load(ordering: .relaxed))
+
+        let volumeScl     = max(0.001, Double(vol) / max(Double(refVol), 0.001))
+        let deltaDB       = 20.0 * log10(volumeScl)
+        let listeningPhon = max(20.0, refPhon + deltaDB)
+
+        let (rawBass, rawTreble): (Float, Float) =
+            _volumeDependentBits.load(ordering: .relaxed) != 0
+                ? Self.iso226CorrectionGains(listeningPhon: listeningPhon, referencePhon: refPhon)
+                : (3.0 * Float(1.0 - Double(vol) * 0.5),
+                   1.5 * Float(1.0 - Double(vol) * 0.5))
+
+        return (rawBass * strength, rawTreble * strength)
     }
 
     /// Delta solo: outputs the difference (processed − original) so you can hear what the chain adds.

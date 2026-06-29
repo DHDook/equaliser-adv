@@ -39,6 +39,11 @@ final class PipelineManager {
     /// into its own objectWillChange so SwiftUI re-evaluates the slider binding.
     var onVolumeStateChanged: (() -> Void)?
 
+    /// Called on the main thread with the new volume gain whenever it changes.
+    /// AudioRoutingCoordinator sets this to update `EqualiserStore.liveSystemVolumeGain`
+    /// so the loudness contour preview re-renders.
+    var onVolumeGainDidChange: ((Float) -> Void)?
+
     private let logger = Logger(subsystem: "net.knage.equaliser", category: "PipelineManager")
 
     // MARK: - Initialization
@@ -110,6 +115,9 @@ final class PipelineManager {
                 } else {
                     volumeManager?.onVolumeGainChanged = { [weak self] volumeGain in
                         self?.renderPipeline?.updateVolumeGain(linear: volumeGain)
+                        DispatchQueue.main.async {
+                            self?.onVolumeGainDidChange?(volumeGain)
+                        }
                     }
                 }
                 volumeManager?.setupVolumeSync(driverID: driverID, outputID: driverOutputDeviceID)
