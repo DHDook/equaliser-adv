@@ -1932,6 +1932,48 @@ final class EqualiserStore: ObservableObject {
         presetManager.markAsModified()
     }
 
+    /// Exports the complete current configuration as a CamillaDSP YAML string.
+    ///
+    /// Includes: main-chain EQ bands, room correction, active crossover, output channel routing,
+    /// per-channel delays/gain/polarity/EQ/limiters, and group delay all-pass corrections.
+    /// FIR bands are included as inline Conv filters (kernel values embedded in YAML).
+    ///
+    /// - Returns: A YAML string loadable directly by CamillaDSP.
+    func exportCamillaDSP() -> String {
+        let sr = Int(streamSampleRate)
+        let playbackName = outputChannelMatrix.channels.first(where: { $0.isEnabled })?
+            .target?.displayLabel ?? "Default Output Device"
+
+        let leftRC  = Array(eqConfiguration.leftState.roomCorrection.bands
+            .prefix(eqConfiguration.leftState.roomCorrection.activeBandCount))
+
+        let config = CamillaDSPExportConfig(
+            sampleRate: sr,
+            chunkSize: 1024,
+            captureDeviceName: "Notch Sixty",
+            playbackDeviceName: playbackName,
+            leftEQBands:  Array(eqConfiguration.leftState.userEQ.bands
+                .prefix(eqConfiguration.leftState.userEQ.activeBandCount)),
+            rightEQBands: Array(eqConfiguration.rightState.userEQ.bands
+                .prefix(eqConfiguration.rightState.userEQ.activeBandCount)),
+            roomCorrectionBands: leftRC,
+            activeCrossover: dynamicsConfig.advanced.activeCrossover.isEnabled
+                ? dynamicsConfig.advanced.activeCrossover
+                : nil,
+            outputMatrix: outputChannelMatrix.isEnabled
+                ? outputChannelMatrix
+                : nil,
+            bassManagementCrossoverHz: dynamicsConfig.advanced.bassManagement.enabled
+                ? dynamicsConfig.advanced.bassManagement.crossoverHz
+                : nil,
+            bassManagementSlope: dynamicsConfig.advanced.bassManagement.enabled
+                ? dynamicsConfig.advanced.bassManagement.slope
+                : nil
+        )
+
+        return CamillaDSPExporter.exportToYAML(config)
+    }
+
     // MARK: - Microphone Calibration (Part 4.1)
 
     func loadMicCalibration(url: URL) {

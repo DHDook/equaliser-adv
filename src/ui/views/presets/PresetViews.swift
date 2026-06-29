@@ -582,6 +582,10 @@ struct PresetToolbar: View {
                         }
                     }
 
+                    Button("Export to CamillaDSP...") {
+                        exportCamillaDSPConfig()
+                    }
+
                     Divider()
 
                     Button("Import Preset...") {
@@ -745,6 +749,26 @@ struct PresetToolbar: View {
         if panel.runModal() == .OK, let url = panel.url {
             do {
                 try EasyEffectsExporter.export(preset, to: url)
+            } catch {
+                let alert = NSAlert()
+                alert.messageText = "Export Failed"
+                alert.informativeText = error.localizedDescription
+                alert.alertStyle = .warning
+                alert.runModal()
+            }
+        }
+    }
+
+    private func exportCamillaDSPConfig() {
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = "notch-sixty-config.yml"
+        panel.message = "Export CamillaDSP configuration"
+        panel.prompt = "Export"
+
+        if panel.runModal() == .OK, let url = panel.url {
+            let yaml = store.exportCamillaDSP()
+            do {
+                try yaml.write(to: url, atomically: true, encoding: .utf8)
             } catch {
                 let alert = NSAlert()
                 alert.messageText = "Export Failed"
