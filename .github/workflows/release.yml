@@ -33,12 +33,12 @@ jobs:
             TAG_NAME="${GITHUB_REF_NAME}"
             DMG_NAME="notch-sixty-${VERSION}"
           elif [[ "${GITHUB_REF_NAME}" == "dev" ]]; then
-            VERSION="0.3-dev-$(date -u '+%Y%m%d').${SHORT_SHA}"
+            VERSION="0.4-dev-$(date -u '+%Y%m%d').${SHORT_SHA}"
             PRERELEASE="true"
             TAG_NAME="latest-dev-build"
             DMG_NAME="notch-sixty-dev-${VERSION}"
           else
-            VERSION="0.3-$(date -u '+%Y%m%d').${SHORT_SHA}"
+            VERSION="0.4-$(date -u '+%Y%m%d').${SHORT_SHA}"
             PRERELEASE="true"
             TAG_NAME="latest-build"
             DMG_NAME="notch-sixty-${VERSION}"
