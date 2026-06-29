@@ -21,6 +21,8 @@ struct OutputChannelRowView: View {
     @State private var listeningDistanceM: Double = 3.0
     @State private var calculatedBaffleStepFreq: Double = 0.0
     @State private var recommendedBoostDB: Double = 0.0
+    @State private var baffleStepShelfFreq: Double = 0.0
+    @State private var lastBaffleStepResult: BaffleStepCalculator.BaffleStepResult? = nil
 
     // Excursion protection state
     @State private var showExcursionProtection = false
@@ -59,6 +61,11 @@ struct OutputChannelRowView: View {
                 baffleStepButton
             }
 
+            // Resonance detection for high-frequency drivers
+            if isHighFrequencySource {
+                resonanceDetectionSection
+            }
+
             // TASK AG: Pre-limiter / post-limiter level meters
             levelMeters
 
@@ -77,6 +84,89 @@ struct OutputChannelRowView: View {
 
     private var isLowFrequencySource: Bool {
         [.mainsLeftLow, .mainsRightLow, .mainsLeft, .mainsRight].contains(channel.source)
+    }
+
+    private var isHighFrequencySource: Bool {
+        [.mainsLeftHigh, .mainsRightHigh, .mainsLeftMid, .mainsRightMid,
+         .mainsLeft, .mainsRight].contains(channel.source)
+    }
+
+    @ViewBuilder private var resonanceDetectionSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text("Driver Resonances")
+                    .font(.caption)
+                    .fontWeight(.semibold)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button("Detect…") {
+                    let params = resonanceDetectionParams
+                    store.detectResonances(for: channelIndex, params: params)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.mini)
+                .disabled(store.transferFunctionDataset.channels
+                    .first(where: { $0.channelIndex == channelIndex })?
+                    .averagedMagnitudeDB == nil)
+            }
+
+            let candidates = store.resonanceCandidates[channelIndex] ?? []
+            if candidates.isEmpty {
+                Text("No measurement data — run a sweep first.")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+            } else {
+                ForEach(candidates) { candidate in
+                    HStack {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(String(format: "%.0f Hz", candidate.frequencyHz))
+                                .font(.caption)
+                                .fontWeight(.medium)
+                            Text(String(format: "+%.1f dB  Q %.1f  (%.0f%% confidence)",
+                                        candidate.prominenceDB,
+                                        candidate.estimatedQ,
+                                        candidate.confidence * 100))
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Button("Apply Notch") {
+                            store.applyResonanceCorrection(
+                                channelIndex: channelIndex,
+                                candidates: [candidate]
+                            )
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.mini)
+                    }
+                    .padding(.vertical, 2)
+                }
+
+                if candidates.count > 1 {
+                    Button("Apply All \(candidates.count) Notches") {
+                        store.applyResonanceCorrection(
+                            channelIndex: channelIndex,
+                            candidates: candidates
+                        )
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                }
+            }
+        }
+        .padding(.vertical, 4)
+    }
+
+    private var resonanceDetectionParams: DiaphragmResonanceDetector.DetectionParameters {
+        let isHighSource = [SignalSource.mainsLeftHigh, .mainsRightHigh].contains(channel.source)
+        return DiaphragmResonanceDetector.DetectionParameters(
+            searchRangeHz: isHighSource
+                ? (low: 3000.0, high: 40000.0)
+                : (low: 500.0, high: 8000.0),
+            minimumProminenceDB: 3.0,
+            minimumQ: 3.0,
+            maxCandidates: 5
+        )
     }
 
     // MARK: - Section stubs
@@ -280,19 +370,29 @@ struct OutputChannelRowView: View {
                             .font(.subheadline)
                             .fontWeight(.semibold)
                         HStack {
-                            Text("Baffle Step Frequency:")
+                            Text("Transition Frequency:")
                             Spacer()
                             Text(String(format: "%.0f Hz", calculatedBaffleStepFreq))
+                                .foregroundStyle(.secondary)
                         }
                         HStack {
-                            Text("Recommended Boost:")
+                            Text("Shelf Frequency (EQ):")
                             Spacer()
-                            Text(String(format: "%.1f dB", recommendedBoostDB))
+                            Text(String(format: "%.0f Hz", baffleStepShelfFreq))
                         }
-                        Button("Apply to EQ") {
+                        HStack {
+                            Text("Recommended Gain:")
+                            Spacer()
+                            Text(String(format: "+%.1f dB", recommendedBoostDB))
+                        }
+                        Text("This adds a low shelf to the channel EQ. Adjust gain to taste — real cabinets with rounded edges typically need 4–5 dB, not the full 6 dB.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Button("Apply to Channel EQ") {
                             applyBaffleStepCompensation()
                         }
-                        .buttonStyle(.bordered)
+                        .buttonStyle(.borderedProminent)
+                        .disabled(lastBaffleStepResult == nil)
                     }
                 }
                 Spacer()
@@ -310,27 +410,20 @@ struct OutputChannelRowView: View {
     }
 
     private func calculateBaffleStep() {
-        // Baffle step frequency formula: f = c / (2 * width)
-        // where c = speed of sound (343 m/s) and width is in meters
-        let speedOfSound = 343.0 // m/s
-        let widthM = speakerWidthCM / 100.0 // convert cm to m
-        calculatedBaffleStepFreq = speedOfSound / (2 * widthM)
-
-        // Recommended boost is typically 3-6 dB depending on baffle size
-        // For smaller baffles, more boost is needed
-        recommendedBoostDB = min(6.0, max(3.0, 30.0 / speakerWidthCM))
+        let geometry = BaffleStepCalculator.BaffleGeometry(
+            widthMetres: Float(speakerWidthCM / 100.0),
+            driverToEdgeMetres: nil  // centred driver assumption: driverToEdge = width / 2
+        )
+        let result = BaffleStepCalculator.computeCompensation(geometry: geometry)
+        calculatedBaffleStepFreq = Double(result.transitionHz)
+        recommendedBoostDB = Double(result.recommendedGainDB)
+        baffleStepShelfFreq = Double(result.transitionHz / 1.5)
+        lastBaffleStepResult = result
     }
 
     private func applyBaffleStepCompensation() {
-        // Add a low-shelf filter at the baffle step frequency
-        // This is a simplified implementation - in practice you'd add a proper EQ band
-        let shelfBandIndex = 0 // Use the first band for the shelf
-        if shelfBandIndex < channel.eq.bands.count {
-            channel.eq.bands[shelfBandIndex].frequency = Float(calculatedBaffleStepFreq)
-            channel.eq.bands[shelfBandIndex].gain = Float(recommendedBoostDB)
-            channel.eq.bands[shelfBandIndex].q = 0.5 // Low Q for shelving
-            channel.eq.bands[shelfBandIndex].bypass = false
-        }
+        guard let result = lastBaffleStepResult else { return }
+        store.applyBaffleStepToChannel(index: channelIndex, result: result)
         showBaffleStepCalculator = false
     }
     @ViewBuilder private var levelMeters: some View {

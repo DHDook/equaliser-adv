@@ -241,6 +241,86 @@ final class EqualiserStore: ObservableObject {
         resonanceCandidates[channelIndex] = candidates
     }
 
+    // MARK: - Output Channel EQ Band Helpers
+
+    /// Appends an EQ band to the per-output-channel EQ at the given channel index.
+    ///
+    /// Finds the first inactive slot (at `activeBandCount`) and writes the new band
+    /// there, incrementing `activeBandCount`. If all 64 slots are occupied, the band
+    /// is not applied and a warning is logged.
+    ///
+    /// After mutation, re-stages the output channel matrix so the render pipeline
+    /// picks up the change immediately.
+    ///
+    /// - Parameters:
+    ///   - channelIndex: Index into `outputChannelMatrix.channels`.
+    ///   - band: The `EQBandConfiguration` to append.
+    /// - Returns: `true` if the band was applied; `false` if all slots are full.
+    @discardableResult
+    func appendBandToOutputChannel(index channelIndex: Int, band: EQBandConfiguration) -> Bool {
+        guard channelIndex < outputChannelMatrix.channels.count else { return false }
+
+        let maxBands = EQConfiguration.maxBandCount
+        var channel = outputChannelMatrix.channels[channelIndex]
+
+        guard channel.eq.activeBandCount < maxBands else {
+            logger.warning("appendBandToOutputChannel: all \(maxBands) slots occupied for channel \(channelIndex)")
+            return false
+        }
+
+        let targetIndex = channel.eq.activeBandCount
+        channel.eq.bands[targetIndex] = band
+        channel.eq.activeBandCount += 1
+        outputChannelMatrix.channels[channelIndex] = channel
+
+        // Re-stage so the render pipeline picks up the change
+        routingCoordinator.reapplyConfiguration()
+        return true
+    }
+
+    /// Applies a baffle step compensation shelf to the per-output-channel EQ.
+    ///
+    /// Appends a low shelf at `result.transitionHz / 1.5` Hz with the recommended
+    /// gain and Q from the calculator result.
+    ///
+    /// - Parameters:
+    ///   - channelIndex: Index into `outputChannelMatrix.channels`.
+    ///   - result: Output of `BaffleStepCalculator.computeCompensation(geometry:)`.
+    func applyBaffleStepToChannel(index channelIndex: Int, result: BaffleStepCalculator.BaffleStepResult) {
+        let shelfFreq = result.transitionHz / 1.5
+        let band = EQBandConfiguration(
+            frequency: shelfFreq,
+            q: result.recommendedQ,
+            gain: result.recommendedGainDB,
+            filterType: .lowShelf,
+            bypass: false
+        )
+        appendBandToOutputChannel(index: channelIndex, band: band)
+    }
+
+    /// Applies selected resonance detection candidates as notch bands on the
+    /// per-output-channel EQ.
+    ///
+    /// Candidates are applied in order of decreasing prominence (highest first),
+    /// stopping when the band limit is reached.
+    ///
+    /// - Parameters:
+    ///   - channelIndex: Index into `outputChannelMatrix.channels`.
+    ///   - candidates: Array of candidates from `DiaphragmResonanceDetector.detect`.
+    func applyResonanceCorrection(
+        channelIndex: Int,
+        candidates: [DiaphragmResonanceDetector.ResonanceCandidate]
+    ) {
+        let sorted = candidates.sorted { $0.prominenceDB > $1.prominenceDB }
+        for candidate in sorted {
+            let applied = appendBandToOutputChannel(
+                index: channelIndex,
+                band: candidate.suggestedNotch
+            )
+            if !applied { break }
+        }
+    }
+
     // MARK: - Combined Multi-Driver Measurement (Part 2 Task AD)
 
     @Published var combinedMeasurementResult: CombinedMeasurementResult? = nil

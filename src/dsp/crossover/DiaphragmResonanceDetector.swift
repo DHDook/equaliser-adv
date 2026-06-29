@@ -60,9 +60,8 @@ enum DiaphragmResonanceDetector {
     ///   7. For each candidate, build a suggested EQBandConfiguration:
     ///      filterType = .notch,
     ///      frequency = candidateHz,
-    ///      q = min(estimatedQ × 0.8, 20.0)  (slightly narrower than detected,
-    ///          to avoid over-correction of adjacent frequencies),
-    ///      gain = 0 (notch has no gain parameter).
+    ///      q = min(estimatedQ × 0.8, 20.0)    (slightly narrower than detected),
+    ///      gain = -prominenceDB × 0.8          (slightly under-corrected notch depth).
     ///
     /// - Parameters:
     ///   - magnitudeResponseDB: From ChannelTransferFunctionData.averagedMagnitudeDB.
@@ -121,10 +120,14 @@ enum DiaphragmResonanceDetector {
 
             // Step 7: Build suggested notch filter
             let suggestedQ = min(estimatedQ * 0.8, 20.0)
+            // Notch depth: negative of peak prominence, scaled by 0.8 to avoid
+            // over-correction (slight under-correction is preferable for resonance
+            // peaks where the true amplitude may vary with measurement position).
+            let suggestedGainDB = Float(-current.gainDB * 0.8)
             let suggestedNotch = EQBandConfiguration(
                 frequency: Float(current.frequency),
                 q: Float(suggestedQ),
-                gain: 0.0,
+                gain: suggestedGainDB,
                 filterType: .notch,
                 bypass: false
             )
