@@ -1011,6 +1011,12 @@ final class EqualiserStore: ObservableObject {
             self?.liveSystemVolumeGain = volumeGain
         }
 
+        // Wire EQ headroom recomputation: called after every incremental band update
+        // so the static preamp stays in sync without waiting for a full preset load.
+        routingCoordinator.eqStager.onBandCoefficientsStaged = { [weak self] in
+            self?.recomputeStaticPreamp()
+        }
+
         persistence.setStore(self)
         
         // Start observing system default changes

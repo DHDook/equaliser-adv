@@ -106,8 +106,21 @@ struct MultibandCompressorConfig: Codable, Equatable, Sendable {
     var kneeWidthMidDB:  Float           = 6.0
     var kneeWidthHighDB: Float           = 6.0
 
-    // NEW — sidechain high-pass filter frequency (applied to all three bands)
-    var sidechainHighPassHz: Float = 0.0
+    // NEW — sidechain high-pass filter frequency (per-band; replaces single sidechainHighPassHz)
+    /// Sidechain high-pass frequency for the low band (Hz). 0 = disabled.
+    var sidechainHighPassLowHz:  Float = 0.0
+    /// Sidechain high-pass frequency for the mid band (Hz). 0 = disabled.
+    var sidechainHighPassMidHz:  Float = 0.0
+    /// Sidechain high-pass frequency for the high band (Hz). 0 = disabled.
+    var sidechainHighPassHighHz: Float = 0.0
+
+    // NEW — per-band makeup gain
+    /// Post-compression makeup gain for the low band in dB. Range: -12 to +12. Default: 0.
+    var makeupGainLowDB:  Float = 0.0
+    /// Post-compression makeup gain for the mid band in dB. Range: -12 to +12. Default: 0.
+    var makeupGainMidDB:  Float = 0.0
+    /// Post-compression makeup gain for the high band in dB. Range: -12 to +12. Default: 0.
+    var makeupGainHighDB: Float = 0.0
 
     static let `default` = MultibandCompressorConfig()
 
@@ -119,6 +132,9 @@ struct MultibandCompressorConfig: Codable, Equatable, Sendable {
         case attackLowMs, attackMidMs, attackHighMs
         case releaseLowMs, releaseMidMs, releaseHighMs
         case kneeWidthLowDB, kneeWidthMidDB, kneeWidthHighDB
+        case sidechainHighPassLowHz, sidechainHighPassMidHz, sidechainHighPassHighHz
+        case makeupGainLowDB, makeupGainMidDB, makeupGainHighDB
+        // Legacy decode-only key (not a stored property; used only in init(from:))
         case sidechainHighPassHz
     }
 
@@ -143,7 +159,12 @@ struct MultibandCompressorConfig: Codable, Equatable, Sendable {
         kneeWidthLowDB: Float = 6.0,
         kneeWidthMidDB: Float = 6.0,
         kneeWidthHighDB: Float = 6.0,
-        sidechainHighPassHz: Float = 0.0
+        sidechainHighPassLowHz: Float = 0.0,
+        sidechainHighPassMidHz: Float = 0.0,
+        sidechainHighPassHighHz: Float = 0.0,
+        makeupGainLowDB: Float = 0.0,
+        makeupGainMidDB: Float = 0.0,
+        makeupGainHighDB: Float = 0.0
     ) {
         self.isEnabled       = isEnabled
         self.crossLowMidHz   = crossLowMidHz
@@ -165,7 +186,12 @@ struct MultibandCompressorConfig: Codable, Equatable, Sendable {
         self.kneeWidthLowDB  = kneeWidthLowDB
         self.kneeWidthMidDB  = kneeWidthMidDB
         self.kneeWidthHighDB = kneeWidthHighDB
-        self.sidechainHighPassHz = sidechainHighPassHz
+        self.sidechainHighPassLowHz  = sidechainHighPassLowHz
+        self.sidechainHighPassMidHz  = sidechainHighPassMidHz
+        self.sidechainHighPassHighHz = sidechainHighPassHighHz
+        self.makeupGainLowDB  = makeupGainLowDB
+        self.makeupGainMidDB  = makeupGainMidDB
+        self.makeupGainHighDB = makeupGainHighDB
     }
 
     init(from decoder: Decoder) throws {
@@ -190,11 +216,57 @@ struct MultibandCompressorConfig: Codable, Equatable, Sendable {
         kneeWidthLowDB  = try c.decodeIfPresent(Float.self,          forKey: .kneeWidthLowDB)  ?? 6.0
         kneeWidthMidDB  = try c.decodeIfPresent(Float.self,          forKey: .kneeWidthMidDB)  ?? 6.0
         kneeWidthHighDB = try c.decodeIfPresent(Float.self,          forKey: .kneeWidthHighDB) ?? 6.0
-        sidechainHighPassHz = try c.decodeIfPresent(Float.self,      forKey: .sidechainHighPassHz) ?? 0.0
+        // Migrate legacy single sidechainHighPassHz to per-band fields
+        let legacyHz = try c.decodeIfPresent(Float.self, forKey: .sidechainHighPassHz) ?? 0.0
+        sidechainHighPassLowHz  = try c.decodeIfPresent(Float.self, forKey: .sidechainHighPassLowHz)  ?? legacyHz
+        sidechainHighPassMidHz  = try c.decodeIfPresent(Float.self, forKey: .sidechainHighPassMidHz)  ?? legacyHz
+        sidechainHighPassHighHz = try c.decodeIfPresent(Float.self, forKey: .sidechainHighPassHighHz) ?? legacyHz
+        makeupGainLowDB  = try c.decodeIfPresent(Float.self, forKey: .makeupGainLowDB)  ?? 0.0
+        makeupGainMidDB  = try c.decodeIfPresent(Float.self, forKey: .makeupGainMidDB)  ?? 0.0
+        makeupGainHighDB = try c.decodeIfPresent(Float.self, forKey: .makeupGainHighDB) ?? 0.0
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(isEnabled,      forKey: .isEnabled)
+        try c.encode(crossLowMidHz,  forKey: .crossLowMidHz)
+        try c.encode(crossMidHighHz, forKey: .crossMidHighHz)
+        try c.encode(thresholdLowDB,  forKey: .thresholdLowDB)
+        try c.encode(thresholdMidDB,  forKey: .thresholdMidDB)
+        try c.encode(thresholdHighDB, forKey: .thresholdHighDB)
+        try c.encode(slopeLowMid,    forKey: .slopeLowMid)
+        try c.encode(slopeMidHigh,   forKey: .slopeMidHigh)
+        try c.encode(ratioLow,       forKey: .ratioLow)
+        try c.encode(ratioMid,       forKey: .ratioMid)
+        try c.encode(ratioHigh,      forKey: .ratioHigh)
+        try c.encode(attackLowMs,    forKey: .attackLowMs)
+        try c.encode(attackMidMs,    forKey: .attackMidMs)
+        try c.encode(attackHighMs,   forKey: .attackHighMs)
+        try c.encode(releaseLowMs,   forKey: .releaseLowMs)
+        try c.encode(releaseMidMs,   forKey: .releaseMidMs)
+        try c.encode(releaseHighMs,  forKey: .releaseHighMs)
+        try c.encode(kneeWidthLowDB,  forKey: .kneeWidthLowDB)
+        try c.encode(kneeWidthMidDB,  forKey: .kneeWidthMidDB)
+        try c.encode(kneeWidthHighDB, forKey: .kneeWidthHighDB)
+        try c.encode(sidechainHighPassLowHz,  forKey: .sidechainHighPassLowHz)
+        try c.encode(sidechainHighPassMidHz,  forKey: .sidechainHighPassMidHz)
+        try c.encode(sidechainHighPassHighHz, forKey: .sidechainHighPassHighHz)
+        try c.encode(makeupGainLowDB,  forKey: .makeupGainLowDB)
+        try c.encode(makeupGainMidDB,  forKey: .makeupGainMidDB)
+        try c.encode(makeupGainHighDB, forKey: .makeupGainHighDB)
+        // Note: sidechainHighPassHz is legacy decode-only — not encoded.
     }
 }
 
 // MARK: - Compressor Configuration
+
+/// Compressor sidechain topology.
+enum CompressorTopology: String, Codable, Equatable, Sendable {
+    /// Feed-forward: measures input signal. Standard behaviour. Default.
+    case feedForward = "feedForward"
+    /// Feed-back: measures output after gain application. Characteristic of vintage hardware.
+    case feedBack    = "feedBack"
+}
 
 /// Configuration for the wideband feed-forward compressor.
 struct CompressorConfig: Codable, Equatable, Sendable {
@@ -213,11 +285,13 @@ struct CompressorConfig: Codable, Equatable, Sendable {
     /// Sidechain high-pass filter frequency in Hz.
     /// When > 0, the compressor sidechain is filtered to ignore low frequencies.
     var sidechainHighPassHz: Float = 0.0
+    /// Sidechain topology. Default: .feedForward (preserves existing behaviour exactly).
+    var topology: CompressorTopology = .feedForward
 
     static let `default` = CompressorConfig()
 
     private enum CodingKeys: String, CodingKey {
-        case isEnabled, thresholdDB, ratio, attackMs, releaseMs, makeupGainDB, kneeWidthDB, programDependentRelease, sidechainHighPassHz
+        case isEnabled, thresholdDB, ratio, attackMs, releaseMs, makeupGainDB, kneeWidthDB, programDependentRelease, sidechainHighPassHz, topology
     }
 
     init(
@@ -229,7 +303,8 @@ struct CompressorConfig: Codable, Equatable, Sendable {
         makeupGainDB: Float = 2.5,
         kneeWidthDB: Float = 6.0,
         programDependentRelease: Bool = false,
-        sidechainHighPassHz: Float = 0.0
+        sidechainHighPassHz: Float = 0.0,
+        topology: CompressorTopology = .feedForward
     ) {
         self.isEnabled    = isEnabled
         self.thresholdDB  = thresholdDB
@@ -240,6 +315,7 @@ struct CompressorConfig: Codable, Equatable, Sendable {
         self.kneeWidthDB  = kneeWidthDB
         self.programDependentRelease = programDependentRelease
         self.sidechainHighPassHz = sidechainHighPassHz
+        self.topology     = topology
     }
 
     init(from decoder: Decoder) throws {
@@ -253,6 +329,7 @@ struct CompressorConfig: Codable, Equatable, Sendable {
         kneeWidthDB  = try c.decodeIfPresent(Float.self, forKey: .kneeWidthDB)  ?? 6.0
         programDependentRelease = try c.decodeIfPresent(Bool.self, forKey: .programDependentRelease) ?? false
         sidechainHighPassHz = try c.decodeIfPresent(Float.self, forKey: .sidechainHighPassHz) ?? 0.0
+        topology = try c.decodeIfPresent(CompressorTopology.self, forKey: .topology) ?? .feedForward
     }
 }
 
@@ -264,18 +341,25 @@ struct ExpanderConfig: Codable, Equatable, Sendable {
     var thresholdDB: Float = -35.0
     var ratio:       Float = 1.5
     var rangeDB:     Float = -12.0
+    /// Attack time in milliseconds. Range: 0.1–100 ms. Default: 5.0 ms (matches prior hardcoded value).
+    var attackMs:    Float = 5.0
+    /// Release time in milliseconds. Range: 10–1000 ms. Default: 200.0 ms (matches prior hardcoded value).
+    var releaseMs:   Float = 200.0
 
     static let `default` = ExpanderConfig()
 
     private enum CodingKeys: String, CodingKey {
-        case isEnabled, thresholdDB, ratio, rangeDB
+        case isEnabled, thresholdDB, ratio, rangeDB, attackMs, releaseMs
     }
 
-    init(isEnabled: Bool = false, thresholdDB: Float = -35.0, ratio: Float = 1.5, rangeDB: Float = -12.0) {
+    init(isEnabled: Bool = false, thresholdDB: Float = -35.0, ratio: Float = 1.5, rangeDB: Float = -12.0,
+         attackMs: Float = 5.0, releaseMs: Float = 200.0) {
         self.isEnabled   = isEnabled
         self.thresholdDB = thresholdDB
         self.ratio       = ratio
         self.rangeDB     = rangeDB
+        self.attackMs    = attackMs
+        self.releaseMs   = releaseMs
     }
 
     init(from decoder: Decoder) throws {
@@ -284,6 +368,8 @@ struct ExpanderConfig: Codable, Equatable, Sendable {
         thresholdDB = try c.decodeIfPresent(Float.self, forKey: .thresholdDB) ?? -35.0
         ratio       = try c.decodeIfPresent(Float.self, forKey: .ratio)       ?? 1.5
         rangeDB     = try c.decodeIfPresent(Float.self, forKey: .rangeDB)     ?? -12.0
+        attackMs    = try c.decodeIfPresent(Float.self, forKey: .attackMs)    ?? 5.0
+        releaseMs   = try c.decodeIfPresent(Float.self, forKey: .releaseMs)   ?? 200.0
     }
 }
 
@@ -398,42 +484,59 @@ struct BrickwallLimiterConfig: Codable, Equatable, Sendable {
 
 /// Configuration for the three-band frequency-dependent stereo widener.
 ///
-/// Uses hardcoded crossover frequencies of 200 Hz (Low/Mid) and 4000 Hz (Mid/High).
+/// Uses configurable crossover frequencies (default 200 Hz and 4000 Hz).
 /// Width factors: 0 = pure mono, 1.0 = original stereo, 2.0 = maximum expansion.
 struct StereoWidenerConfig: Codable, Equatable, Sendable {
     /// Whether the stereo widener is active. Default OFF.
     var isEnabled:      Bool  = false
-    /// Low-band (< 200 Hz) width. Range: 0.0 (mono) – 1.0 (stereo). Default: 0.0 (mono bass).
+    /// Low-band (< crossoverLowMidHz) width. Range: 0.0 (mono) – 1.0 (stereo). Default: 0.0 (mono bass).
     var widthFactorLow: Float = 0.0
-    /// Mid-band (200 Hz – 4 kHz) width. Range: 1.0 – 2.0. Default: 1.4.
+    /// Mid-band width. Range: 1.0 – 2.0. Default: 1.4.
     var widthFactorMid: Float = 1.4
-    /// High-band (> 4 kHz) width. Range: 1.0 – 2.0. Default: 1.25.
+    /// High-band width. Range: 1.0 – 2.0. Default: 1.25.
     var widthFactorHigh: Float = 1.25
+    /// Low/Mid crossover frequency in Hz. Default: 200 Hz.
+    var crossoverLowMidHz: Float = 200.0
+    /// Mid/High crossover frequency in Hz. Default: 4000 Hz.
+    var crossoverMidHighHz: Float = 4000.0
+    /// When true, forces the low band to mono (width = 0) regardless of widthFactorLow.
+    /// Useful for maintaining solid bass phantom centre. Default: false.
+    var monoLowBand: Bool = false
 
     static let `default` = StereoWidenerConfig()
 
     private enum CodingKeys: String, CodingKey {
         case isEnabled, widthFactorLow, widthFactorMid, widthFactorHigh
+        case crossoverLowMidHz, crossoverMidHighHz, monoLowBand
     }
 
     init(
         isEnabled: Bool = false,
         widthFactorLow: Float = 0.0,
         widthFactorMid: Float = 1.4,
-        widthFactorHigh: Float = 1.25
+        widthFactorHigh: Float = 1.25,
+        crossoverLowMidHz: Float = 200.0,
+        crossoverMidHighHz: Float = 4000.0,
+        monoLowBand: Bool = false
     ) {
-        self.isEnabled      = isEnabled
-        self.widthFactorLow  = widthFactorLow
-        self.widthFactorMid  = widthFactorMid
-        self.widthFactorHigh = widthFactorHigh
+        self.isEnabled        = isEnabled
+        self.widthFactorLow   = widthFactorLow
+        self.widthFactorMid   = widthFactorMid
+        self.widthFactorHigh  = widthFactorHigh
+        self.crossoverLowMidHz  = crossoverLowMidHz
+        self.crossoverMidHighHz = crossoverMidHighHz
+        self.monoLowBand      = monoLowBand
     }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        isEnabled       = try c.decodeIfPresent(Bool.self,  forKey: .isEnabled)       ?? false
-        widthFactorLow  = try c.decodeIfPresent(Float.self, forKey: .widthFactorLow)  ?? 0.0
-        widthFactorMid  = try c.decodeIfPresent(Float.self, forKey: .widthFactorMid)  ?? 1.4
-        widthFactorHigh = try c.decodeIfPresent(Float.self, forKey: .widthFactorHigh) ?? 1.25
+        isEnabled         = try c.decodeIfPresent(Bool.self,  forKey: .isEnabled)         ?? false
+        widthFactorLow    = try c.decodeIfPresent(Float.self, forKey: .widthFactorLow)    ?? 0.0
+        widthFactorMid    = try c.decodeIfPresent(Float.self, forKey: .widthFactorMid)    ?? 1.4
+        widthFactorHigh   = try c.decodeIfPresent(Float.self, forKey: .widthFactorHigh)   ?? 1.25
+        crossoverLowMidHz  = try c.decodeIfPresent(Float.self, forKey: .crossoverLowMidHz)  ?? 200.0
+        crossoverMidHighHz = try c.decodeIfPresent(Float.self, forKey: .crossoverMidHighHz) ?? 4000.0
+        monoLowBand       = try c.decodeIfPresent(Bool.self,  forKey: .monoLowBand)       ?? false
     }
 }
 
@@ -961,6 +1064,14 @@ enum DynamicBandDirection: String, Codable, Equatable, Sendable {
     case both
 }
 
+/// Envelope detector mode for dynamic EQ bands.
+enum DynamicEQDetectorMode: String, Codable, Equatable, Sendable {
+    /// Peak detector (current behavior) — responds to instantaneous amplitude.
+    case peak
+    /// RMS detector — responds to signal power; less reactive to transients.
+    case rms
+}
+
 /// Single dynamic EQ band configuration.
 struct DynamicEQBand: Codable, Equatable, Sendable {
     var frequency: Float   // Hz, 20–20,000
@@ -980,6 +1091,11 @@ struct DynamicEQBand: Codable, Equatable, Sendable {
     var boostThresholdDB: Float = -40.0
     var boostRatio: Float = 2.0
     var maxBoostDB: Float = 6.0
+
+    /// Envelope detector mode. Default: .peak (preserves existing behavior).
+    var detectorMode: DynamicEQDetectorMode = .peak
+    /// RMS averaging window in milliseconds. Only used when detectorMode == .rms. Range: 5–200 ms.
+    var rmsWindowMs: Float = 50.0
 }
 
 /// Dynamic EQ configuration.
@@ -1265,6 +1381,8 @@ struct AdvancedProcessingConfig: Codable, Equatable, Sendable {
     // ── D. De-Harsh Tilt Filter ───────────────────────────────────────
     var deharshFilterEnabled: Bool = false
     var deharshTiltAmountDB: Float = -1.5
+    /// De-harsh tilt filter centre frequency in Hz. Default: 3500 Hz (preserves current behaviour).
+    var deharshFrequencyHz: Float = 3500.0
 
     // ── D. Stereo Balance Matrix ───────────────────────────────────────
     var stereoBalancePosition: Float = 0.0
@@ -1357,6 +1475,10 @@ struct AdvancedProcessingConfig: Codable, Equatable, Sendable {
     var denoiserMode: DenoiserMode = .high
     /// Whether a noise profile has been captured (vs adaptive mode).
     var denoiserHasCapturedProfile: Bool = false
+    /// Spectral denoiser gain-envelope attack speed in milliseconds. Default: 11 ms.
+    var denoiserAttackMs: Float = 11.0
+    /// Spectral denoiser gain-envelope release speed in milliseconds. Default: 21 ms.
+    var denoiserReleaseMs: Float = 21.0
 
     /// Speaker Impulse Response Alignment — applies fractional-sample delay
     /// compensation to time-align the acoustic centres of multi-driver systems.
@@ -1369,6 +1491,10 @@ struct AdvancedProcessingConfig: Codable, Equatable, Sendable {
     var crosstalkCancellationEnabled: Bool = false
     /// Cancellation depth. Range: 0.0 – 1.0. Default: 0.5.
     var crosstalkCancellationAmount: Float = 0.5
+    /// Head-shadow frequency for crosstalk cancellation in Hz.
+    /// Model for speaker angle: ~700 Hz for 60°, ~500 Hz for 45°, ~350 Hz for 30°.
+    /// Default: 700 Hz (preserves current behaviour).
+    var crosstalkHeadShadowHz: Float = 700.0
 
     /// Multi-Seat Complex Averaging — combines head-related transfer function
     /// estimates from multiple listening positions into a composite correction.
@@ -1451,7 +1577,7 @@ struct AdvancedProcessingConfig: Codable, Equatable, Sendable {
         case dynamicEQ
         case firImpulseResponse
         case coefficientDecouplingEnabled
-        case deharshFilterEnabled, deharshTiltAmountDB
+        case deharshFilterEnabled, deharshTiltAmountDB, deharshFrequencyHz
         case stereoBalancePosition
         case loudnessContourEnabled
         case loudnessContourStrength
@@ -1492,8 +1618,9 @@ struct AdvancedProcessingConfig: Codable, Equatable, Sendable {
         case linearDenoisingEnabled, linearDenoisingThresholdDB, linearDenoisingPreset
         case denoiserWienerFloor
         case denoiserReductionAmount, denoiserMode, denoiserHasCapturedProfile
+        case denoiserAttackMs, denoiserReleaseMs
         case speakerIRAlignmentEnabled, speakerIRDelayMs
-        case crosstalkCancellationEnabled, crosstalkCancellationAmount
+        case crosstalkCancellationEnabled, crosstalkCancellationAmount, crosstalkHeadShadowHz
         case multiSeatAveragingEnabled, multiSeatCount
         case subBassPhaseAlignmentEnabled, subBassAlignmentFrequencyHz, subBassPhaseAlignmentQ
         case eqHeadroomCompensationEnabled
@@ -1510,6 +1637,7 @@ struct AdvancedProcessingConfig: Codable, Equatable, Sendable {
         coefficientDecouplingEnabled: Bool = true,
         deharshFilterEnabled: Bool = false,
         deharshTiltAmountDB: Float = -1.5,
+        deharshFrequencyHz: Float = 3500.0,
         stereoBalancePosition: Float = 0.0,
         loudnessContourEnabled: Bool = false,
         loudnessContourStrength: Float = 1.0,
@@ -1542,10 +1670,13 @@ struct AdvancedProcessingConfig: Codable, Equatable, Sendable {
         denoiserReductionAmount: Float = 0.5,
         denoiserMode: DenoiserMode = .high,
         denoiserHasCapturedProfile: Bool = false,
+        denoiserAttackMs: Float = 11.0,
+        denoiserReleaseMs: Float = 21.0,
         speakerIRAlignmentEnabled: Bool = false,
         speakerIRDelayMs: Float = 0.0,
         crosstalkCancellationEnabled: Bool = false,
         crosstalkCancellationAmount: Float = 0.5,
+        crosstalkHeadShadowHz: Float = 700.0,
         multiSeatAveragingEnabled: Bool = false,
         multiSeatCount: Int = 2,
         subBassPhaseAlignmentEnabled: Bool = false,
@@ -1578,6 +1709,7 @@ struct AdvancedProcessingConfig: Codable, Equatable, Sendable {
         self.coefficientDecouplingEnabled     = coefficientDecouplingEnabled
         self.deharshFilterEnabled             = deharshFilterEnabled
         self.deharshTiltAmountDB              = deharshTiltAmountDB
+        self.deharshFrequencyHz               = deharshFrequencyHz
         self.stereoBalancePosition            = stereoBalancePosition
         self.loudnessContourEnabled           = loudnessContourEnabled
         self.loudnessContourStrength          = loudnessContourStrength
@@ -1610,10 +1742,13 @@ struct AdvancedProcessingConfig: Codable, Equatable, Sendable {
         self.denoiserReductionAmount          = denoiserReductionAmount
         self.denoiserMode                    = denoiserMode
         self.denoiserHasCapturedProfile      = denoiserHasCapturedProfile
+        self.denoiserAttackMs                = denoiserAttackMs
+        self.denoiserReleaseMs               = denoiserReleaseMs
         self.speakerIRAlignmentEnabled        = speakerIRAlignmentEnabled
         self.speakerIRDelayMs                 = speakerIRDelayMs
         self.crosstalkCancellationEnabled     = crosstalkCancellationEnabled
         self.crosstalkCancellationAmount      = crosstalkCancellationAmount
+        self.crosstalkHeadShadowHz            = crosstalkHeadShadowHz
         self.multiSeatAveragingEnabled        = multiSeatAveragingEnabled
         self.multiSeatCount                   = multiSeatCount
         self.subBassPhaseAlignmentEnabled     = subBassPhaseAlignmentEnabled
@@ -1648,6 +1783,7 @@ struct AdvancedProcessingConfig: Codable, Equatable, Sendable {
         coefficientDecouplingEnabled     = try c.decodeIfPresent(Bool.self,                  forKey: .coefficientDecouplingEnabled)     ?? true
         deharshFilterEnabled             = try c.decodeIfPresent(Bool.self,                  forKey: .deharshFilterEnabled)             ?? false
         deharshTiltAmountDB              = try c.decodeIfPresent(Float.self,                 forKey: .deharshTiltAmountDB)              ?? -1.5
+        deharshFrequencyHz               = try c.decodeIfPresent(Float.self,                 forKey: .deharshFrequencyHz)               ?? 3500.0
         stereoBalancePosition            = try c.decodeIfPresent(Float.self,                 forKey: .stereoBalancePosition)            ?? 0.0
         loudnessContourEnabled           = try c.decodeIfPresent(Bool.self,                  forKey: .loudnessContourEnabled)           ?? false
         loudnessContourStrength          = try c.decodeIfPresent(Float.self,                 forKey: .loudnessContourStrength)          ?? 1.0
@@ -1680,10 +1816,13 @@ struct AdvancedProcessingConfig: Codable, Equatable, Sendable {
         denoiserReductionAmount          = try c.decodeIfPresent(Float.self,                 forKey: .denoiserReductionAmount)          ?? 0.5
         denoiserMode                    = try c.decodeIfPresent(DenoiserMode.self,         forKey: .denoiserMode)                    ?? .high
         denoiserHasCapturedProfile      = try c.decodeIfPresent(Bool.self,                  forKey: .denoiserHasCapturedProfile)      ?? false
+        denoiserAttackMs                = try c.decodeIfPresent(Float.self,                 forKey: .denoiserAttackMs)                ?? 11.0
+        denoiserReleaseMs               = try c.decodeIfPresent(Float.self,                 forKey: .denoiserReleaseMs)               ?? 21.0
         speakerIRAlignmentEnabled        = try c.decodeIfPresent(Bool.self,                  forKey: .speakerIRAlignmentEnabled)        ?? false
         speakerIRDelayMs                 = try c.decodeIfPresent(Float.self,                 forKey: .speakerIRDelayMs)                 ?? 0.0
         crosstalkCancellationEnabled     = try c.decodeIfPresent(Bool.self,                  forKey: .crosstalkCancellationEnabled)     ?? false
         crosstalkCancellationAmount      = try c.decodeIfPresent(Float.self,                 forKey: .crosstalkCancellationAmount)      ?? 0.5
+        crosstalkHeadShadowHz            = try c.decodeIfPresent(Float.self,                 forKey: .crosstalkHeadShadowHz)            ?? 700.0
         multiSeatAveragingEnabled        = try c.decodeIfPresent(Bool.self,                  forKey: .multiSeatAveragingEnabled)        ?? false
         multiSeatCount                   = try c.decodeIfPresent(Int.self,                   forKey: .multiSeatCount)                   ?? 2
         subBassPhaseAlignmentEnabled     = try c.decodeIfPresent(Bool.self,                  forKey: .subBassPhaseAlignmentEnabled)     ?? false
@@ -1738,6 +1877,7 @@ struct AdvancedProcessingConfig: Codable, Equatable, Sendable {
         try c.encode(coefficientDecouplingEnabled,       forKey: .coefficientDecouplingEnabled)
         try c.encode(deharshFilterEnabled,               forKey: .deharshFilterEnabled)
         try c.encode(deharshTiltAmountDB,                forKey: .deharshTiltAmountDB)
+        try c.encode(deharshFrequencyHz,                 forKey: .deharshFrequencyHz)
         try c.encode(stereoBalancePosition,              forKey: .stereoBalancePosition)
         try c.encode(loudnessContourEnabled,             forKey: .loudnessContourEnabled)
         try c.encode(loudnessContourStrength,            forKey: .loudnessContourStrength)
@@ -1770,10 +1910,13 @@ struct AdvancedProcessingConfig: Codable, Equatable, Sendable {
         try c.encode(denoiserReductionAmount,            forKey: .denoiserReductionAmount)
         try c.encode(denoiserMode,                     forKey: .denoiserMode)
         try c.encode(denoiserHasCapturedProfile,       forKey: .denoiserHasCapturedProfile)
+        try c.encode(denoiserAttackMs,                   forKey: .denoiserAttackMs)
+        try c.encode(denoiserReleaseMs,                  forKey: .denoiserReleaseMs)
         try c.encode(speakerIRAlignmentEnabled,          forKey: .speakerIRAlignmentEnabled)
         try c.encode(speakerIRDelayMs,                   forKey: .speakerIRDelayMs)
         try c.encode(crosstalkCancellationEnabled,       forKey: .crosstalkCancellationEnabled)
         try c.encode(crosstalkCancellationAmount,        forKey: .crosstalkCancellationAmount)
+        try c.encode(crosstalkHeadShadowHz,              forKey: .crosstalkHeadShadowHz)
         try c.encode(multiSeatAveragingEnabled,          forKey: .multiSeatAveragingEnabled)
         try c.encode(multiSeatCount,                     forKey: .multiSeatCount)
         try c.encode(subBassPhaseAlignmentEnabled,       forKey: .subBassPhaseAlignmentEnabled)

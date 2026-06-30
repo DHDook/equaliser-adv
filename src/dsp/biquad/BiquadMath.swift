@@ -110,6 +110,21 @@ enum BiquadMath {
         case .fir:
             // FIR bands are processed by LinearPhaseEQEngine; return identity coefficients.
             return BiquadCoefficients(b0: 1, b1: 0, b2: 0, a1: 0, a2: 0)
+        case .linkwitzTransform:
+            // q = Q0 (existing enclosure Q), gain = Qp (target Q), frequency = f0 (existing resonance).
+            // fp defaults to frequency * 0.7 as a starting point; use linkwitzTargetHz on the band for precise fp.
+            guard clampedFrequency > 0, q > 0, gain > 0 else {
+                return BiquadCoefficients(b0: 1, b1: 0, b2: 0, a1: 0, a2: 0)
+            }
+            return linkwitzTransform(
+                f0: clampedFrequency, q0: q,
+                fp: clampedFrequency * 0.7, qp: gain,
+                sampleRate: sampleRate
+            )
+        case .tiltEQ:
+            // Returns first section only; use calculateSections for both sections.
+            let sections = tiltEQ(pivotHz: clampedFrequency, tiltDB: gain, sampleRate: sampleRate)
+            return sections.first ?? BiquadCoefficients(b0: 1, b1: 0, b2: 0, a1: 0, a2: 0)
         }
     }
 
@@ -163,6 +178,11 @@ enum BiquadMath {
         case .fir:
             // FIR bands are processed by LinearPhaseEQEngine; return identity section.
             return [BiquadCoefficients(b0: 1, b1: 0, b2: 0, a1: 0, a2: 0)]
+        case .tiltEQ:
+            // Tilt EQ returns two complementary sections (low shelf + high shelf).
+            return tiltEQ(pivotHz: clampedFrequency, tiltDB: gain, sampleRate: sampleRate)
+        case .linkwitzTransform:
+            return [calculateCoefficients(type: type, sampleRate: sampleRate, frequency: clampedFrequency, q: q, gain: gain)]
         default:
             // Slope is not applicable — return a single section
             return [calculateCoefficients(type: type, sampleRate: sampleRate, frequency: clampedFrequency, q: q, gain: gain)]
@@ -682,6 +702,116 @@ enum BiquadMath {
         return normalise(b0: b0, b1: b1, b2: b2, a0: a0, a1: a1, a2: a2)
     }
 
+    // MARK: - Linkwitz-Transform
+
+    /// Linkwitz-Transform biquad coefficient calculation.
+    ///
+    /// Redesigns a sealed-enclosure loudspeaker resonance from (f0, Q0) to (fp, Qp).
+    /// The result is a 2nd-order biquad that, when placed in the signal chain, makes
+    /// the acoustic system respond as if it were in the target enclosure.
+    ///
+    /// Reference: Siegfried Linkwitz, "Loudspeakers: For Music Recording and Reproduction", 2009.
+    ///
+    /// - Parameters:
+    ///   - f0: Existing resonance frequency in Hz (the speaker's free-air or box Fs)
+    ///   - q0: Existing resonance Q factor (sealed-box system Q, Qtc)
+    ///   - fp: Target resonance frequency in Hz (desired new F3)
+    ///   - qp: Target resonance Q factor (desired alignment Q, e.g. 0.577 for 3rd-order)
+    ///   - sampleRate: Sample rate in Hz
+    /// - Returns: Normalised biquad coefficients
+    static func linkwitzTransform(
+        f0: Double, q0: Double,
+        fp: Double, qp: Double,
+        sampleRate: Double
+    ) -> BiquadCoefficients {
+        // Bilinear substitution: s → 2*fs*(1-z^-1)/(1+z^-1)
+        let k  = 2.0 * sampleRate
+        let k2 = k * k
+
+        let d  = 1.0 / (qp * 2.0 * .pi * fp)
+        let e  = 1.0 / ((2.0 * .pi * fp) * (2.0 * .pi * fp))
+        let d0 = 1.0 / (q0 * 2.0 * .pi * f0)
+        let e0 = 1.0 / ((2.0 * .pi * f0) * (2.0 * .pi * f0))
+
+        let b0 =  1.0 + d  * k + e  * k2
+        let b1 = -2.0        + 2.0 * e  * k2
+        let b2 =  1.0 - d  * k + e  * k2
+        let a0 =  1.0 + d0 * k + e0 * k2
+        let a1 = -2.0        + 2.0 * e0 * k2
+        let a2 =  1.0 - d0 * k + e0 * k2
+
+        return normalise(b0: b0, b1: b1, b2: b2, a0: a0, a1: a1, a2: a2)
+    }
+
+    // MARK: - Tilt EQ
+
+    /// Tilt EQ: simultaneous complementary low-shelf boost and high-shelf cut (or vice versa).
+    ///
+    /// Positive `tiltDB` warms the sound (bass up, treble down).
+    /// Negative `tiltDB` brightens (treble up, bass down).
+    /// Shelves are centred one octave below/above the pivot frequency.
+    ///
+    /// - Parameters:
+    ///   - pivotHz: Centre frequency of the tilt in Hz
+    ///   - tiltDB: Tilt amount in dB (positive = warm, negative = bright)
+    ///   - sampleRate: Sample rate in Hz
+    /// - Returns: Two-element array: [lowShelfSection, highShelfSection]
+    static func tiltEQ(pivotHz: Double, tiltDB: Double, sampleRate: Double) -> [BiquadCoefficients] {
+        let clampedPivot = min(pivotHz, sampleRate * 0.499)
+        let lsFreq = clampedPivot / 2.0                             // one octave below pivot
+        let hsFreq = min(clampedPivot * 2.0, sampleRate * 0.499)   // one octave above pivot
+        let halfTilt = tiltDB / 2.0
+        let lsCoeffs = lowShelf(sampleRate: sampleRate, frequency: lsFreq,
+                                gain: halfTilt, q: 0.7071067811865476)
+        let hsCoeffs = highShelf(sampleRate: sampleRate, frequency: hsFreq,
+                                 gain: -halfTilt, q: 0.7071067811865476)
+        return [lsCoeffs, hsCoeffs]
+    }
+
+    // MARK: - Constant-Q Peaking EQ
+
+    /// Constant-Q peaking EQ (Orfanidis 1997).
+    ///
+    /// Unlike the RBJ proportional-Q formula, bandwidth is defined at the −3 dB points
+    /// and remains constant regardless of gain magnitude.
+    ///
+    /// Reference: S.J. Orfanidis, "Digital Parametric Equalizer Design with
+    /// Prescribed Nyquist-Frequency Gain", JAES Vol. 45, No. 6, 1997.
+    ///
+    /// - Parameters:
+    ///   - sampleRate: Sample rate in Hz
+    ///   - frequency: Centre frequency in Hz
+    ///   - q: Q factor (defines −3 dB bandwidth as BW = f0/Q)
+    ///   - gain: Gain in dB
+    /// - Returns: Normalised biquad coefficients
+    static func peakingEQConstantQ(
+        sampleRate: Double,
+        frequency: Double,
+        q: Double,
+        gain: Double
+    ) -> BiquadCoefficients {
+        guard abs(gain) > 0.001 else {
+            return BiquadCoefficients(b0: 1, b1: 0, b2: 0, a1: 0, a2: 0)
+        }
+        let A  = pow(10.0, gain / 40.0)
+        let w0 = 2.0 * .pi * frequency / sampleRate
+        let wb = w0 / q  // −3 dB bandwidth in radians/sample
+        let c0 = cos(w0)
+        let tanHW = tan(wb / 2.0)
+
+        let b0, b1, b2, a0, a1, a2: Double
+        if gain > 0 {
+            let W0 = A * tanHW
+            b0 = 1.0 + W0; b1 = -2.0 * c0; b2 = 1.0 - W0
+            a0 = 1.0 + tanHW; a1 = -2.0 * c0; a2 = 1.0 - tanHW
+        } else {
+            let W0 = tanHW / A
+            b0 = 1.0 + tanHW; b1 = -2.0 * c0; b2 = 1.0 - tanHW
+            a0 = 1.0 + W0;    a1 = -2.0 * c0; a2 = 1.0 - W0
+        }
+        return normalise(b0: b0, b1: b1, b2: b2, a0: a0, a1: a1, a2: a2)
+    }
+
     // MARK: - Normalisation
 
     /// Normalises biquad coefficients by dividing by a0.
@@ -736,12 +866,15 @@ enum BiquadMath {
             + 2.0 * coefficients.b1 * coefficients.b2 * cosOmega
 
         // Denominator magnitude squared (a0 is implicitly 1.0 for normalised coefficients)
+        // The cross-product of a1 and a2 pairs with cos(2ω) — the second-order term in the
+        // DTFT denominator expansion: |A(e^jω)|² = 1 + a1² + a2² + 2·a1·cos(ω) + 2·a2·cos(2ω) + 2·a1·a2·cos(2ω)
+        // Note: the b1·b2 numerator cross-product correctly uses cos(ω) (first-order term).
         let den = 1.0
             + coefficients.a1 * coefficients.a1
             + coefficients.a2 * coefficients.a2
             + 2.0 * coefficients.a1 * cosOmega
             + 2.0 * coefficients.a2 * cos2Omega
-            + 2.0 * coefficients.a1 * coefficients.a2 * cosOmega
+            + 2.0 * coefficients.a1 * coefficients.a2 * cos2Omega
 
         let magnitude = sqrt(num / den)
         return 20.0 * log10(max(1e-10, magnitude))  // Clamp to avoid log(0)

@@ -408,6 +408,8 @@ enum CamillaDSPExporter {
         case .notch:      return "Bandstop"
         case .allPass:    return "Allpass"
         case .fir:        return "Conv"  // handled separately in filterEntry
+        case .linkwitzTransform: return "Peaking"  // export as peaking approximation
+        case .tiltEQ:            return "Peaking"  // export as peaking approximation
         }
     }
 

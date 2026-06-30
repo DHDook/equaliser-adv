@@ -708,8 +708,14 @@ struct DynamicsInlineView: View {
                 DynamicsSliderRow(
                     label: "Sidechain HP",
                     value: Binding(
-                        get: { Double(store.dynamicsConfig.multibandCompressor.sidechainHighPassHz) },
-                        set: { v in var c = store.dynamicsConfig.multibandCompressor; c.sidechainHighPassHz = Float(v); store.updateMultibandCompressor(c) }
+                        get: { Double(store.dynamicsConfig.multibandCompressor.sidechainHighPassLowHz) },
+                        set: { v in
+                            var c = store.dynamicsConfig.multibandCompressor
+                            c.sidechainHighPassLowHz  = Float(v)
+                            c.sidechainHighPassMidHz  = Float(v)
+                            c.sidechainHighPassHighHz = Float(v)
+                            store.updateMultibandCompressor(c)
+                        }
                     ),
                     range: 0.0...300.0,
                     step: 5.0,

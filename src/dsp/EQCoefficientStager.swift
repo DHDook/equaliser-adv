@@ -13,6 +13,13 @@ final class EQCoefficientStager {
     private let eqConfiguration: EQConfiguration
     private weak var renderPipeline: RenderPipeline?
 
+    // MARK: - Headroom Recomputation Hook
+    //
+    // Called after every band update (incremental or full) so the headroom
+    // compensator stays in sync with the current EQ state.
+    // EqualiserStore sets this closure to call recomputeStaticPreamp().
+    var onBandCoefficientsStaged: (() -> Void)?
+
     // MARK: - State
 
     /// Current sample rate for coefficient calculations.
@@ -305,14 +312,36 @@ final class EQCoefficientStager {
         } else {
             warpedFrequency = Double(config.frequency)
         }
-        let sections = BiquadMath.calculateSections(
-            type: config.filterType,
-            sampleRate: designRate,
-            frequency: warpedFrequency,
-            q: Double(config.q),
-            gain: Double(config.gain),
-            slope: config.slope
-        )
+
+        // For constant-Q parametric bands, use the Orfanidis formula.
+        // For Linkwitz-Transform, use per-band linkwitzTargetHz if available.
+        let sections: [BiquadCoefficients]
+        if config.filterType == .parametric && config.constantQ {
+            let single = BiquadMath.peakingEQConstantQ(
+                sampleRate: designRate,
+                frequency: warpedFrequency,
+                q: Double(config.q),
+                gain: Double(config.gain)
+            )
+            sections = [single]
+        } else if config.filterType == .linkwitzTransform {
+            let fp = config.linkwitzTargetHz.map { Double($0) } ?? (warpedFrequency * 0.7)
+            let single = BiquadMath.linkwitzTransform(
+                f0: warpedFrequency, q0: Double(config.q),
+                fp: fp, qp: Double(config.gain),
+                sampleRate: designRate
+            )
+            sections = [single]
+        } else {
+            sections = BiquadMath.calculateSections(
+                type: config.filterType,
+                sampleRate: designRate,
+                frequency: warpedFrequency,
+                q: Double(config.q),
+                gain: Double(config.gain),
+                slope: config.slope
+            )
+        }
 
         let target: EQChannelTarget
         switch eqConfiguration.channelMode {
@@ -337,6 +366,7 @@ final class EQCoefficientStager {
             needsDoublePrecision: !config.bypass && (Double(config.q) > 4.0 || Double(config.frequency) < 300.0)
         )
         refreshMixedPhaseIRIfNeeded()
+        onBandCoefficientsStaged?()
     }
 
     /// Recalculates and stages all coefficients for all active bands (full update path).
@@ -452,5 +482,6 @@ final class EQCoefficientStager {
         }
         refreshLinearPhaseIRIfNeeded()
         refreshMixedPhaseIRIfNeeded()
+        onBandCoefficientsStaged?()
     }
 }

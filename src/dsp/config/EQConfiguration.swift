@@ -60,6 +60,8 @@ struct EQBandConfiguration: Codable, Sendable {
         case firKernelDisplayName
         case firKernelLeft    // large — omitted from default encode path
         case firKernelRight   // large — omitted from default encode path
+        case constantQ
+        case linkwitzTargetHz
     }
 
     init(frequency: Float, q: Float, gain: Float, filterType: FilterType, bypass: Bool, slope: FilterSlope = .db12,
@@ -67,7 +69,9 @@ struct EQBandConfiguration: Codable, Sendable {
          dynamicParams: DynamicBandParams = DynamicBandParams(),
          firKernelLeft: [Float]? = nil,
          firKernelRight: [Float]? = nil,
-         firKernelDisplayName: String? = nil) {
+         firKernelDisplayName: String? = nil,
+         constantQ: Bool = false,
+         linkwitzTargetHz: Float? = nil) {
         self.frequency     = frequency
         self.q             = q
         self.gain          = gain
@@ -79,6 +83,8 @@ struct EQBandConfiguration: Codable, Sendable {
         self.firKernelLeft        = firKernelLeft
         self.firKernelRight       = firKernelRight
         self.firKernelDisplayName = firKernelDisplayName
+        self.constantQ            = constantQ
+        self.linkwitzTargetHz     = linkwitzTargetHz
     }
 
     init(from decoder: Decoder) throws {
@@ -113,6 +119,8 @@ struct EQBandConfiguration: Codable, Sendable {
         firKernelDisplayName = try container.decodeIfPresent(String.self,  forKey: .firKernelDisplayName)
         firKernelLeft        = try container.decodeIfPresent([Float].self, forKey: .firKernelLeft)
         firKernelRight       = try container.decodeIfPresent([Float].self, forKey: .firKernelRight)
+        constantQ            = (try container.decodeIfPresent(Bool.self,   forKey: .constantQ))         ?? false
+        linkwitzTargetHz     = try container.decodeIfPresent(Float.self,   forKey: .linkwitzTargetHz)
     }
 
     func encode(to encoder: Encoder) throws {
@@ -127,6 +135,8 @@ struct EQBandConfiguration: Codable, Sendable {
         if isDynamic {
             try container.encode(dynamicParams, forKey: .dynamicParams)
         }
+        if constantQ { try container.encode(constantQ, forKey: .constantQ) }
+        try container.encodeIfPresent(linkwitzTargetHz, forKey: .linkwitzTargetHz)
         // Encode display name only — kernel arrays are large and excluded from the
         // standard path. Use encodeIncludingKernels(to:) for full persistence.
         try container.encodeIfPresent(firKernelDisplayName, forKey: .firKernelDisplayName)
@@ -171,6 +181,15 @@ struct EQBandConfiguration: Codable, Sendable {
     /// Encoded in the standard path so the UI shows the name even if the kernel
     /// is not embedded in the preset.
     var firKernelDisplayName: String? = nil
+
+    /// When true, uses constant-Q (Orfanidis) parametric formula which preserves
+    /// bandwidth at all gain values. When false (default), uses RBJ proportional-Q.
+    /// Only applies when filterType == .parametric.
+    var constantQ: Bool = false
+
+    /// Target frequency for Linkwitz-Transform filter (fp). Only used when filterType == .linkwitzTransform.
+    /// When nil, defaults to frequency * 0.7.
+    var linkwitzTargetHz: Float? = nil
 
     /// Default parametric band configuration.
     static func parametric(frequency: Float, q: Float = EQConfiguration.defaultQ) -> EQBandConfiguration {
