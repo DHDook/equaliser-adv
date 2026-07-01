@@ -31,8 +31,7 @@ struct EQBandGridView: View {
                             bypassUpdate: { store.updateBandBypass(index: index, bypass: $0) },
                             onDelete: store.bandCount > 1 ? { store.removeBand(at: index) } : nil,
                             isDynamicUpdate: { store.updateBandDynamicMode(index: index, isDynamic: $0) },
-                            dynamicParamsUpdate: { store.updateBandDynamicParams(index: index, params: $0) },
-                            onNavigateLeft: {
+                            dynamicParamsUpdate: { store.updateBandDynamicParams(index: index, params: $0) },                            onNavigateLeft: {
                                 navigateToBand(index - 1)
                             },
                             onNavigateRight: {
@@ -47,7 +46,9 @@ struct EQBandGridView: View {
                             onClearFIRKernel: {
                                 store.clearFIRBandKernel(bandIndex: index)
                             },
-                            isLinearPhaseActive: store.compareMode == .linearEQ
+                            isLinearPhaseActive: store.compareMode == .linearEQ,
+                            constantQUpdate: { store.updateBandConstantQ(index: index, constantQ: $0) },
+                            linkwitzTargetHzUpdate: { store.updateBandLinkwitzTargetHz(index: index, targetHz: $0) }
                         )
                         .frame(width: 72)
                     }

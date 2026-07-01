@@ -38,7 +38,7 @@ final class DynamicsProcessor: @unchecked Sendable {
 
     // Dynamic EQ and Sub-EQ state buffer sizes
     private static let maxDynamicEQStateFloats: Int = DynamicEQConfig.maxDynamicEQBands * 5  // 5 coeffs per band
-    private static let maxDynamicEQParamsFloats: Int = DynamicEQConfig.maxDynamicEQBands * 9  // 9 params per band (thresholdDB, ratio, attackMs, releaseMs, rangeDB, direction, boostThresholdDB, boostRatio, maxBoostDB)
+    private static let maxDynamicEQParamsFloats: Int = DynamicEQConfig.maxDynamicEQBands * 11  // 11 params: thresholdDB, ratio, attackMs, releaseMs, rangeDB, direction, boostThresholdDB, boostRatio, maxBoostDB, detectorMode, rmsWindowMs
     private static let maxSubEQStateFloats: Int = BassManagementConfig.maxSubEQBands * 5  // 5 coeffs per band
 
     // MARK: - Audio-Thread State
@@ -292,6 +292,9 @@ final class DynamicsProcessor: @unchecked Sendable {
     // Dynamic EQ — runs on full-band signal before other processing
     nonisolated(unsafe) var dynamicEQFilterState: [Float]  // 2 × maxDynamicEQBands state vars (w1, w2 per band)
     nonisolated(unsafe) var dynamicEQEnvelopeState: [Float]  // maxDynamicEQBands envelope follower state
+    /// Per-channel, per-band RMS power accumulator for the RMS detector mode.
+    /// Only used when detectorMode == .rms; always 0 in peak mode.
+    nonisolated(unsafe) var dynamicEQRMSState: [Float]
     nonisolated(unsafe) var dynamicEQGainReductionDB: [Float]  // maxDynamicEQBands current GR in dB
     // Cached per-callback attack/release coefficients for Dynamic EQ (pre-allocated buffers)
     private let dynamicEQAttackCoeffsBuf: UnsafeMutablePointer<Float>  // maxBands
@@ -884,6 +887,7 @@ final class DynamicsProcessor: @unchecked Sendable {
         let maxBands = DynamicEQConfig.maxDynamicEQBands
         self.dynamicEQFilterState = Array(repeating: 0.0, count: maxCh * maxBands * 2)
         self.dynamicEQEnvelopeState = Array(repeating: 0.0, count: maxCh * maxBands)
+        self.dynamicEQRMSState = Array(repeating: 0.0, count: maxCh * maxBands)
         self.dynamicEQGainReductionDB = Array(repeating: 0.0, count: maxCh * maxBands)
 
         // Allocate Dynamic EQ coefficient and parameter buffers (pre-allocated to avoid audio-thread heap allocation)
@@ -1691,15 +1695,17 @@ final class DynamicsProcessor: @unchecked Sendable {
             pendingDynEQCoeffsBuf[idx * 5 + 3] = Float(c.a1)
             pendingDynEQCoeffsBuf[idx * 5 + 4] = Float(c.a2)
             pendingDynEQBypassBuf[idx] = band.bypass ? 1 : 0
-            pendingDynEQParamsBuf[idx * 9 + 0] = band.thresholdDB
-            pendingDynEQParamsBuf[idx * 9 + 1] = band.ratio
-            pendingDynEQParamsBuf[idx * 9 + 2] = band.attackMs
-            pendingDynEQParamsBuf[idx * 9 + 3] = band.releaseMs
-            pendingDynEQParamsBuf[idx * 9 + 4] = band.rangeDB
-            pendingDynEQParamsBuf[idx * 9 + 5] = band.direction == .cutOnly ? 0.0 : (band.direction == .boostOnly ? 1.0 : 2.0)
-            pendingDynEQParamsBuf[idx * 9 + 6] = band.boostThresholdDB
-            pendingDynEQParamsBuf[idx * 9 + 7] = band.boostRatio
-            pendingDynEQParamsBuf[idx * 9 + 8] = band.maxBoostDB
+            pendingDynEQParamsBuf[idx * 11 + 0] = band.thresholdDB
+            pendingDynEQParamsBuf[idx * 11 + 1] = band.ratio
+            pendingDynEQParamsBuf[idx * 11 + 2] = band.attackMs
+            pendingDynEQParamsBuf[idx * 11 + 3] = band.releaseMs
+            pendingDynEQParamsBuf[idx * 11 + 4] = band.rangeDB
+            pendingDynEQParamsBuf[idx * 11 + 5] = band.direction == .cutOnly ? 0.0 : (band.direction == .boostOnly ? 1.0 : 2.0)
+            pendingDynEQParamsBuf[idx * 11 + 6] = band.boostThresholdDB
+            pendingDynEQParamsBuf[idx * 11 + 7] = band.boostRatio
+            pendingDynEQParamsBuf[idx * 11 + 8] = band.maxBoostDB
+            pendingDynEQParamsBuf[idx * 11 + 9]  = band.detectorMode == .rms ? 1.0 : 0.0
+            pendingDynEQParamsBuf[idx * 11 + 10] = band.rmsWindowMs
 
             // Create vDSP_biquad setup for vectorized detector filter
             // Coefficients format: [b0, b1, b2, a1, a2] for single-section biquad
@@ -2131,13 +2137,13 @@ final class DynamicsProcessor: @unchecked Sendable {
                 guard dynamicEQBypassBuf[idx] == 0 else { continue }
 
                 // Get parameters for this band
-                let thresholdDB = dynamicEQParamsBuf[idx * 9 + 0]
-                let ratio = dynamicEQParamsBuf[idx * 9 + 1]
-                let rangeDB = dynamicEQParamsBuf[idx * 9 + 4]
-                let directionRaw = dynamicEQParamsBuf[idx * 9 + 5]
-                let boostThresholdDB = dynamicEQParamsBuf[idx * 9 + 6]
-                let boostRatio = dynamicEQParamsBuf[idx * 9 + 7]
-                let maxBoostDB = dynamicEQParamsBuf[idx * 9 + 8]
+                let thresholdDB = dynamicEQParamsBuf[idx * 11 + 0]
+                let ratio = dynamicEQParamsBuf[idx * 11 + 1]
+                let rangeDB = dynamicEQParamsBuf[idx * 11 + 4]
+                let directionRaw = dynamicEQParamsBuf[idx * 11 + 5]
+                let boostThresholdDB = dynamicEQParamsBuf[idx * 11 + 6]
+                let boostRatio = dynamicEQParamsBuf[idx * 11 + 7]
+                let maxBoostDB = dynamicEQParamsBuf[idx * 11 + 8]
 
                 let attackCoeff = dynamicEQAttackCoeffsBuf[idx]
                 let releaseCoeff = dynamicEQReleaseCoeffsBuf[idx]
@@ -2153,21 +2159,43 @@ final class DynamicsProcessor: @unchecked Sendable {
                 // Save delay state
                 dynamicEQBiquadDelays[delayIdx] = delay
 
-                // Step 2: Vectorized abs() for envelope follower
-                let absPtr = dynamicEQAbsScratch.advanced(by: idx * count)
-                vDSP_vabs(detectorPtr, 1, absPtr, 1, vDSP_Length(count))
+                // Step 2: Envelope detection — peak or RMS depending on per-band detectorMode param
+                let useRMS = dynamicEQParamsBuf[idx * 11 + 9] > 0.5
+                let rmsWindowMs = dynamicEQParamsBuf[idx * 11 + 10]
 
-                // Step 2 continued: Scalar envelope follower recursion (sequential by design)
+                let absPtr = dynamicEQAbsScratch.advanced(by: idx * count)
                 let envPtr = dynamicEQEnvScratch.advanced(by: idx * count)
                 var env = dynamicEQEnvelopeState[ch * maxBands + idx]
-                for i in 0..<count {
-                    let absVal = absPtr[i]
-                    if absVal > env {
-                        env = attackCoeff * env + (1.0 - attackCoeff) * absVal
-                    } else {
-                        env = releaseCoeff * env + (1.0 - releaseCoeff) * absVal
+
+                if useRMS {
+                    // RMS detector: one-pole leaky integrator on the squared signal.
+                    // Responds to signal power rather than instantaneous peaks — smoother on transients.
+                    let rmsAlpha = Float(exp(-1.0 / (Double(max(rmsWindowMs, 1.0)) * 0.001 * storedSampleRate)))
+                    let rmsStateIdx = ch * maxBands + idx
+                    for i in 0..<count {
+                        let x = detectorPtr[i]
+                        dynamicEQRMSState[rmsStateIdx] = rmsAlpha * dynamicEQRMSState[rmsStateIdx]
+                                                       + (1.0 - rmsAlpha) * (x * x)
+                        let envInput = sqrt(max(0.0, dynamicEQRMSState[rmsStateIdx]))
+                        if envInput > env {
+                            env = attackCoeff * env + (1.0 - attackCoeff) * envInput
+                        } else {
+                            env = releaseCoeff * env + (1.0 - releaseCoeff) * envInput
+                        }
+                        envPtr[i] = env
                     }
-                    envPtr[i] = env
+                } else {
+                    // Peak detector: vectorized abs() then scalar attack/release (existing path).
+                    vDSP_vabs(detectorPtr, 1, absPtr, 1, vDSP_Length(count))
+                    for i in 0..<count {
+                        let absVal = absPtr[i]
+                        if absVal > env {
+                            env = attackCoeff * env + (1.0 - attackCoeff) * absVal
+                        } else {
+                            env = releaseCoeff * env + (1.0 - releaseCoeff) * absVal
+                        }
+                        envPtr[i] = env
+                    }
                 }
                 dynamicEQEnvelopeState[ch * maxBands + idx] = env
 
@@ -2840,33 +2868,84 @@ final class DynamicsProcessor: @unchecked Sendable {
             ordering: .relaxed
         )
 
-        // Inter-channel time delay (signed: positive = delay R relative to L, negative = delay L relative to R).
-        let delayMs      = bitsToFloat(_timeDelayBits.load(ordering: .relaxed))
+        // Inter-channel time delay — 4th-order Lagrange fractional delay.
+        // Positive delayMs = delay R relative to L, negative = delay L relative to R.
+        let delayMs     = bitsToFloat(_timeDelayBits.load(ordering: .relaxed))
         let absDelayMs  = abs(delayMs)
-        let newDelay     = Int((absDelayMs / 1000.0) * Float(storedSampleRate) + 0.5)
-        let delaySamples = min(newDelay, Self.maxDelaySamples - 1)
+        let delaySamplesFloat = (absDelayMs / 1000.0) * Float(storedSampleRate)
+        let intDelay    = Int(delaySamplesFloat)
+        let fracDelay   = delaySamplesFloat - Float(intDelay)
+        let delaySamples = min(intDelay, Self.maxDelaySamples - 3)  // -3 for 5-tap headroom
         timeDelaySamples = delaySamples
         guard delaySamples > 0 else { return }
 
-        let bufSize  = Self.maxDelaySamples
+        // Lagrange 4th-order (5-tap) coefficients — copied from processIRAlignment.
+        var lagCoeffs: (Float, Float, Float, Float, Float)
+        if fracDelay < 0.001 {
+            // Pure integer delay — identity Lagrange (tap 2 = 1, others = 0)
+            lagCoeffs = (0, 0, 1, 0, 0)
+        } else {
+            let d = Double(fracDelay)
+            var c = [Double](repeating: 0, count: 5)
+            for k in 0..<5 {
+                var h = 1.0
+                for n in 0..<5 where n != k { h *= (d - Double(n - 2)) / Double(k - n) }
+                c[k] = h
+            }
+            lagCoeffs = (Float(c[0]), Float(c[1]), Float(c[2]), Float(c[3]), Float(c[4]))
+        }
+        let (lc0, lc1, lc2, lc3, lc4) = lagCoeffs
+        let bufSize = Self.maxDelaySamples
+
         if delayMs > 0 {
             // Delay right channel relative to left
             let delayBuf = timeDelayBufs[1]
+            var writeIdx = timeDelayWriteIdx
             for i in 0..<count {
-                delayBuf[timeDelayWriteIdx] = bufR[i]
-                let readIdx = (timeDelayWriteIdx - delaySamples + bufSize) % bufSize
-                bufR[i] = delayBuf[readIdx]
-                timeDelayWriteIdx = (timeDelayWriteIdx + 1) % bufSize
+                delayBuf[writeIdx] = bufR[i]
+                // 5-tap Lagrange read centred on delaySamples
+                var interpolated: Float = 0
+                for tap in 0..<5 {
+                    let offset = delaySamples + 2 - tap
+                    let rIdx = (writeIdx - offset + bufSize) % bufSize
+                    let coeff: Float
+                    switch tap {
+                    case 0: coeff = lc0
+                    case 1: coeff = lc1
+                    case 2: coeff = lc2
+                    case 3: coeff = lc3
+                    default: coeff = lc4
+                    }
+                    interpolated += coeff * delayBuf[rIdx]
+                }
+                bufR[i] = interpolated
+                writeIdx = (writeIdx + 1) % bufSize
             }
+            timeDelayWriteIdx = writeIdx
         } else {
             // Delay left channel relative to right
             let delayBuf = timeDelayBufs[0]
+            var writeIdx = timeDelayWriteIdx
             for i in 0..<count {
-                delayBuf[timeDelayWriteIdx] = bufL[i]
-                let readIdx = (timeDelayWriteIdx - delaySamples + bufSize) % bufSize
-                bufL[i] = delayBuf[readIdx]
-                timeDelayWriteIdx = (timeDelayWriteIdx + 1) % bufSize
+                delayBuf[writeIdx] = bufL[i]
+                var interpolated: Float = 0
+                for tap in 0..<5 {
+                    let offset = delaySamples + 2 - tap
+                    let rIdx = (writeIdx - offset + bufSize) % bufSize
+                    let coeff: Float
+                    switch tap {
+                    case 0: coeff = lc0
+                    case 1: coeff = lc1
+                    case 2: coeff = lc2
+                    case 3: coeff = lc3
+                    default: coeff = lc4
+                    }
+                    interpolated += coeff * delayBuf[rIdx]
+                }
+                bufL[i] = interpolated
+                writeIdx = (writeIdx + 1) % bufSize
             }
+            timeDelayWriteIdx = writeIdx
         }
     }
 

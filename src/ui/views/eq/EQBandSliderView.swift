@@ -23,6 +23,8 @@ struct EQBandSliderView: View {
     var onClearFIRKernel: (() -> Void)? = nil
     /// True when the EQ is in linear-phase mode (needed to show the FIR warning).
     var isLinearPhaseActive: Bool = false
+    var constantQUpdate: ((Bool) -> Void)? = nil
+    var linkwitzTargetHzUpdate: ((Float?) -> Void)? = nil
 
     @State private var isShowingDetail = false
     @State private var dragStartGain: Float? = nil
@@ -105,7 +107,9 @@ struct EQBandSliderView: View {
                         onClose: { isShowingDetail = false },
                         onLoadFIRKernel: onLoadFIRKernel,
                         onClearFIRKernel: onClearFIRKernel,
-                        isLinearPhaseActive: isLinearPhaseActive
+                        isLinearPhaseActive: isLinearPhaseActive,
+                        constantQUpdate: constantQUpdate,
+                        linkwitzTargetHzUpdate: linkwitzTargetHzUpdate
                     )
                     .frame(width: 240)
                 }
@@ -208,6 +212,8 @@ struct EQBandDetailPopover: View {
     let onClose: () -> Void
     var onLoadFIRKernel: (() -> Void)? = nil
     var onClearFIRKernel: (() -> Void)? = nil
+    var constantQUpdate: ((Bool) -> Void)? = nil
+    var linkwitzTargetHzUpdate: ((Float?) -> Void)? = nil
     /// True when the EQ is in linear-phase mode. Shown as a hint when .fir is selected
     /// without linear-phase mode active.
     var isLinearPhaseActive: Bool = false
@@ -259,7 +265,9 @@ struct EQBandDetailPopover: View {
          onClose: @escaping () -> Void,
          onLoadFIRKernel: (() -> Void)? = nil,
          onClearFIRKernel: (() -> Void)? = nil,
-         isLinearPhaseActive: Bool = false) {
+         isLinearPhaseActive: Bool = false,
+         constantQUpdate: ((Bool) -> Void)? = nil,
+         linkwitzTargetHzUpdate: ((Float?) -> Void)? = nil) {
         _gain = State(initialValue: band.gain)
         _frequency = State(initialValue: band.frequency)
         _q = State(initialValue: band.q)
@@ -300,6 +308,8 @@ struct EQBandDetailPopover: View {
         self.onLoadFIRKernel = onLoadFIRKernel
         self.onClearFIRKernel = onClearFIRKernel
         self.isLinearPhaseActive = isLinearPhaseActive
+        self.constantQUpdate = constantQUpdate
+        self.linkwitzTargetHzUpdate = linkwitzTargetHzUpdate
     }
 
     var body: some View {
@@ -349,7 +359,7 @@ struct EQBandDetailPopover: View {
 
             // Frequency
             HStack {
-                Text("Frequency (Hz)")
+                Text(filterType == .linkwitzTransform ? "Resonance (f0)" : "Frequency (Hz)")
                 Spacer()
                 TextField("1000", text: $frequencyText)
                     .textFieldStyle(.roundedBorder)
@@ -378,38 +388,66 @@ struct EQBandDetailPopover: View {
 
             // Gain
             HStack {
-                Text("Gain (dB)")
+                Text(filterType == .linkwitzTransform ? "Target Q (Qp)" : "Gain (dB)")
                 Spacer()
-                TextField("0.0", text: $gainText)
+                TextField(filterType == .linkwitzTransform ? "0.58" : "0.0", text: $gainText)
                     .textFieldStyle(.roundedBorder)
                     .frame(width: 70)
                     .multilineTextAlignment(.trailing)
                     .focused($focusedField, equals: .gain)
                     .onSubmit {
                         if let value = Float(gainText) {
-                            let clamped = AudioConstants.clampGain(value)
+                            let clamped: Float
+                            if filterType == .linkwitzTransform {
+                                clamped = max(0.1, min(5.0, value))  // Qp: 0.1–5.0, never zero
+                            } else {
+                                clamped = AudioConstants.clampGain(value)
+                            }
                             gain = clamped
-                            gainText = String(format: "%.1f", clamped)
+                            gainText = filterType == .linkwitzTransform
+                                ? String(format: "%.2f", clamped)
+                                : String(format: "%.1f", clamped)
                             gainUpdate(clamped)
                         }
                         focusedField = .bandwidth
                     }
                     .onKeyPress(.upArrow) {
-                        adjustGain(by: 0.1)
+                        adjustGain(by: filterType == .linkwitzTransform ? 0.01 : 0.1)
                         return .handled
                     }
                     .onKeyPress(.downArrow) {
-                        adjustGain(by: -0.1)
+                        adjustGain(by: filterType == .linkwitzTransform ? -0.01 : -0.1)
                         return .handled
                     }
             }
             .disabled(filterType == .fir)
 
+            // Linkwitz-Transform: Target Frequency (fp)
+            if filterType == .linkwitzTransform {
+                let effectiveFp = band.linkwitzTargetHz ?? (band.frequency * 0.7)
+                HStack {
+                    Text("Target Freq (fp)")
+                    Spacer()
+                    Text(String(format: "%.0f Hz", effectiveFp))
+                        .font(.system(size: 13))
+                        .foregroundStyle(.secondary)
+                    Stepper("", value: Binding(
+                        get: { Double(effectiveFp) },
+                        set: { v in
+                            let clamped = Float(max(10.0, min(v, Double(frequency) * 0.99)))
+                            linkwitzTargetHzUpdate?(clamped)
+                        }
+                    ), in: 10.0...500.0, step: 1.0)
+                    .labelsHidden()
+                }
+                .help("Target resonance frequency. Leave near the default (f0 × 0.7) for a Butterworth-aligned extension, or set to your desired −3 dB point.")
+            }
+
             // Bandwidth / Q Factor
             // UI displays bandwidth or Q based on user preference, but model stores Q.
             // Conversion happens at the boundary.
             HStack {
-                Text(bandwidthLabel)
+                Text(filterType == .linkwitzTransform ? "Box Q (Q0)" : bandwidthLabel)
                 Spacer()
                 TextField("1.0", text: $bandwidthText)
                     .textFieldStyle(.roundedBorder)
@@ -448,6 +486,25 @@ struct EQBandDetailPopover: View {
             }
             .onChange(of: store.bandwidthDisplayMode) { _, newMode in
                 bandwidthText = BandwidthConverter.formatForInput(q: q, mode: newMode)
+            }
+
+            // Constant-Q toggle — parametric bands only
+            if filterType == .parametric {
+                Toggle("Constant-Q", isOn: Binding(
+                    get: { band.constantQ },
+                    set: { v in constantQUpdate?(v) }
+                ))
+                .toggleStyle(.switch)
+                .controlSize(.small)
+                .help("When on, bandwidth stays fixed regardless of gain (Orfanidis constant-Q). When off, bandwidth narrows as gain approaches zero (standard RBJ proportional-Q).")
+            }
+
+            // Linkwitz-Transform info caption
+            if filterType == .linkwitzTransform {
+                Text("Redesigns a sealed-box speaker's roll-off. f0/Q0 = existing alignment, fp/Qp = target.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
             // Dynamic EQ parameters (shown only when mode == Dynamic)

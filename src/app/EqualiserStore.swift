@@ -1528,6 +1528,18 @@ final class EqualiserStore: ObservableObject {
         presetManager.markAsModified()
     }
 
+    func updateBandConstantQ(index: Int, constantQ: Bool) {
+        eqConfiguration.updateBandConstantQ(index: index, constantQ: constantQ)
+        routingCoordinator.updateBandFilterType(index: index)  // recompute coefficients via same path as filter type change
+        presetManager.markAsModified()
+    }
+
+    func updateBandLinkwitzTargetHz(index: Int, targetHz: Float?) {
+        eqConfiguration.updateBandLinkwitzTargetHz(index: index, targetHz: targetHz)
+        routingCoordinator.updateBandFilterType(index: index)  // recompute coefficients
+        presetManager.markAsModified()
+    }
+
     /// Updates the bypass state for a specific EQ band.
     func updateBandBypass(index: Int, bypass: Bool) {
         eqConfiguration.updateBandBypass(index: index, bypass: bypass)

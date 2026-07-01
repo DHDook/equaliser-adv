@@ -498,6 +498,8 @@ struct DynamicsInlineView: View {
                     get: { store.dynamicsConfig.stereoWidener.monoLowBand },
                     set: { v in var c = store.dynamicsConfig.stereoWidener; c.monoLowBand = v; store.updateStereoWidener(c) }
                 ))
+                .toggleStyle(.switch)
+                .controlSize(.small)
                 .help("Forces the low band to mono regardless of the Low Width setting above.")
                 DynamicsSliderRow(
                     label: "Low/Mid Xover",
@@ -750,22 +752,6 @@ struct DynamicsInlineView: View {
                     ),
                     range: 1000.0...8000.0,
                     step: 100.0,
-                    formatValue: { String(format: "%.0f Hz", $0) }
-                )
-                DynamicsSliderRow(
-                    label: "Sidechain HP",
-                    value: Binding(
-                        get: { Double(store.dynamicsConfig.multibandCompressor.sidechainHighPassLowHz) },
-                        set: { v in
-                            var c = store.dynamicsConfig.multibandCompressor
-                            c.sidechainHighPassLowHz  = Float(v)
-                            c.sidechainHighPassMidHz  = Float(v)
-                            c.sidechainHighPassHighHz = Float(v)
-                            store.updateMultibandCompressor(c)
-                        }
-                    ),
-                    range: 0.0...300.0,
-                    step: 5.0,
                     formatValue: { String(format: "%.0f Hz", $0) }
                 )
                 DisclosureGroup("Low Band") {

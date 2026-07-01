@@ -848,6 +848,33 @@ final class EQConfiguration: ObservableObject {
                 rightState.userEQ.bands[index].slope = slope
             }
         }
+
+        objectWillChange.send()
+    }
+
+    func updateBandConstantQ(index: Int, constantQ: Bool) {
+        guard isValidIndex(index) else { return }
+        if channelMode == .linked {
+            leftState.userEQ.bands[index].constantQ = constantQ
+            rightState.userEQ.bands[index].constantQ = constantQ
+        } else {
+            let editLeft = (channelFocus == .left || channelFocus == .mid)
+            if editLeft { leftState.userEQ.bands[index].constantQ = constantQ }
+            else         { rightState.userEQ.bands[index].constantQ = constantQ }
+        }
+        objectWillChange.send()
+    }
+
+    func updateBandLinkwitzTargetHz(index: Int, targetHz: Float?) {
+        guard isValidIndex(index) else { return }
+        if channelMode == .linked {
+            leftState.userEQ.bands[index].linkwitzTargetHz = targetHz
+            rightState.userEQ.bands[index].linkwitzTargetHz = targetHz
+        } else {
+            let editLeft = (channelFocus == .left || channelFocus == .mid)
+            if editLeft { leftState.userEQ.bands[index].linkwitzTargetHz = targetHz }
+            else         { rightState.userEQ.bands[index].linkwitzTargetHz = targetHz }
+        }
         objectWillChange.send()
     }
 
