@@ -284,7 +284,7 @@ final class EQCoefficientStager {
     /// Computes biquad sections for a band, routing Linkwitz-Transform and constant-Q
     /// through their dedicated math. Single source of truth used by both the incremental
     /// (stageBandCoefficients) and full-reload (reapplyAllCoefficients) paths.
-    private func computeSections(for config: EQBandConfiguration, warpedFrequency: Double, designRate: Double) -> [BiquadCoefficients] {
+    func computeSections(for config: EQBandConfiguration, warpedFrequency: Double, designRate: Double) -> [BiquadCoefficients] {
         if config.filterType == .parametric && config.constantQ {
             let single = BiquadMath.peakingEQConstantQ(
                 sampleRate: designRate,
